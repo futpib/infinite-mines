@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151b1e" />
+    <meta
+      name="description"
+      content="A fast, infinite Minesweeper game with deterministic generation and a WebGL renderer."
+    />
+    <title>Infinite Mines</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Infinite Mines home">
+        <span class="brand-mark" aria-hidden="true">∞</span>
+        <span>MINES</span>
+      </a>
+      <div class="mode-pill"><span></span> INFINITE</div>
+      <button class="header-help" id="help-button" type="button" aria-label="How to play">?</button>
+    </header>
+
+    <main class="game" id="game">
+      <h1 class="sr-only">Infinite Minesweeper</h1>
+      <canvas id="board" aria-label="Infinite Minesweeper board"></canvas>
+      <div class="hover-overlay" id="hover-overlay" aria-hidden="true"></div>
+
+      <nav class="controls" aria-label="Game controls">
+        <button id="restart-button" type="button" aria-label="New game" title="New game (R)">
+          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M19.3 7.1A8 8 0 1 0 20 15" />
+            <path d="M19.3 3.7v3.4h-3.4" />
+          </svg>
+        </button>
+        <button id="settings-button" type="button" aria-label="Game settings" title="Game settings">
+          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+            <circle cx="16" cy="7" r="2" />
+            <circle cx="8" cy="17" r="2" />
+          </svg>
+        </button>
+        <button id="home-button" type="button" aria-label="Return to origin" title="Return to origin (H)">
+          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="5" />
+            <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+            <circle cx="12" cy="12" r="1" />
+          </svg>
+        </button>
+        <button id="overview-button" type="button" aria-label="Overview map" title="Overview map">
+          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <rect x="4" y="4" width="6" height="6" rx="1" />
+            <rect x="14" y="4" width="6" height="6" rx="1" />
+            <rect x="4" y="14" width="6" height="6" rx="1" />
+            <rect x="14" y="14" width="6" height="6" rx="1" />
+          </svg>
+        </button>
+      </nav>
+
+      <aside class="stats" aria-label="Game status">
+        <div class="stat stat-wide">
+          <span>MODE</span>
+          <strong id="mode-stat">BEGINNER</strong>
+        </div>
+        <div class="stat">
+          <span>HIGH SCORE</span>
+          <strong id="high-stat">0</strong>
+        </div>
+        <div class="stat">
+          <span>SCORE</span>
+          <strong id="score-stat">0</strong>
+        </div>
+        <div class="stat">
+          <span>THINGS</span>
+          <strong id="things-stat">0</strong>
+        </div>
+        <div class="stat">
+          <span>HEALTH</span>
+          <strong id="health-stat" class="hearts">♥♥♥</strong>
+        </div>
+        <div class="stat cheat-stat" id="cheats-stat-card" hidden>
+          <span>CHEATS</span>
+          <strong id="cheats-stat">0</strong>
+        </div>
+      </aside>
+
+      <div class="hint" id="hint">
+        <span><b id="reveal-key">CTRL + CLICK</b> reveal</span>
+        <span><b>RIGHT CLICK</b> flag</span>
+        <span><b>DRAG</b> explore</span>
+        <span><b>SCROLL</b> zoom</span>
+      </div>
+      <button class="cell-locator" id="cell-locator" type="button" title="Copy cell reference">
+        <span>CELL</span>
+        <strong id="cell-coordinate">0, 0</strong>
+        <small id="cell-state">OPENED CLEAR · COPY</small>
+      </button>
+      <button class="mobile-tool" id="mobile-tool" type="button" aria-pressed="false">
+        <span aria-hidden="true">◇</span> REVEAL
+      </button>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <section class="game-over-screen" id="game-over-screen" aria-labelledby="game-over-title" hidden>
+        <div class="game-over-card">
+          <span class="game-over-mark" aria-hidden="true">×</span>
+          <p class="eyebrow">FIELD LOST</p>
+          <h2 id="game-over-title">Out of health</h2>
+          <p>Your field and score can still be saved—at a cost to your clean run.</p>
+          <div class="game-over-actions">
+            <button class="primary-action" id="cheat-death-button" type="button">
+              <b>Cheat death</b><small>Continue with 1 health</small>
+            </button>
+            <button class="secondary-action" id="game-over-restart-button" type="button">Start a new field</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="settings-dialog">
+      <form method="dialog" class="dialog-card">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">FIELD SETTINGS</p>
+            <h1>Game options</h1>
+          </div>
+          <button class="close-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <section class="settings-section" aria-labelledby="controls-heading">
+          <p class="settings-label" id="controls-heading">REVEAL CONTROLS</p>
+          <div class="control-options" id="control-options">
+            <button type="button" data-controls="guarded" aria-pressed="true">
+              <b>Guarded</b><small id="guarded-description">Ctrl + click reveals</small>
+            </button>
+            <button type="button" data-controls="classic" aria-pressed="false">
+              <b>Classic</b><small>Click reveals immediately</small>
+            </button>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="hover-heading">
+          <p class="settings-label" id="hover-heading">HOVER PREVIEW</p>
+          <div class="control-options" id="hover-options">
+            <button type="button" data-hover="affected" aria-pressed="true">
+              <b>Affected cells</b><small>Preview every direct click target</small>
+            </button>
+            <button type="button" data-hover="cell" aria-pressed="false">
+              <b>Hovered cell only</b><small>Keep only the cell under the pointer</small>
+            </button>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="density-heading">
+          <p class="settings-label" id="density-heading">MINE DENSITY</p>
+          <div class="difficulty-list" id="difficulty-list">
+            <button type="button" data-mode="beginner">
+              <span class="density-dot density-1"></span><b>Beginner</b><small>18% mines · 3 lives</small>
+            </button>
+            <button type="button" data-mode="master">
+              <span class="density-dot density-2"></span><b>Master</b><small>22% mines · 3 lives</small>
+            </button>
+            <button type="button" data-mode="ultimate">
+              <span class="density-dot density-3"></span><b>Ultimate</b><small>27% mines · 3 lives</small>
+            </button>
+            <button type="button" data-mode="impossible">
+              <span class="density-dot density-4"></span><b>Impossible</b><small>33% mines · 3 lives</small>
+            </button>
+            <button type="button" data-mode="deathmatch">
+              <span class="density-dot density-5"></span><b>Deathmatch</b><small>33% mines · 1 life</small>
+            </button>
+          </div>
+          <p class="dialog-note">Changing density starts a fresh, randomly seeded field.</p>
+        </section>
+      </form>
+    </dialog>
+
+    <dialog id="overview-dialog" class="overview-dialog">
+      <section class="dialog-card">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">EXPLORED WORLD</p>
+            <h1>Overview</h1>
+          </div>
+          <button class="close-button" id="overview-close" type="button" aria-label="Close">×</button>
+        </div>
+        <canvas id="overview-canvas" aria-label="Map of explored cells"></canvas>
+        <p class="dialog-note" id="overview-caption"></p>
+      </section>
+    </dialog>
+
+    <dialog id="help-dialog">
+      <section class="dialog-card help-card">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">FIELD MANUAL</p>
+            <h1>Keep moving</h1>
+          </div>
+          <button class="close-button" id="help-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="help-grid">
+          <div><b>Reveal</b><p id="help-guarded-description">Guarded controls need Ctrl only for concealed tiles; revealed clues click normally. Classic removes the guard.</p></div>
+          <div><b>Mark</b><p>Right-click, Shift-click, or long-press to cycle flag, question, clear.</p></div>
+          <div><b>Chord</b><p>Click an open number when its mines are flagged to clear the rest.</p></div>
+          <div><b>Survive</b><p>A blast costs one life. Score milestones earn lives back.</p></div>
+          <div><b>Explore</b><p>Drag the field in any direction. It is generated only as you need it.</p></div>
+          <div><b>Collect</b><p>Rare cyan artifacts are safe. Reveal them to add to Things.</p></div>
+          <div><b>Reference</b><p>Hover a cell, then click its coordinate card to copy a reproducible debug reference.</p></div>
+        </div>
+      </section>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
