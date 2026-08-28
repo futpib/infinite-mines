@@ -306,6 +306,20 @@ a:focus-visible {
   stroke-width: 1.7;
 }
 
+.fullscreen-exit-icon,
+.controls-show-icon { display: none; }
+
+#fullscreen-button[aria-pressed="true"] .fullscreen-enter-icon,
+#ui-toggle-button[aria-pressed="true"] .controls-hide-icon { display: none; }
+
+#fullscreen-button[aria-pressed="true"] .fullscreen-exit-icon,
+#ui-toggle-button[aria-pressed="true"] .controls-show-icon { display: block; }
+
+#fullscreen-button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 .controls button:hover,
 .header-help:hover,
 .mobile-tool:hover {
@@ -498,6 +512,20 @@ a:focus-visible {
 }
 
 .mobile-tool[aria-pressed="true"] { color: #ffffff; background: var(--danger); }
+
+.ui-hidden .controls button:not(#ui-toggle-button) { display: none; }
+
+.ui-hidden .controls {
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+  padding: 4px;
+  border-radius: 14px;
+  opacity: 0.58;
+  transition: opacity 140ms ease;
+}
+
+.ui-hidden .controls:hover,
+.ui-hidden .controls:focus-within { opacity: 1; }
 
 .toast {
   position: absolute;

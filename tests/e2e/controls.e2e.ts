@@ -204,3 +204,134 @@ test("R19 — guarded guidance follows the browser platform", async ({ browser }
     await context.close();
   }
 });
+
+test("R28 — fullscreen and hidden controls stay synchronized and recoverable", async ({ page }) => {
+  await openDeterministicGame(page);
+  const fullscreen = page.getByRole("button", { name: "Enter fullscreen" });
+  const hide = page.getByRole("button", { name: "Hide controls" });
+  const initial = await page.evaluate(() => ({
+    seed: window.__infiniteMines.model.seed,
+    view: window.__infiniteMines.renderer.createViewSnapshot(),
+  }));
+  const initialBoard = await page.locator("#board").boundingBox();
+
+  expect(await page.evaluate(() => document.fullscreenEnabled)).toBe(true);
+  await fullscreen.click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  await expect(page.getByRole("button", { name: "Exit fullscreen" })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().fullscreen)).toBe(true);
+
+  await page.evaluate(() => document.exitFullscreen());
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
+  await expect(fullscreen).toHaveAttribute("aria-pressed", "false");
+
+  await hide.click();
+  await expect(page.locator("body")).toHaveClass(/ui-hidden/);
+  await expect(page.locator("#game")).toHaveAttribute("data-ui", "hidden");
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".stats")).toBeVisible();
+  await expect(page.locator("#hint")).toBeVisible();
+  await expect(page.locator("#cell-locator")).toBeVisible();
+  await expect(fullscreen).toBeHidden();
+  const show = page.getByRole("button", { name: "Show controls" });
+  await expect(show).toBeVisible();
+  await expect(show).toHaveAttribute("aria-pressed", "true");
+  expect(await page.locator("#board").boundingBox()).toEqual(initialBoard);
+  expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
+
+  const board = page.locator("#board");
+  const bounds = await board.boundingBox();
+  if (!bounds) throw new Error("Board is not visible");
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 24, bounds.y + bounds.height / 2);
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.__infiniteMines.renderer.panX)).not.toBe(initial.view.panX);
+
+  await show.click();
+  await expect(page.locator("body")).not.toHaveClass(/ui-hidden/);
+  await expect(page.locator("#game")).toHaveAttribute("data-ui", "visible");
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".stats")).toBeVisible();
+  await expect(hide).toBeVisible();
+  await expect(hide).toHaveAttribute("aria-pressed", "false");
+  expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
+});
+
+test("R29 — only 50 successful cell actions auto-hide controls, with a persisted opt-out", async ({ page }) => {
+  await openDeterministicGame(page);
+  const board = page.locator("#board");
+  const restart = page.getByRole("button", { name: "New game" });
+  const center = async () => {
+    const bounds = await board.boundingBox();
+    if (!bounds) throw new Error("Board is not visible");
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  };
+  const drag = async () => {
+    const point = await center();
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x + 12, point.y);
+    await page.mouse.up();
+  };
+
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().autoHideMode)).toBe("after-fifty");
+  await page.mouse.move(400, 400);
+  await page.mouse.move(420, 420);
+  await drag();
+  const centerPoint = await center();
+  await page.mouse.move(centerPoint.x, centerPoint.y);
+  await page.mouse.wheel(0, 60);
+  await page.mouse.wheel(0, 60);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(0);
+
+  const guardedCell = await findCell(page, "covered-safe");
+  const guardedPoint = await worldPoint(page, guardedCell);
+  await page.mouse.click(guardedPoint.x, guardedPoint.y);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(0);
+
+  const markedCell = await findCell(page, "covered");
+  let markedPoint = await worldPoint(page, markedCell);
+  for (let index = 0; index < 3; index += 1) {
+    await page.mouse.click(markedPoint.x, markedPoint.y, { button: "right" });
+  }
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(3);
+  await expect(restart).toBeVisible();
+
+  await page.getByRole("button", { name: "Return to origin" }).click();
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(0);
+
+  markedPoint = await worldPoint(page, markedCell);
+  for (let index = 0; index < 49; index += 1) {
+    await page.mouse.click(markedPoint.x, markedPoint.y, { button: "right" });
+  }
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(49);
+  await expect(restart).toBeVisible();
+  await page.mouse.move(markedPoint.x, markedPoint.y);
+  await page.mouse.down({ button: "right" });
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().uiHidden)).toBe(false);
+  await expect(restart).toBeVisible();
+  await page.mouse.up({ button: "right" });
+  await expect(restart).toBeHidden();
+  await expect(page.getByRole("button", { name: "Show controls" })).toBeVisible();
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().uiHidden)).toBe(true);
+
+  await page.getByRole("button", { name: "Show controls" }).click();
+  await page.getByRole("button", { name: "Game settings" }).click();
+  const never = page.locator('#auto-hide-options [data-auto-hide="never"]');
+  await never.click();
+  await expect(never).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close" }).click();
+
+  for (let index = 0; index < 51; index += 1) {
+    await page.mouse.click(markedPoint.x, markedPoint.y, { button: "right" });
+  }
+  await expect(restart).toBeVisible();
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(0);
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().autoHideMode)).toBe("never");
+  await expect(restart).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-auto-hide-controls"))).toBe("never");
+});

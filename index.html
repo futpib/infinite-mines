@@ -56,6 +56,25 @@
             <rect x="14" y="14" width="6" height="6" rx="1" />
           </svg>
         </button>
+        <button id="fullscreen-button" type="button" aria-label="Enter fullscreen" aria-pressed="false" title="Enter fullscreen">
+          <svg class="control-icon fullscreen-enter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" />
+          </svg>
+          <svg class="control-icon fullscreen-exit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 9h5V4M20 9h-5V4M20 15h-5v5M4 15h5v5" />
+          </svg>
+        </button>
+        <button id="ui-toggle-button" type="button" aria-label="Hide controls" aria-pressed="false" title="Hide controls">
+          <svg class="control-icon controls-hide-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M2.8 12s3.3-5 9.2-5 9.2 5 9.2 5-3.3 5-9.2 5-9.2-5-9.2-5Z" />
+            <circle cx="12" cy="12" r="2.5" />
+            <path d="m4.5 4.5 15 15" />
+          </svg>
+          <svg class="control-icon controls-show-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M2.8 12s3.3-5 9.2-5 9.2 5 9.2 5-3.3 5-9.2 5-9.2-5-9.2-5Z" />
+            <circle cx="12" cy="12" r="2.5" />
+          </svg>
+        </button>
       </nav>
 
       <aside class="stats" aria-label="Game status">
@@ -144,6 +163,17 @@
             </button>
             <button type="button" data-hover="cell" aria-pressed="false">
               <b>Hovered cell only</b><small>Keep only the cell under the pointer</small>
+            </button>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="auto-hide-heading">
+          <p class="settings-label" id="auto-hide-heading">AUTO-HIDE CONTROLS</p>
+          <div class="control-options" id="auto-hide-options">
+            <button type="button" data-auto-hide="after-fifty" aria-pressed="true">
+              <b>After 50 plays</b><small>Count only successful cell actions</small>
+            </button>
+            <button type="button" data-auto-hide="never" aria-pressed="false">
+              <b>Never</b><small>Keep the toolbar visible</small>
             </button>
           </div>
         </section>

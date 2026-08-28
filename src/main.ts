@@ -30,8 +30,11 @@ const overviewCaption = element<HTMLElement>("#overview-caption");
 const revealKey = element<HTMLElement>("#reveal-key");
 const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
+const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const guardedDescription = element<HTMLElement>("#guarded-description");
 const helpGuardedDescription = element<HTMLElement>("#help-guarded-description");
+const fullscreenButton = element<HTMLButtonElement>("#fullscreen-button");
+const uiToggleButton = element<HTMLButtonElement>("#ui-toggle-button");
 const gameOverScreen = element<HTMLElement>("#game-over-screen");
 const cheatDeathButton = element<HTMLButtonElement>("#cheat-death-button");
 const cellLocator = element<HTMLButtonElement>("#cell-locator");
@@ -68,6 +71,9 @@ let controlsMode: ControlsMode = savedControls === "classic" ? "classic" : "guar
 type HoverMode = "affected" | "cell";
 const savedHoverMode = storageGet("infinite-mines-hover-preview");
 let hoverMode: HoverMode = savedHoverMode === "cell" ? "cell" : "affected";
+type AutoHideMode = "after-fifty" | "never";
+const savedAutoHideMode = storageGet("infinite-mines-auto-hide-controls");
+let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "after-fifty";
 const browserPlatform =
   (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
 const applePlatform = /mac|iphone|ipad|ipod/i.test(browserPlatform);
@@ -109,6 +115,9 @@ let boardWidth = canvas.clientWidth;
 let boardHeight = canvas.clientHeight;
 let hoverVisualKey = "";
 let zoomHoverTimer = 0;
+let uiHidden = false;
+let gameplayInteractionCount = 0;
+const AUTO_HIDE_GAMEPLAY_INTERACTIONS = 50;
 const locatorTextInterval = (): number => (renderer.cellSize < 4 ? 100 : 50);
 
 const highScoreKey = (mode: Mode): string => `infinite-mines-high-${mode}`;
@@ -132,6 +141,12 @@ function updateHoverMode(): void {
   refreshCellLocator();
 }
 
+function updateAutoHideMode(): void {
+  for (const button of autoHideOptions.querySelectorAll<HTMLButtonElement>("button[data-auto-hide]")) {
+    button.ariaPressed = String(button.dataset.autoHide === autoHideMode);
+  }
+}
+
 function updateStats(): void {
   const previousHigh = readHighScore();
   if (model.score > previousHigh) storageSet(highScoreKey(model.mode), String(model.score));
@@ -152,6 +167,46 @@ function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add("visible");
   toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 1800);
+}
+
+function updateFullscreenState(): void {
+  const fullscreen = document.fullscreenElement !== null;
+  fullscreenButton.ariaPressed = String(fullscreen);
+  fullscreenButton.ariaLabel = fullscreen ? "Exit fullscreen" : "Enter fullscreen";
+  fullscreenButton.title = fullscreenButton.ariaLabel;
+  fullscreenButton.disabled = !document.fullscreenEnabled && !fullscreen;
+}
+
+async function toggleFullscreen(): Promise<void> {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (document.fullscreenEnabled) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    else showToast("Fullscreen is unavailable in this browser");
+  } catch {
+    showToast("Fullscreen could not be opened");
+  }
+}
+
+function setUiHidden(hidden: boolean): void {
+  uiHidden = hidden;
+  document.body.classList.toggle("ui-hidden", hidden);
+  game.dataset.ui = hidden ? "hidden" : "visible";
+  uiToggleButton.ariaPressed = String(hidden);
+  uiToggleButton.ariaLabel = hidden ? "Show controls" : "Hide controls";
+  uiToggleButton.title = uiToggleButton.ariaLabel;
+}
+
+function resetAutoHideCounter(): void {
+  gameplayInteractionCount = 0;
+}
+
+function completeGameplayInteraction(): void {
+  if (autoHideMode === "never" || uiHidden) return;
+  gameplayInteractionCount += 1;
+  if (gameplayInteractionCount < AUTO_HIDE_GAMEPLAY_INTERACTIONS) return;
+  if (!model.alive || settingsDialog.open || overviewDialog.open || helpDialog.open) return;
+  gameplayInteractionCount = 0;
+  setUiHidden(true);
 }
 
 function describeVisibleCell(x: number, y: number): string {
@@ -416,6 +471,9 @@ locateCellAt(canvas.clientWidth / 2, canvas.clientHeight / 2, true);
 updateStats();
 updateControlsMode();
 updateHoverMode();
+updateAutoHideMode();
+updateFullscreenState();
+setUiHidden(false);
 if (!restoredGame) scheduleGameSave(0);
 
 interface PointerGesture {
@@ -551,7 +609,9 @@ canvas.addEventListener("pointerdown", (event) => {
       if (!gesture || gesture.moved) return;
       gesture.longPressed = true;
       const cell = renderer.screenToCell(gesture.startLocalX, gesture.startLocalY);
-      applyAction(model.cycleMark(cell.x, cell.y));
+      const result = model.cycleMark(cell.x, cell.y);
+      applyAction(result);
+      if (result.changed > 0) completeGameplayInteraction();
       navigator.vibrate?.(18);
     }, 430);
   }
@@ -611,9 +671,15 @@ const finishPointer = (event: PointerEvent): void => {
   }
   const cell = renderer.screenToCell(completed.startLocalX, completed.startLocalY);
   const state = model.getState(cell.x, cell.y);
-  if (completed.mark) applyAction(model.cycleMark(cell.x, cell.y));
-  else if (completed.reveal || !requiresRevealGuard(state)) applyAction(model.reveal(cell.x, cell.y));
-  else showToast(`Hold ${revealModifierName} and click to reveal`);
+  if (completed.mark) {
+    const result = model.cycleMark(cell.x, cell.y);
+    applyAction(result);
+    if (result.changed > 0) completeGameplayInteraction();
+  } else if (completed.reveal || !requiresRevealGuard(state)) {
+    const result = model.reveal(cell.x, cell.y);
+    applyAction(result);
+    if (result.changed > 0) completeGameplayInteraction();
+  } else showToast(`Hold ${revealModifierName} and click to reveal`);
   refreshCellLocator(true);
 };
 
@@ -670,6 +736,8 @@ element<HTMLButtonElement>("#game-over-restart-button").addEventListener("click"
 cheatDeathButton.addEventListener("click", cheatDeath);
 element<HTMLButtonElement>("#settings-button").addEventListener("click", () => settingsDialog.showModal());
 element<HTMLButtonElement>("#home-button").addEventListener("click", goHome);
+fullscreenButton.addEventListener("click", () => void toggleFullscreen());
+uiToggleButton.addEventListener("click", () => setUiHidden(!uiHidden));
 element<HTMLButtonElement>("#overview-button").addEventListener("click", () => {
   overviewDialog.showModal();
   requestAnimationFrame(() => {
@@ -705,6 +773,15 @@ hoverOptions.addEventListener("click", (event) => {
   updateHoverMode();
 });
 
+autoHideOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-auto-hide]");
+  if (!button) return;
+  autoHideMode = button.dataset.autoHide === "never" ? "never" : "after-fifty";
+  storageSet("infinite-mines-auto-hide-controls", autoHideMode);
+  resetAutoHideCounter();
+  updateAutoHideMode();
+});
+
 mobileTool.addEventListener("click", () => {
   markTool = !markTool;
   mobileTool.ariaPressed = String(markTool);
@@ -714,11 +791,28 @@ mobileTool.addEventListener("click", () => {
 document.addEventListener("keydown", (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement) return;
   const key = event.key.toLowerCase();
-  if (key === "r") newGame();
-  else if (key === "h") goHome();
-  else if (key === "f") mobileTool.click();
-  else if (/^[1-5]$/.test(key)) newGame(MODES[Number(key) - 1]);
+  if (key === "r") {
+    resetAutoHideCounter();
+    newGame();
+  } else if (key === "h") {
+    resetAutoHideCounter();
+    goHome();
+  } else if (key === "f") {
+    resetAutoHideCounter();
+    mobileTool.click();
+  } else if (/^[1-5]$/.test(key)) {
+    resetAutoHideCounter();
+    newGame(MODES[Number(key) - 1]);
+  }
 });
+
+document.addEventListener(
+  "click",
+  (event) => {
+    if ((event.target as Element).closest("button, a")) resetAutoHideCounter();
+  },
+  { capture: true },
+);
 
 for (const dialog of [settingsDialog, overviewDialog, helpDialog]) {
   dialog.addEventListener("click", (event) => {
@@ -728,6 +822,13 @@ for (const dialog of [settingsDialog, overviewDialog, helpDialog]) {
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") void flushGameSave(true);
+});
+document.addEventListener("fullscreenchange", () => {
+  updateFullscreenState();
+  requestAnimationFrame(() => {
+    renderer.resize();
+    refreshCellLocator(true);
+  });
 });
 window.addEventListener("pagehide", () => void flushGameSave(true));
 
@@ -755,6 +856,10 @@ function getDiagnostics() {
     openedCells: model.store.openedCells,
     controlsMode,
     hoverMode,
+    autoHideMode,
+    gameplayInteractionCount,
+    fullscreen: document.fullscreenElement !== null,
+    uiHidden,
     persistenceStatus,
     lastSavedAt,
     canvasCount: document.querySelectorAll("canvas").length,
