@@ -200,8 +200,7 @@ function setUiHidden(hidden: boolean): void {
   uiToggleButton.ariaPressed = String(hidden);
   uiToggleButton.ariaLabel = hidden ? "Show controls" : "Hide controls";
   uiToggleButton.title = uiToggleButton.ariaLabel;
-  if (hidden) updateHoverPreview([]);
-  else refreshCellLocator(true);
+  refreshCellLocator(true);
 }
 
 function resetAutoHideCounter(): void {

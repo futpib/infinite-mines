@@ -274,14 +274,14 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(page.locator(".stats")).toBeHidden();
   await expect(page.locator("#hint")).toBeHidden();
   await expect(page.locator("#cell-locator")).toBeHidden();
-  await expect(page.locator("#hover-overlay")).toBeHidden();
+  await expect(page.locator("#hover-overlay")).toBeVisible();
   expect(
     await page.locator("#game").evaluate((container) =>
       [...container.children]
         .filter((child) => getComputedStyle(child).display !== "none")
         .map((child) => child.id || child.className),
     ),
-  ).toEqual(["board", "controls"]);
+  ).toEqual(["board", "hover-overlay", "controls"]);
   expect(
     await page.locator(".controls").evaluate((container) =>
       [...container.children]
@@ -393,9 +393,15 @@ test("R29 — only 50 successful cell actions auto-hide controls, with a persist
   await page.mouse.down({ button: "right" });
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().uiHidden)).toBe(false);
   await expect(restart).toBeVisible();
+  const hoverBeforeAutoHide = await page.evaluate(() => window.__infiniteMines.renderer.hoverPreview);
+  const visibleMarkersBeforeAutoHide = await page.locator("#hover-overlay .hover-cell.is-visible").count();
+  expect(visibleMarkersBeforeAutoHide).toBeGreaterThan(0);
   await page.mouse.up({ button: "right" });
   await expect(restart).toBeHidden();
   await expect(page.getByRole("button", { name: "Show controls" })).toBeVisible();
+  await expect(page.locator("#hover-overlay")).toBeVisible();
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(visibleMarkersBeforeAutoHide);
+  expect(await page.evaluate(() => window.__infiniteMines.renderer.hoverPreview)).toEqual(hoverBeforeAutoHide);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().uiHidden)).toBe(true);
 
   await page.getByRole("button", { name: "Show controls" }).click();

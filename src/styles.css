@@ -519,7 +519,7 @@ a:focus-visible {
 
 body.ui-hidden > .topbar,
 body.ui-hidden > dialog,
-.ui-hidden .game > :not(#board):not(.controls),
+.ui-hidden .game > :not(#board):not(#hover-overlay):not(.controls),
 .ui-hidden .controls button:not(#ui-toggle-button) { display: none; }
 
 .ui-hidden .controls {
