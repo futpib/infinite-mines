@@ -26,6 +26,7 @@
   --board-cell-border: #858c8b;
   --board-cell-highlight: #ece8df;
   --board-hover: #078f88;
+  --board-hint: #8658c7;
   --board-marked: #f8f4eb;
   --board-flag: #ef654e;
   --board-flag-stroke: #253033;
@@ -74,6 +75,7 @@
     --board-cell-border: #4a5960;
     --board-cell-highlight: #354249;
     --board-hover: #77e2d9;
+    --board-hint: #c3a1ff;
     --board-marked: #1b2428;
     --board-flag: #ff7966;
     --board-flag-stroke: #d8e4e2;
@@ -294,19 +296,33 @@ a:focus-visible {
 
 .hover-cell.is-visible { opacity: 0.32; }
 
-.hover-cell.is-polygon {
+.hover-cell.is-polygon.is-affected {
   border: 0;
   background: var(--board-hover);
 }
 
-.hover-overlay[data-lod="pixel"] .hover-cell {
+.hover-cell.is-polygon.is-hint:not(.is-affected) {
+  border: 0;
+  background: var(--board-hint);
+}
+
+.hover-cell.is-visible.is-hint:not(.is-affected) { opacity: 0.2; }
+
+.hover-overlay[data-lod="pixel"] .hover-cell.is-affected {
   border: 0;
   background: var(--board-hover);
+}
+
+.hover-overlay[data-lod="pixel"] .hover-cell.is-hint:not(.is-affected) {
+  border: 0;
+  background: var(--board-hint);
 }
 
 .hover-overlay[data-lod="pixel"] .hover-cell.is-visible {
   opacity: 0.14;
 }
+
+.hover-overlay[data-lod="pixel"] .hover-cell.is-visible.is-hint:not(.is-affected) { opacity: 0.1; }
 
 .controls {
   position: absolute;

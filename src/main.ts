@@ -1,7 +1,7 @@
 import "./styles.css";
 import { requiresRevealGuard } from "./controls";
 import { ActionResult, CellState, GameModel, Mode, MODES, isOpened, openedClue } from "./model";
-import { loadActiveGame, saveActiveGame, type PersistedGame } from "./persistence";
+import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
 import { WebGLRenderer } from "./renderer";
 import { TOPOLOGIES, isTopologyId, type TopologyId } from "./topology";
 
@@ -35,6 +35,7 @@ const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
+const difficultyList = element<HTMLElement>("#difficulty-list");
 const topologyPill = element<HTMLElement>("#topology-pill");
 const guardedDescription = element<HTMLElement>("#guarded-description");
 const helpGuardedDescription = element<HTMLElement>("#help-guarded-description");
@@ -138,6 +139,7 @@ let saveTimer = 0;
 let saveRevision = 0;
 let pendingSave: { revision: number; snapshot: PersistedGame } | null = null;
 let saveDrain: Promise<void> | null = null;
+let fieldSwitch: Promise<void> | null = null;
 let persistenceStatus = restoredGame ? "restored" : "idle";
 let lastSavedAt = restoredGame && Number.isFinite(persistedGame.savedAt) ? persistedGame.savedAt : 0;
 let locatedCell = { x: 0, y: 0 };
@@ -189,6 +191,9 @@ function updateTopologyOptions(): void {
   topologyPill.textContent = TOPOLOGIES[model.topologyId].label.toUpperCase();
   for (const button of topologyOptions.querySelectorAll<HTMLButtonElement>("button[data-topology]")) {
     button.ariaPressed = String(button.dataset.topology === model.topologyId);
+  }
+  for (const button of difficultyList.querySelectorAll<HTMLButtonElement>("button[data-mode]")) {
+    button.ariaPressed = String(button.dataset.mode === model.mode);
   }
 }
 
@@ -276,19 +281,33 @@ function describeVisibleCell(x: number, y: number): string {
   return "covered";
 }
 
-function updateHoverPreview(cells: ReadonlyArray<{ x: number; y: number }>): void {
+function updateHoverPreview(
+  affectedCells: ReadonlyArray<{ x: number; y: number }>,
+  hintCells: ReadonlyArray<{ x: number; y: number }> = [],
+): void {
+  const roles = new Map<string, { x: number; y: number; affected: boolean; hint: boolean }>();
+  for (const cell of affectedCells) {
+    roles.set(`${cell.x},${cell.y}`, { ...cell, affected: true, hint: false });
+  }
+  for (const cell of hintCells) {
+    const key = `${cell.x},${cell.y}`;
+    const existing = roles.get(key);
+    if (existing) existing.hint = true;
+    else roles.set(key, { ...cell, affected: false, hint: true });
+  }
+  const cells = [...roles.values()];
   renderer.setHoverCells(cells);
   if (cells.length === 0) {
     if (hoverVisualKey === "empty") return;
     hoverVisualKey = "empty";
-    for (const marker of hoverMarkers) marker.classList.remove("is-visible");
+    for (const marker of hoverMarkers) marker.classList.remove("is-visible", "is-affected", "is-hint");
     return;
   }
   const lod = renderer.cellSize < 4 ? "pixel" : "detail";
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const visualSize = Math.max(1 / dpr, Math.round(renderer.cellSize * dpr) / dpr);
   const key = `${model.topologyId}:${lod}:${visualSize}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
-    .map(({ x, y }) => `${x},${y}`)
+    .map(({ x, y, affected, hint }) => `${x},${y},${Number(affected)},${Number(hint)}`)
     .join(";")}`;
   if (key === hoverVisualKey) return;
   hoverVisualKey = key;
@@ -302,8 +321,15 @@ function updateHoverPreview(cells: ReadonlyArray<{ x: number; y: number }>): voi
     const cell = cells[index];
     if (!cell) {
       marker.classList.remove("is-visible");
+      marker.classList.remove("is-affected", "is-hint");
+      delete marker.dataset.x;
+      delete marker.dataset.y;
       continue;
     }
+    marker.dataset.x = String(cell.x);
+    marker.dataset.y = String(cell.y);
+    marker.classList.toggle("is-affected", cell.affected);
+    marker.classList.toggle("is-hint", cell.hint);
     const polygon = renderer.cellScreenPolygon(cell.x, cell.y);
     const left = Math.min(...polygon.map((point) => point.x));
     const top = Math.min(...polygon.map((point) => point.y));
@@ -364,9 +390,13 @@ function scheduleLocatorText(force = false): void {
 
 function refreshCellLocator(forceText = false, showHover = true): void {
   locatedCell = renderer.screenToCell(locatorScreen.x, locatorScreen.y);
-  const hoverCells =
+  const affectedCells =
     hoverMode === "affected" ? model.previewClickCells(locatedCell.x, locatedCell.y) : [{ ...locatedCell }];
-  updateHoverPreview(showHover && pointerOnBoard ? hoverCells : []);
+  const hintCells: Array<{ x: number; y: number }> = [];
+  if (model.topologyId !== "square") {
+    model.topology.forEachNeighbor(locatedCell.x, locatedCell.y, (x, y) => hintCells.push({ x, y }));
+  }
+  updateHoverPreview(showHover && pointerOnBoard ? affectedCells : [], showHover && pointerOnBoard ? hintCells : []);
   scheduleLocatorText(forceText);
 }
 
@@ -517,6 +547,45 @@ function newGame(mode: Mode = model.mode, topology: TopologyId = model.topologyI
   refreshCellLocator(true);
   scheduleGameSave(0);
   showToast(`${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field generated`);
+}
+
+async function switchField(mode: Mode, topology: TopologyId): Promise<void> {
+  if (fieldSwitch) await fieldSwitch;
+  if (mode === model.mode && topology === model.topologyId) return;
+  const operation = (async () => {
+    await flushGameSave(true);
+    const saved = await loadGameSlot(topology, mode);
+    const restored =
+      saved !== null &&
+      model.restoreSnapshot(saved.model) &&
+      model.mode === mode &&
+      model.topologyId === topology;
+    storageSet("infinite-mines-mode", mode);
+    storageSet("infinite-mines-topology", topology);
+    if (restored && saved) {
+      renderer.restoreView(saved.view);
+      const activated = await saveActiveGame(saved);
+      lastSavedAt = saved.savedAt;
+      persistenceStatus = activated ? "restored" : "unavailable";
+    } else {
+      model.reset(mode, randomSeed(), true, topology);
+      renderer.home();
+      await flushGameSave(true);
+    }
+    updateStats();
+    refreshCellLocator(true);
+    showToast(
+      restored
+        ? `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field restored`
+        : `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field generated`,
+    );
+  })();
+  fieldSwitch = operation;
+  try {
+    await operation;
+  } finally {
+    if (fieldSwitch === operation) fieldSwitch = null;
+  }
 }
 
 function goHome(): void {
@@ -828,12 +897,12 @@ element<HTMLButtonElement>("#help-button").addEventListener("click", () => helpD
 element<HTMLButtonElement>("#help-close").addEventListener("click", () => helpDialog.close());
 cellLocator.addEventListener("click", () => void copyCellReference());
 
-element("#difficulty-list").addEventListener("click", (event) => {
+difficultyList.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-mode]");
   if (!button) return;
   const mode = button.dataset.mode as Mode;
   settingsDialog.close();
-  newGame(mode);
+  void switchField(mode, model.topologyId);
 });
 
 topologyOptions.addEventListener("click", (event) => {
@@ -841,7 +910,7 @@ topologyOptions.addEventListener("click", (event) => {
   if (!button || !isTopologyId(button.dataset.topology)) return;
   if (button.dataset.topology === model.topologyId) return;
   settingsDialog.close();
-  newGame(model.mode, button.dataset.topology);
+  void switchField(model.mode, button.dataset.topology);
 });
 
 controlOptions.addEventListener("click", (event) => {
@@ -889,7 +958,7 @@ document.addEventListener("keydown", (event) => {
     mobileTool.click();
   } else if (/^[1-5]$/.test(key)) {
     resetAutoHideCounter();
-    newGame(MODES[Number(key) - 1]);
+    void switchField(MODES[Number(key) - 1], model.topologyId);
   }
 });
 

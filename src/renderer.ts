@@ -225,18 +225,34 @@ uniform vec2 u_cameraWorld;
 uniform float u_cellSize;
 
 out vec2 v_local;
+out vec2 v_spriteOffset;
 flat out float v_sprite;
 flat out float v_artifact;
 flat out float v_shape;
 flat out float v_edges;
 
 void main() {
+  int shape = int(a_shapeEdges.x + 0.5);
   vec2 local = a_corner * 2.0 - 1.0;
+  if (shape == 3) {
+    // A rhombus vertex sits on the edge of this instanced bounding quad. Grow
+    // only the carrier quad so the fragment shader, which still clips to the
+    // exact diamond, can own every shared-vertex device pixel.
+    vec2 carrierMargin = vec2(
+      2.0 / max(u_cellSize * length(a_centerAxisU.zw), 1.0),
+      2.0 / max(u_cellSize * length(a_axisVState.xy), 1.0)
+    );
+    local *= 1.0 + carrierMargin;
+  }
   vec2 world = a_centerAxisU.xy + local.x * a_centerAxisU.zw + local.y * a_axisVState.xy;
+  vec2 spriteCenter = a_centerAxisU.xy;
+  if (shape == 1) spriteCenter += a_axisVState.xy / 3.0;
+  if (shape == 2) spriteCenter -= a_axisVState.xy / 3.0;
   vec2 pixel = u_viewport * 0.5 + (world - u_cameraWorld) * u_cellSize;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_local = local;
+  v_spriteOffset = world - spriteCenter;
   v_sprite = a_axisVState.z;
   v_artifact = a_axisVState.w;
   v_shape = a_shapeEdges.x;
@@ -259,6 +275,7 @@ uniform float u_dpr;
 uniform float u_cellSize;
 
 in vec2 v_local;
+in vec2 v_spriteOffset;
 flat in float v_sprite;
 flat in float v_artifact;
 flat in float v_shape;
@@ -295,11 +312,16 @@ void main() {
     float edge1 = 1.0 - v_local.x + v_local.y;
     float edge2 = 1.0 - v_local.x - v_local.y;
     float edge3 = 1.0 + v_local.x - v_local.y;
-    inside = edge0 >= 0.0 && edge1 >= 0.0 && edge2 >= 0.0 && edge3 >= 0.0;
-    includeEdge(edge0, 1, edges, edgePixels);
-    includeEdge(edge1, 2, edges, edgePixels);
-    includeEdge(edge2, 4, edges, edgePixels);
-    includeEdge(edge3, 8, edges, edgePixels);
+    float ownershipTolerance = max(max(fwidth(edge0), fwidth(edge1)), max(fwidth(edge2), fwidth(edge3))) * 0.75;
+    bool withinCoverage = min(min(edge0, edge1), min(edge2, edge3)) >= -ownershipTolerance;
+    // Draw the same centered border from both incident rhombi. Their expanded
+    // carrier quads overlap only in this narrow strip, so draw order cannot
+    // reveal the clear color at diagonal edges or six-way vertices.
+    inside = withinCoverage;
+    edgePixels = min(
+      min(abs(edge0) / max(fwidth(edge0), 0.000001), abs(edge1) / max(fwidth(edge1), 0.000001)),
+      min(abs(edge2) / max(fwidth(edge2), 0.000001), abs(edge3) / max(fwidth(edge3), 0.000001))
+    ) * 2.0;
   }
   if (!inside) discard;
 
@@ -312,14 +334,16 @@ void main() {
 
   int stateIndex = int(clamp(v_sprite, 0.0, ${EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
-  vec2 uv = clamp(v_local * 0.78 + 0.5, 0.0, 1.0);
+  float contentExtent = shape == 3 ? 0.85 : 0.62;
+  vec2 contentLocal = v_spriteOffset / contentExtent;
+  vec2 uv = clamp(contentLocal + 0.5, 0.0, 1.0);
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
   vec3 detailed = mix(detailedBase, glyph.rgb, glyph.a);
 
   if (v_artifact > 0.5) {
-    vec2 rotated = vec2(v_local.x + v_local.y, v_local.y - v_local.x) * 0.707107;
+    vec2 rotated = vec2(contentLocal.x + contentLocal.y, contentLocal.y - contentLocal.x) * 0.707107;
     float square = max(abs(rotated.x), abs(rotated.y));
     if (square < 0.27) detailed = u_artifactEdge;
     if (square < 0.22) detailed = u_artifact;
@@ -1303,6 +1327,22 @@ export class WebGLRenderer {
     this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
       if (index + GENERIC_INSTANCE_FLOATS > instances.length) return;
       const geometry = topology.geometry(x, y);
+      let drawCenterX = geometry.center.x;
+      let drawCenterY = geometry.center.y;
+      if (geometry.shape === "triangle-up" || geometry.shape === "triangle-down") {
+        let geometryMinX = geometry.vertices[0].x;
+        let geometryMaxX = geometry.vertices[0].x;
+        let geometryMinY = geometry.vertices[0].y;
+        let geometryMaxY = geometry.vertices[0].y;
+        for (let vertex = 1; vertex < geometry.vertices.length; vertex += 1) {
+          geometryMinX = Math.min(geometryMinX, geometry.vertices[vertex].x);
+          geometryMaxX = Math.max(geometryMaxX, geometry.vertices[vertex].x);
+          geometryMinY = Math.min(geometryMinY, geometry.vertices[vertex].y);
+          geometryMaxY = Math.max(geometryMaxY, geometry.vertices[vertex].y);
+        }
+        drawCenterX = (geometryMinX + geometryMaxX) / 2;
+        drawCenterY = (geometryMinY + geometryMaxY) / 2;
+      }
       const edgeNeighbors = topology.edgeNeighbors(x, y);
       let edges = 0;
       for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
@@ -1315,8 +1355,8 @@ export class WebGLRenderer {
         }
       }
       const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
-      instances[index++] = geometry.center.x - anchor.x;
-      instances[index++] = geometry.center.y - anchor.y;
+      instances[index++] = drawCenterX - anchor.x;
+      instances[index++] = drawCenterY - anchor.y;
       instances[index++] = geometry.axisU.x;
       instances[index++] = geometry.axisU.y;
       instances[index++] = geometry.axisV.x;

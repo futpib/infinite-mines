@@ -15,6 +15,11 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
 
   await page.getByRole("button", { name: "Game settings" }).click();
   await expect(page.locator("#topology-options button")).toHaveCount(3);
+  expect(await page.locator("#topology-options button b").allTextContents()).toEqual([
+    "Square",
+    "Rhombille",
+    "Triangular",
+  ]);
   await expect(page.getByRole("button", { name: /Square/ })).toHaveAttribute("aria-pressed", "true");
   const squareField = await page.evaluate(() => ({
     seed: window.__infiniteMines.model.seed,
@@ -116,6 +121,7 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
 
   await page.getByRole("button", { name: "Game settings" }).click();
   await page.getByRole("button", { name: /Rhombille/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("rhombille");
   const rhombille = await page.evaluate(() => {
     const api = window.__infiniteMines;
     const neighbors: Array<{ x: number; y: number }> = [];
@@ -159,7 +165,9 @@ test("R37 — v1 saved fields migrate to Square and v2 topology damage matches a
     });
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction("sessions", "readwrite");
-      transaction.objectStore("sessions").put(
+      const store = transaction.objectStore("sessions");
+      store.clear();
+      store.put(
         { version: 1, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() },
         "active",
       );
@@ -170,6 +178,20 @@ test("R37 — v1 saved fields migrate to Square and v2 topology damage matches a
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   expect(await page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("square");
+  expect(
+    await page.evaluate(
+      () =>
+        new Promise<IDBValidKey[]>((resolve, reject) => {
+          const open = indexedDB.open("infinite-mines", 1);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const keys = open.result.transaction("sessions").objectStore("sessions").getAllKeys();
+            keys.onerror = () => reject(keys.error);
+            keys.onsuccess = () => resolve(keys.result);
+          };
+        }),
+    ),
+  ).toEqual(expect.arrayContaining(["active-slot", "field:square:beginner"]));
 
   await page.evaluate(() => window.__infiniteMines.newGame("master", "rhombille"));
   const beforePrepared = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
@@ -275,5 +297,150 @@ test("R37 — dense Triangular and Rhombille fields retain one-draw, no-upload c
     expect(report.after.drawCalls).toBe(1);
     expect(report.intervalP95).toBeGreaterThan(0);
     expect(report.renderP95).toBeLessThan(35);
+  }
+});
+
+test("R38 — every topology tessellates without background cracks and Rhombille content stays upright", async ({
+  page,
+}) => {
+  await openDeterministicGame(page, 0x5ea1_5afe);
+  for (const topology of ["square", "triangular", "rhombille"] as const) {
+    const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await page.evaluate(
+      ({ topologyId, opened }) => {
+        const api = window.__infiniteMines;
+        api.model.reset("master", 0x5ea1_5afe, false, topologyId);
+        api.model.store.clear();
+        const bounds =
+          topologyId === "square"
+            ? { minX: -40, maxX: 40, minY: -28, maxY: 28 }
+            : topologyId === "triangular"
+              ? { minX: -90, maxX: 90, minY: -35, maxY: 35 }
+              : { minX: -100, maxX: 100, minY: -32, maxY: 32 };
+        for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+          for (let x = bounds.minX; x <= bounds.maxX; x += 1) api.model.store.set(x, y, opened);
+        }
+        api.renderer.restoreView({ version: 1, zoom: 1.7, panX: 0.37, panY: 0.61 });
+      },
+      { topologyId: topology, opened: CellState.Opened },
+    );
+    await waitForNextFrame(page, previousFrame);
+    const coverage = await page.evaluate(() => {
+      const api = window.__infiniteMines;
+      const gl = api.renderer.gl;
+      const { width, height } = api.renderer.canvas;
+      const pixels = new Uint8Array(width * height * 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      const background = api
+        .diagnostics()
+        .backgroundColor.slice(1)
+        .match(/.{2}/g)!
+        .map((channel) => Number.parseInt(channel, 16));
+      const dpr = api.renderer.diagnostics.pixelRatio;
+      const sampleWidth = Math.round(320 * dpr);
+      const sampleHeight = Math.round(240 * dpr);
+      const startX = Math.round((width - sampleWidth) / 2);
+      const startY = Math.round((height - sampleHeight) / 2);
+      let backgroundPixels = 0;
+      for (let y = startY; y < startY + sampleHeight; y += 1) {
+        for (let x = startX; x < startX + sampleWidth; x += 1) {
+          const pixel = (y * width + x) * 4;
+          if (
+            pixels[pixel] === background[0] &&
+            pixels[pixel + 1] === background[1] &&
+            pixels[pixel + 2] === background[2]
+          ) {
+            backgroundPixels += 1;
+          }
+        }
+      }
+      return { backgroundPixels, sampledPixels: sampleWidth * sampleHeight };
+    });
+    expect(coverage.backgroundPixels, `${topology} background cracks`).toBe(0);
+  }
+
+  const glyphMoments: Array<{ count: number; varianceX: number; varianceY: number }> = [];
+  for (const x of [0, 1, 2]) {
+    const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await page.evaluate(
+      ({ cellX, opened1 }) => {
+        const api = window.__infiniteMines;
+        api.model.reset("master", 0x5ea1_5afe, false, "rhombille");
+        api.model.store.clear();
+        api.model.store.set(cellX, 0, opened1);
+        api.renderer.restoreView({ version: 1, zoom: 2, panX: 0.37, panY: 0.61 });
+      },
+      { cellX: x, opened1: CellState.Opened1 },
+    );
+    await waitForNextFrame(page, previousFrame);
+    glyphMoments.push(
+      await page.evaluate((cellX) => {
+        const api = window.__infiniteMines;
+        const gl = api.renderer.gl;
+        const { width, height } = api.renderer.canvas;
+        const dpr = api.renderer.diagnostics.pixelRatio;
+        const pixels = new Uint8Array(width * height * 4);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        const polygon = api.renderer.cellScreenPolygon(cellX, 0);
+        const minX = Math.floor(Math.min(...polygon.map((point) => point.x)) * dpr);
+        const maxX = Math.ceil(Math.max(...polygon.map((point) => point.x)) * dpr);
+        const minY = Math.floor(Math.min(...polygon.map((point) => point.y)) * dpr);
+        const maxY = Math.ceil(Math.max(...polygon.map((point) => point.y)) * dpr);
+        const points: Array<[number, number]> = [];
+        for (let screenY = minY; screenY <= maxY; screenY += 1) {
+          for (let screenX = minX; screenX <= maxX; screenX += 1) {
+            const glY = height - 1 - screenY;
+            if (screenX < 0 || screenX >= width || glY < 0 || glY >= height) continue;
+            const pixel = (glY * width + screenX) * 4;
+            const red = pixels[pixel];
+            const green = pixels[pixel + 1];
+            const blue = pixels[pixel + 2];
+            if (blue > red + 35 && blue > green + 20) points.push([screenX / dpr, screenY / dpr]);
+          }
+        }
+        const meanX = points.reduce((sum, point) => sum + point[0], 0) / points.length;
+        const meanY = points.reduce((sum, point) => sum + point[1], 0) / points.length;
+        return {
+          count: points.length,
+          varianceX: points.reduce((sum, point) => sum + (point[0] - meanX) ** 2, 0) / points.length,
+          varianceY: points.reduce((sum, point) => sum + (point[1] - meanY) ** 2, 0) / points.length,
+        };
+      }, x),
+    );
+  }
+  for (const moments of glyphMoments) {
+    expect(moments.count).toBeGreaterThan(25);
+    expect(moments.varianceY / moments.varianceX).toBeGreaterThan(1.4);
+  }
+});
+
+test("R39 — non-square hover separates hint neighborhoods from click effects without WebGL work", async ({
+  page,
+}) => {
+  await openDeterministicGame(page, 0x417e_c7ed);
+  for (const topology of ["rhombille", "triangular"] as const) {
+    await page.evaluate((topologyId) => {
+      const api = window.__infiniteMines;
+      api.model.reset("master", 0x417e_c7ed, false, topologyId);
+      api.renderer.home();
+    }, topology);
+    const center = await worldPoint(page, { x: 0, y: 0 });
+    const frameBeforeHover = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await page.mouse.move(center.x + 40, center.y);
+    await page.mouse.move(center.x, center.y);
+    const expectedCells = topology === "triangular" ? 13 : 11;
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(expectedCells);
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 1);
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);
+    const colors = await page.locator("#hover-overlay .hover-cell.is-visible").evaluateAll((markers) => ({
+      affected: getComputedStyle(markers.find((marker) => marker.classList.contains("is-affected"))!).backgroundColor,
+      hint: getComputedStyle(markers.find((marker) => marker.classList.contains("is-hint"))!).backgroundColor,
+    }));
+    expect(colors.hint).not.toBe(colors.affected);
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(frameBeforeHover);
+
+    await page.getByRole("button", { name: "Hide controls" }).click();
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 1);
+    await page.getByRole("button", { name: "Show controls" }).click();
   }
 });

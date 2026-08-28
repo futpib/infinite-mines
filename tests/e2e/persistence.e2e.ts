@@ -64,22 +64,31 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
   );
   const databaseRecord = await page.evaluate(
     () =>
-      new Promise<{ version: number; cellBytes: number; records: number }>((resolve, reject) => {
+      new Promise<{ version: number; cellBytes: number; records: number; active: string }>((resolve, reject) => {
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
-          const get = open.result.transaction("sessions").objectStore("sessions").get("active");
-          get.onerror = () => reject(get.error);
-          get.onsuccess = () =>
-            resolve({
-              version: get.result.version,
-              cellBytes: get.result.model.cells.byteLength,
-              records: get.result.model.cells.byteLength / 9,
-            });
+          const transaction = open.result.transaction("sessions");
+          const store = transaction.objectStore("sessions");
+          const active = store.get("active-slot");
+          active.onerror = () => reject(active.error);
+          active.onsuccess = () => {
+            const key = `field:${active.result.topology}:${active.result.mode}`;
+            const get = store.get(key);
+            get.onerror = () => reject(get.error);
+            get.onsuccess = () =>
+              resolve({
+                version: get.result.version,
+                cellBytes: get.result.model.cells.byteLength,
+                records: get.result.model.cells.byteLength / 9,
+                active: key,
+              });
+          };
         };
       }),
   );
   expect(databaseRecord.version).toBe(2);
+  expect(databaseRecord.active).toBe("field:square:beginner");
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
 
@@ -109,23 +118,144 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
   expect(after).toEqual(before);
 });
 
-test("R09 — starting a new density replaces the saved session atomically", async ({ page }) => {
+test("R40 — every topology and difficulty restores its own field, progress, and viewport", async ({ page }) => {
   await openDeterministicGame(page);
-  expect(await page.evaluate(() => window.__infiniteMines.model.cycleMark(500, 500).changed)).toBe(1);
-  expect(await page.evaluate(() => window.__infiniteMines.model.getState(500, 500))).toBe(10);
+  const capture = async (cell: { x: number; y: number }) =>
+    page.evaluate((target) => {
+      const api = window.__infiniteMines;
+      return {
+        topology: api.model.topologyId,
+        mode: api.model.mode,
+        seed: api.model.seed,
+        score: api.model.score,
+        stored: api.model.store.nonZeroCells,
+        state: api.model.getState(target.x, target.y),
+        view: api.renderer.createViewSnapshot(),
+      };
+    }, cell);
+  const switchChoice = async (name: RegExp) => {
+    await page.getByRole("button", { name: "Game settings" }).click();
+    await page.getByRole("button", { name }).click();
+  };
+
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.model.cycleMark(500, 500);
+    api.renderer.restoreView({ version: 1, panX: 123.5, panY: -77.25, zoom: 1.4 });
+  });
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  const squareBeginner = await capture({ x: 500, y: 500 });
+
+  await switchChoice(/Master/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.model.cycleMark(600, 600);
+    api.renderer.restoreView({ version: 1, panX: -211.75, panY: 95.5, zoom: 0.8 });
+  });
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  const squareMaster = await capture({ x: 600, y: 600 });
+
+  await switchChoice(/Rhombille/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("rhombille");
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.model.cycleMark(700, 700);
+    api.renderer.restoreView({ version: 1, panX: 48.25, panY: 310.75, zoom: 1.9 });
+  });
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  const rhombilleMaster = await capture({ x: 700, y: 700 });
+
+  await switchChoice(/Square/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("square");
+  expect(await capture({ x: 600, y: 600 })).toEqual(squareMaster);
+
+  await switchChoice(/Beginner/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("beginner");
+  expect(await capture({ x: 500, y: 500 })).toEqual(squareBeginner);
+
+  await switchChoice(/Rhombille/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("rhombille");
+  await switchChoice(/Master/);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
+  expect(await capture({ x: 700, y: 700 })).toEqual(rhombilleMaster);
+
+  const slots = await page.evaluate(
+    () =>
+      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string } }>((resolve, reject) => {
+        const open = indexedDB.open("infinite-mines", 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const store = open.result.transaction("sessions").objectStore("sessions");
+          const keys = store.getAllKeys();
+          const active = store.get("active-slot");
+          keys.onerror = () => reject(keys.error);
+          active.onerror = () => reject(active.error);
+          let resultKeys: IDBValidKey[] | null = null;
+          let resultActive: { topology: string; mode: string } | null = null;
+          const finish = () => {
+            if (resultKeys && resultActive) resolve({ keys: resultKeys, active: resultActive });
+          };
+          keys.onsuccess = () => {
+            resultKeys = keys.result;
+            finish();
+          };
+          active.onsuccess = () => {
+            resultActive = active.result;
+            finish();
+          };
+        };
+      }),
+  );
+  expect(slots.keys).toEqual(
+    expect.arrayContaining([
+      "active-slot",
+      "field:square:beginner",
+      "field:square:master",
+      "field:rhombille:beginner",
+      "field:rhombille:master",
+    ]),
+  );
+  expect(slots.active).toEqual({ version: 1, topology: "rhombille", mode: "master" });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await capture({ x: 700, y: 700 })).toEqual(rhombilleMaster);
+});
+
+test("R40 — Restart replaces only the active topology and difficulty slot", async ({ page }) => {
+  await openDeterministicGame(page);
+  await page.evaluate(() => {
+    window.__infiniteMines.model.cycleMark(500, 500);
+    return window.__infiniteMines.flushSave();
+  });
   await page.getByRole("button", { name: "Game settings" }).click();
   await page.getByRole("button", { name: /Master/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("saved");
-  expect(await page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
+  const oldMasterSeed = await page.evaluate(() => window.__infiniteMines.model.seed);
+  await page.evaluate((nextSeed) => {
+    Object.defineProperty(globalThis.crypto, "getRandomValues", {
+      configurable: true,
+      value: (array: Uint32Array) => {
+        array.fill(nextSeed);
+        return array;
+      },
+    });
+  }, (oldMasterSeed ^ 0xa5a5_a5a5) >>> 0);
+  await page.locator("#restart-button").click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.seed)).not.toBe(oldMasterSeed);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("1");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("beginner");
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(500, 500))).toBe(10);
+  await page.keyboard.press("2");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
+  expect(await page.evaluate(() => window.__infiniteMines.model.seed)).not.toBe(oldMasterSeed);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual({
     version: 1,
     panX: 0,
     panY: 0,
     zoom: 1,
   });
-
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
-  expect(await page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
-  expect(await page.evaluate(() => window.__infiniteMines.model.getState(500, 500))).toBe(0);
 });
