@@ -112,12 +112,18 @@ flat out float v_edges;
 void main() {
   vec2 start = u_viewport * 0.5 + (a_cell.xy - u_cameraCell) * u_cellSize;
   vec2 end = u_viewport * 0.5 + (a_cell.xy - u_cameraCell + 1.0) * u_cellSize;
-  start = floor(start * u_dpr + 0.5) / u_dpr;
-  end = floor(end * u_dpr + 0.5) / u_dpr;
-  vec2 pixel = mix(start, end, a_corner);
+  vec2 startDevice = floor(start * u_dpr + 0.5);
+  vec2 endDevice = floor(end * u_dpr + 0.5);
+  int edges = int(a_edges + 0.5);
+  vec2 extensionDevice = vec2(
+    (edges & 4) != 0 ? u_dpr : 0.0,
+    (edges & 8) != 0 ? u_dpr : 0.0
+  );
+  vec2 drawPixelDevice = mix(startDevice, endDevice + extensionDevice, a_corner);
+  vec2 pixel = drawPixelDevice / u_dpr;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
-  v_cellUv = a_corner;
+  v_cellUv = (drawPixelDevice - startDevice) / max(endDevice - startDevice, vec2(1.0));
   v_sprite = a_cell.z;
   v_artifact = a_cell.w;
   v_edges = a_edges;
@@ -132,6 +138,7 @@ uniform vec3 u_artifactEdge;
 uniform vec3 u_lodArtifact;
 uniform vec3 u_cell;
 uniform vec3 u_cellBorder;
+uniform vec3 u_background;
 uniform vec3 u_marked;
 uniform vec3 u_exploded;
 uniform vec3 u_lodColors[12];
@@ -145,22 +152,20 @@ flat in float v_edges;
 out vec4 outColor;
 
 void main() {
+  int edges = int(v_edges + 0.5);
+  bool insideCell = v_cellUv.x >= 0.0 && v_cellUv.y >= 0.0 && v_cellUv.x < 1.0 && v_cellUv.y < 1.0;
+  bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
   vec3 fill = v_sprite == 11.0 ? u_exploded : (v_sprite >= 9.0 ? u_marked : u_cell);
   vec3 base = fill;
   if (u_cellSize >= 3.0) {
     vec2 pixelWidth = max(fwidth(v_cellUv), vec2(0.000001));
-    vec4 edgeDistance = vec4(
+    vec2 edgeDistance = vec2(
       v_cellUv.y / pixelWidth.y,
-      v_cellUv.x / pixelWidth.x,
-      (1.0 - v_cellUv.x) / pixelWidth.x,
-      (1.0 - v_cellUv.y) / pixelWidth.y
+      v_cellUv.x / pixelWidth.x
     );
-    int edges = int(v_edges + 0.5);
     float innerDistance = 100000.0;
     if ((edges & 1) != 0) innerDistance = min(innerDistance, edgeDistance.x);
     if ((edges & 2) != 0) innerDistance = min(innerDistance, edgeDistance.y);
-    if ((edges & 4) != 0) innerDistance = min(innerDistance, edgeDistance.z);
-    if ((edges & 8) != 0) innerDistance = min(innerDistance, edgeDistance.w);
     float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, innerDistance);
     base = mix(u_cellBorder, fill, fillMix);
   }
@@ -168,12 +173,13 @@ void main() {
   int stateIndex = int(clamp(v_sprite, 0.0, 11.0) + 0.5);
   vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
 
-  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + v_cellUv * float(${SPRITE_PIXELS - 1}) + 0.5;
+  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
+  if (!insideCell) glyph.a = 0.0;
   vec4 color = vec4(mix(base, glyph.rgb, glyph.a), 1.0);
 
-  if (v_artifact > 0.5) {
+  if (v_artifact > 0.5 && insideCell) {
     vec2 centered = v_cellUv - 0.5;
     vec2 rotated = vec2(centered.x + centered.y, centered.y - centered.x) * 0.707107;
     float square = max(abs(rotated.x), abs(rotated.y));
@@ -182,6 +188,10 @@ void main() {
   }
 
   float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
+  if (outerBorder) {
+    outColor = vec4(mix(u_background, u_cellBorder, detailMix), 1.0);
+    return;
+  }
   outColor = vec4(mix(stateColor, color.rgb, detailMix), 1.0);
 }`;
 
@@ -267,6 +277,7 @@ interface GlResources {
   lodArtifactUniform: WebGLUniformLocation;
   cellUniform: WebGLUniformLocation;
   cellBorderUniform: WebGLUniformLocation;
+  backgroundUniform: WebGLUniformLocation;
   markedUniform: WebGLUniformLocation;
   explodedUniform: WebGLUniformLocation;
   lodColorsUniform: WebGLUniformLocation;
@@ -1032,6 +1043,8 @@ export class WebGLRenderer {
         const localY = tile.cells[source + 1];
         const worldX = tile.worldOriginX + localX;
         const worldY = tile.worldOriginY + localY;
+        // Every grid line belongs to the cell below/right of it. Exposed right/bottom
+        // lines are therefore extended into the otherwise unrendered neighbor.
         let edges = 1 | 2;
         if (!this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
         if (!this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
@@ -1292,6 +1305,7 @@ export class WebGLRenderer {
       lodArtifactUniform: requireUniform(gl, program, "u_lodArtifact"),
       cellUniform: requireUniform(gl, program, "u_cell"),
       cellBorderUniform: requireUniform(gl, program, "u_cellBorder"),
+      backgroundUniform: requireUniform(gl, program, "u_background"),
       markedUniform: requireUniform(gl, program, "u_marked"),
       explodedUniform: requireUniform(gl, program, "u_exploded"),
       lodColorsUniform: requireUniform(gl, program, "u_lodColors[0]"),
@@ -1326,6 +1340,7 @@ export class WebGLRenderer {
     gl.uniform3fv(resources.lodArtifactUniform, artifactLod);
     gl.uniform3fv(resources.cellUniform, cell);
     gl.uniform3fv(resources.cellBorderUniform, hexToRgb(this.theme.cellBorder));
+    gl.uniform3fv(resources.backgroundUniform, this.theme.backgroundRgb);
     gl.uniform3fv(resources.markedUniform, hexToRgb(this.theme.marked));
     gl.uniform3fv(resources.explodedUniform, hexToRgb(this.theme.exploded));
     gl.uniform3fv(resources.lodColorsUniform, lodColors);

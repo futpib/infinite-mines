@@ -584,3 +584,148 @@ test("R34 — cell damage and integral pans preserve untouched framebuffer pixel
   expect(result.densePanChanged).toBe(true);
   expect(result.densePanMatchesFull).toBe(true);
 });
+
+test("R36 — covered/open boundary corners stay on one device-pixel lattice", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor: 3 });
+  const page = await context.newPage();
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  try {
+    await openDeterministicGame(page);
+    const result = await page.evaluate(async () => {
+      const api = window.__infiniteMines;
+      const renderer = api.renderer;
+      const gl = renderer.gl;
+      const canvas = document.querySelector<HTMLCanvasElement>("#board");
+      if (!canvas) throw new Error("Missing board");
+      const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const equalFrames = (left: Uint8Array, right: Uint8Array) => {
+        if (left.length !== right.length) return false;
+        for (let index = 0; index < left.length; index += 1) {
+          if (left[index] !== right[index]) return false;
+        }
+        return true;
+      };
+      const readFrame = () => {
+        const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+        gl.finish();
+        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        return pixels;
+      };
+
+      api.model.store.clear();
+      // An L opening whose vertical boundary switches from exposed to shared.
+      api.model.store.set(0, 0, 1);
+      api.model.store.set(0, 1, 1);
+      api.model.store.set(1, 1, 1);
+      // Its rotated counterpart exercises the same ownership transition horizontally.
+      api.model.store.set(4, 0, 1);
+      api.model.store.set(5, 0, 1);
+      api.model.store.set(5, 1, 1);
+
+      const borderHex = getComputedStyle(document.documentElement).getPropertyValue("--board-cell-border").trim();
+      const border = [
+        Number.parseInt(borderHex.slice(1, 3), 16),
+        Number.parseInt(borderHex.slice(3, 5), 16),
+        Number.parseInt(borderHex.slice(5, 7), 16),
+      ];
+      const bounds = canvas.getBoundingClientRect();
+      const dpr = canvas.width / bounds.width;
+      const isBorder = (x: number, topY: number) => {
+        const pixel = new Uint8Array(4);
+        gl.readPixels(x, canvas.height - 1 - topY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        return Math.hypot(pixel[0] - border[0], pixel[1] - border[1], pixel[2] - border[2]) < 45;
+      };
+      const borderRun = (axis: "x" | "y", edgeCss: number, sampleCss: number) => {
+        gl.finish();
+        const edge = Math.floor(edgeCss * dpr + 0.5);
+        const sample = Math.floor(sampleCss * dpr);
+        const radius = Math.ceil(3 * dpr);
+        const matches: number[] = [];
+        for (let position = edge - radius; position <= edge + radius; position += 1) {
+          const x = axis === "x" ? position : sample;
+          const y = axis === "x" ? sample : position;
+          if (isBorder(x, y)) matches.push(position);
+        }
+        const runs: number[][] = [];
+        for (const position of matches) {
+          const run = runs.at(-1);
+          if (!run || position !== run.at(-1)! + 1) runs.push([position]);
+          else run.push(position);
+        }
+        const nearest = runs.sort((left, right) => {
+          const leftCenter = (left[0] + left.at(-1)! + 1) / 2;
+          const rightCenter = (right[0] + right.at(-1)! + 1) / 2;
+          return Math.abs(leftCenter - edge) - Math.abs(rightCenter - edge);
+        })[0];
+        if (!nearest) throw new Error(`No ${axis}-axis border run near ${edgeCss}`);
+        return {
+          width: nearest.length,
+          center: (nearest[0] + nearest.at(-1)! + 1) / 2 / dpr,
+        };
+      };
+
+      const samples: Array<{
+        cellSize: number;
+        verticalShift: number;
+        horizontalShift: number;
+        verticalWidths: number[];
+        horizontalWidths: number[];
+      }> = [];
+      for (const view of [
+        { cellSize: 25, panX: 0.25, panY: 0.75 },
+        { cellSize: 34.25, panX: -0.35, panY: 0.2 },
+        { cellSize: 8, panX: 0.4, panY: -0.3 },
+      ]) {
+        renderer.restoreView({ version: 1, zoom: view.cellSize / 25, panX: view.panX, panY: view.panY });
+        await settle();
+        const centerX = bounds.width / 2 + view.panX;
+        const centerY = bounds.height / 2 + view.panY;
+        const verticalEdge = centerX + view.cellSize * 0.5;
+        const verticalTop = borderRun("x", verticalEdge, centerY);
+        const verticalBottom = borderRun("x", verticalEdge, centerY + view.cellSize);
+        const horizontalEdge = centerY + view.cellSize * 0.5;
+        const horizontalLeft = borderRun("y", horizontalEdge, centerX + view.cellSize * 4);
+        const horizontalRight = borderRun("y", horizontalEdge, centerX + view.cellSize * 5);
+        samples.push({
+          cellSize: view.cellSize,
+          verticalShift: verticalBottom.center - verticalTop.center,
+          horizontalShift: horizontalRight.center - horizontalLeft.center,
+          verticalWidths: [verticalTop.width, verticalBottom.width],
+          horizontalWidths: [horizontalLeft.width, horizontalRight.width],
+        });
+      }
+
+      renderer.restoreView({ version: 1, zoom: 1, panX: 0.25, panY: 0.75 });
+      await settle();
+      api.model.store.set(1, 0, 1);
+      renderer.requestRender({ minX: 1, minY: 0, maxX: 1, maxY: 0 });
+      await settle();
+      const damageDiagnostics = api.diagnostics();
+      const damageFrame = readFrame();
+      renderer.requestRender();
+      await settle();
+      const forcedFrame = readFrame();
+
+      return {
+        dpr,
+        samples,
+        damageMode: damageDiagnostics.redrawMode,
+        damageMatchesFull: equalFrames(damageFrame, forcedFrame),
+      };
+    });
+
+    expect(result.dpr).toBe(2);
+    for (const sample of result.samples) {
+      expect(sample.verticalWidths, `vertical widths at ${sample.cellSize}px`).toEqual([result.dpr, result.dpr]);
+      expect(sample.horizontalWidths, `horizontal widths at ${sample.cellSize}px`).toEqual([result.dpr, result.dpr]);
+      expect(sample.verticalShift, `vertical corner shift at ${sample.cellSize}px`).toBeCloseTo(0, 8);
+      expect(sample.horizontalShift, `horizontal corner shift at ${sample.cellSize}px`).toBeCloseTo(0, 8);
+    }
+    expect(result.damageMode).toBe("damage");
+    expect(result.damageMatchesFull).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
