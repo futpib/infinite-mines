@@ -337,6 +337,8 @@ export class WebGLRenderer {
   private theme: RenderTheme;
   private width = 1;
   private height = 1;
+  private viewportOffsetX = 0;
+  private viewportOffsetY = 0;
   private dpr = 1;
   private displayDpr = 1;
   private dragging = false;
@@ -440,6 +442,14 @@ export class WebGLRenderer {
     this.requestRender();
   }
 
+  setViewportOffset(offsetX: number, offsetY: number): void {
+    if (offsetX === this.viewportOffsetX && offsetY === this.viewportOffsetY) return;
+    this.viewportOffsetX = offsetX;
+    this.viewportOffsetY = offsetY;
+    this.range = null;
+    this.requestRender();
+  }
+
   home(): void {
     this.panX = 0;
     this.panY = 0;
@@ -468,21 +478,23 @@ export class WebGLRenderer {
 
   zoomAt(screenX: number, screenY: number, factor: number): void {
     const previousSize = this.cellSize;
-    const worldX = (screenX - this.width / 2 - this.panX) / previousSize + 0.5;
-    const worldY = (screenY - this.height / 2 - this.panY) / previousSize + 0.5;
+    const effectivePanX = this.panX + this.viewportOffsetX;
+    const effectivePanY = this.panY + this.viewportOffsetY;
+    const worldX = (screenX - this.width / 2 - effectivePanX) / previousSize + 0.5;
+    const worldY = (screenY - this.height / 2 - effectivePanY) / previousSize + 0.5;
     const nextZoom = Math.max(MIN_ZOOM, Math.min(2.2, this.zoom * factor));
     if (nextZoom === this.zoom) return;
     this.zoom = nextZoom;
     const nextSize = this.cellSize;
-    this.panX = screenX - this.width / 2 - (worldX - 0.5) * nextSize;
-    this.panY = screenY - this.height / 2 - (worldY - 0.5) * nextSize;
+    this.panX = screenX - this.width / 2 - (worldX - 0.5) * nextSize - this.viewportOffsetX;
+    this.panY = screenY - this.height / 2 - (worldY - 0.5) * nextSize - this.viewportOffsetY;
     this.requestRender();
   }
 
   screenToCell(screenX: number, screenY: number): { x: number; y: number } {
     return {
-      x: Math.floor((screenX - this.width / 2 - this.panX) / this.cellSize + 0.5),
-      y: Math.floor((screenY - this.height / 2 - this.panY) / this.cellSize + 0.5),
+      x: Math.floor((screenX - this.width / 2 - this.panX - this.viewportOffsetX) / this.cellSize + 0.5),
+      y: Math.floor((screenY - this.height / 2 - this.panY - this.viewportOffsetY) / this.cellSize + 0.5),
     };
   }
 
@@ -523,8 +535,8 @@ export class WebGLRenderer {
       this.cachedGeneration = this.model.store.generation;
     }
 
-    const centerWorldX = 0.5 - this.panX / cellSize;
-    const centerWorldY = 0.5 - this.panY / cellSize;
+    const centerWorldX = 0.5 - (this.panX + this.viewportOffsetX) / cellSize;
+    const centerWorldY = 0.5 - (this.panY + this.viewportOffsetY) / cellSize;
     const detailMix = this.detailMix(cellSize);
     const pixelLod = cellSize <= SPARSE_LOD_THRESHOLD;
     let anchorX: number;

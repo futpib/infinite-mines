@@ -46,6 +46,7 @@
   --board-number-6: #00777e;
   --board-number-7: #343a3d;
   --board-number-8: #5d526b;
+  --topbar-height: 64px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -135,7 +136,7 @@ a:focus-visible {
   z-index: 20;
   display: flex;
   align-items: center;
-  height: 64px;
+  height: var(--topbar-height);
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
@@ -213,7 +214,7 @@ a:focus-visible {
 .game {
   position: relative;
   width: 100%;
-  height: calc(100dvh - 64px);
+  height: calc(100dvh - var(--topbar-height));
   overflow: hidden;
   isolation: isolate;
   background: var(--board-bg);
@@ -513,7 +514,12 @@ a:focus-visible {
 
 .mobile-tool[aria-pressed="true"] { color: #ffffff; background: var(--danger); }
 
+body.ui-hidden > .topbar,
+body.ui-hidden > dialog,
+.ui-hidden .game > :not(#board):not(.controls),
 .ui-hidden .controls button:not(#ui-toggle-button) { display: none; }
+
+.ui-hidden .game { height: 100dvh; }
 
 .ui-hidden .controls {
   top: max(12px, env(safe-area-inset-top));
@@ -820,12 +826,12 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
 .help-grid p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
 @media (max-width: 720px) {
-  .topbar { height: 54px; padding: 0 12px; }
+  :root { --topbar-height: 54px; }
+  .topbar { padding: 0 12px; }
   .brand { gap: 8px; font-size: 16px; }
   .brand-mark { width: 31px; height: 31px; border-radius: 9px; font-size: 24px; }
   .mode-pill { margin-left: 10px; padding: 6px 8px; font-size: 7px; }
   .header-help { width: 32px; height: 32px; box-shadow: none; }
-  .game { height: calc(100dvh - 54px); }
   .controls { top: 10px; left: 10px; gap: 2px; padding: 4px; border-radius: 14px; }
   .controls button { width: 34px; min-width: 34px; height: 34px; padding: 0; border-radius: 9px; }
   .control-icon { width: 17px; height: 17px; }

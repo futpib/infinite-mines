@@ -209,11 +209,20 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await openDeterministicGame(page);
   const fullscreen = page.getByRole("button", { name: "Enter fullscreen" });
   const hide = page.getByRole("button", { name: "Hide controls" });
+  const fixedScreenPoint = { x: 720, y: 450 };
+  const cellAtFixedScreenPoint = () =>
+    page.evaluate((point) => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#board");
+      if (!canvas) throw new Error("Board is missing");
+      const bounds = canvas.getBoundingClientRect();
+      return window.__infiniteMines.renderer.screenToCell(point.x - bounds.left, point.y - bounds.top);
+    }, fixedScreenPoint);
   const initial = await page.evaluate(() => ({
     seed: window.__infiniteMines.model.seed,
     view: window.__infiniteMines.renderer.createViewSnapshot(),
   }));
   const initialBoard = await page.locator("#board").boundingBox();
+  const initialFixedCell = await cellAtFixedScreenPoint();
 
   expect(await page.evaluate(() => document.fullscreenEnabled)).toBe(true);
   await fullscreen.click();
@@ -228,16 +237,40 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await hide.click();
   await expect(page.locator("body")).toHaveClass(/ui-hidden/);
   await expect(page.locator("#game")).toHaveAttribute("data-ui", "hidden");
-  await expect(page.locator(".topbar")).toBeVisible();
-  await expect(page.locator(".stats")).toBeVisible();
-  await expect(page.locator("#hint")).toBeVisible();
-  await expect(page.locator("#cell-locator")).toBeVisible();
+  await expect(page.locator(".topbar")).toBeHidden();
+  await expect(page.locator(".stats")).toBeHidden();
+  await expect(page.locator("#hint")).toBeHidden();
+  await expect(page.locator("#cell-locator")).toBeHidden();
+  await expect(page.locator("#hover-overlay")).toBeHidden();
+  expect(
+    await page.locator("#game").evaluate((container) =>
+      [...container.children]
+        .filter((child) => getComputedStyle(child).display !== "none")
+        .map((child) => child.id || child.className),
+    ),
+  ).toEqual(["board", "controls"]);
+  expect(
+    await page.locator(".controls").evaluate((container) =>
+      [...container.children]
+        .filter((child) => getComputedStyle(child).display !== "none")
+        .map((child) => child.id),
+    ),
+  ).toEqual(["ui-toggle-button"]);
   await expect(fullscreen).toBeHidden();
   const show = page.getByRole("button", { name: "Show controls" });
   await expect(show).toBeVisible();
   await expect(show).toHaveAttribute("aria-pressed", "true");
-  expect(await page.locator("#board").boundingBox()).toEqual(initialBoard);
+  const hiddenBoard = await page.locator("#board").boundingBox();
+  expect(hiddenBoard).toEqual({ x: 0, y: 0, width: 1440, height: 900 });
+  expect(initialBoard).toEqual({ x: 0, y: 64, width: 1440, height: 836 });
+  expect(await cellAtFixedScreenPoint()).toEqual(initialFixedCell);
+  expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(initial.view);
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
+
+  await page.mouse.move(fixedScreenPoint.x, fixedScreenPoint.y);
+  await page.mouse.wheel(0, -180);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.renderer.cellSize)).toBeGreaterThan(25);
+  expect(await cellAtFixedScreenPoint()).toEqual(initialFixedCell);
 
   const board = page.locator("#board");
   const bounds = await board.boundingBox();
@@ -247,6 +280,9 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await page.mouse.move(bounds.x + bounds.width / 2 + 24, bounds.y + bounds.height / 2);
   await page.mouse.up();
   expect(await page.evaluate(() => window.__infiniteMines.renderer.panX)).not.toBe(initial.view.panX);
+  const hiddenView = await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot());
+  const hiddenFixedCell = await cellAtFixedScreenPoint();
+  await page.evaluate(() => window.__infiniteMines.flushSave());
 
   await show.click();
   await expect(page.locator("body")).not.toHaveClass(/ui-hidden/);
@@ -255,7 +291,15 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(page.locator(".stats")).toBeVisible();
   await expect(hide).toBeVisible();
   await expect(hide).toHaveAttribute("aria-pressed", "false");
+  expect(await page.locator("#board").boundingBox()).toEqual(initialBoard);
+  expect(await cellAtFixedScreenPoint()).toEqual(hiddenFixedCell);
+  expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(hiddenView);
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect(page.locator("body")).not.toHaveClass(/ui-hidden/);
+  expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(hiddenView);
 });
 
 test("R29 — only 50 successful cell actions auto-hide controls, with a persisted opt-out", async ({ page }) => {

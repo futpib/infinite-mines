@@ -102,10 +102,11 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
   await expect(page.locator("#overview-caption")).toContainText("revealed");
 });
 
-test("R02 — chording and automatic flagging execute in the production browser bundle", async ({ page }) => {
+test("R02/R30 — chording works and automatic flagging stays silent", async ({ page }) => {
   await openDeterministicGame(page);
   const result = await page.evaluate(() => {
-    const model = window.__infiniteMines.model;
+    const api = window.__infiniteMines;
+    const model = api.model;
     const checkerboard = (x: number, y: number) => Math.abs(x % 2) === 1 && Math.abs(y % 2) === 1;
     model.reset("beginner", 1, false);
     model.mineAt = checkerboard;
@@ -128,6 +129,16 @@ test("R02 — chording and automatic flagging execute in the production browser 
     const autoFlag = model.reveal(0, 0);
     const cornerState = model.getState(1, 1);
 
+    model.reset("beginner", 1, false);
+    model.mineAt = checkerboard;
+    model.reveal(0, 0);
+    model.reveal(0, -1);
+    model.reveal(1, 0);
+    model.reveal(0, 1);
+    model.reveal(-1, 0);
+    api.reveal(0, 0);
+    const appliedCornerState = model.getState(1, 1);
+
     model.reset("ultimate", 1, false);
     model.score = 999;
     model.mineAt = (x: number, y: number) => x === 1 && y === 0;
@@ -136,6 +147,7 @@ test("R02 — chording and automatic flagging execute in the production browser 
       chordChanged: chord.changed,
       autoFlagged: autoFlag.autoFlagged,
       cornerState,
+      appliedCornerState,
       milestoneScore: model.score,
       milestoneHealth: model.health,
     };
@@ -143,6 +155,8 @@ test("R02 — chording and automatic flagging execute in the production browser 
   expect(result.chordChanged).toBe(4);
   expect(result.autoFlagged).toBe(4);
   expect(result.cornerState).toBe(10);
+  expect(result.appliedCornerState).toBe(10);
+  await expect(page.locator("#toast")).toBeEmpty();
   expect(result.milestoneScore).toBe(1000);
   expect(result.milestoneHealth).toBe(4);
 });
