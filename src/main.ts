@@ -460,7 +460,7 @@ function applyAction(result: ActionResult): void {
   }
   if (result.exploded) showToast(model.alive ? "Mine hit — keep moving" : "Field lost — choose what happens next");
   updateStats();
-  renderer.requestRender();
+  renderer.requestRender(result.damage ?? undefined);
   refreshCellLocator(true);
   scheduleGameSave();
   if (!model.alive) requestAnimationFrame(() => cheatDeathButton.focus());

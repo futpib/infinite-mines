@@ -95,10 +95,11 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
   const progress = await page.evaluate(() => {
     const api = window.__infiniteMines;
     const model = api.model;
+    const thingsBefore = model.things;
     let artifact: { x: number; y: number } | null = null;
     for (let y = 50; y < 200 && !artifact; y += 1) {
       for (let x = 50; x < 200; x += 1) {
-        if (model.artifactAt(x, y) && model.clueAt(x, y) > 0 && model.getState(x, y) === 0) {
+        if (model.artifactAt(x, y) && model.clueAt(x, y) === 0 && model.getState(x, y) === 0) {
           artifact = { x, y };
           break;
         }
@@ -117,12 +118,21 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
     }
     if (!mine) throw new Error("No mine found");
     api.reveal(mine.x, mine.y);
-    return { artifact, mine, things: model.things, health: model.health, score: model.score };
+    return {
+      artifact,
+      artifactClue: model.clueAt(artifact.x, artifact.y),
+      mine,
+      things: model.things,
+      thingsDelta: model.things - thingsBefore,
+      health: model.health,
+      score: model.score,
+    };
   });
-  expect(progress.things).toBe(1);
+  expect(progress.artifactClue).toBe(0);
+  expect(progress.thingsDelta).toBeGreaterThanOrEqual(1);
   expect(progress.health).toBe(2);
   expect(progress.score).toBeGreaterThan(safeOpening.score);
-  await expect(page.locator("#things-stat")).toHaveText("1");
+  await expect(page.locator("#things-stat")).toHaveText(progress.things.toLocaleString());
   await expect(page.locator("#health-stat")).toHaveText("♥♥");
   await expect(page.locator("#high-stat")).toHaveText(progress.score.toLocaleString());
 

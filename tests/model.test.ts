@@ -157,22 +157,36 @@ describe("gameplay", () => {
 
   it("cycles flag, question, and clear", () => {
     const game = new GameModel({ seed: 123 });
-    game.cycleMark(100, 100);
+    const flagged = game.cycleMark(100, 100);
     expect(game.getState(100, 100)).toBe(CellState.Flagged);
-    game.cycleMark(100, 100);
+    expect(flagged.damage).toEqual({ minX: 100, minY: 100, maxX: 100, maxY: 100 });
+    const questioned = game.cycleMark(100, 100);
     expect(game.getState(100, 100)).toBe(CellState.Question);
-    game.cycleMark(100, 100);
+    expect(questioned.damage).toEqual(flagged.damage);
+    const cleared = game.cycleMark(100, 100);
     expect(game.getState(100, 100)).toBe(CellState.Covered);
+    expect(cleared.damage).toEqual(flagged.damage);
   });
 
-  it("never places mines on artifact cells", () => {
+  it("reports exact aggregate damage bounds for cascades and no bounds for guarded no-ops", () => {
+    const game = new GameModel({ seed: 123, autoStart: false });
+    const opened = game.reveal(0, 0);
+    expect(opened.changed).toBeGreaterThan(1);
+    expect(opened.damage).toEqual(game.bounds);
+    expect(game.reveal(0, 0).damage).toBeNull();
+  });
+
+  it("places deterministic artifacts only on zero-clue, mine-free cells", () => {
     const game = new GameModel({ mode: "impossible", seed: 712, autoStart: false });
+    const matching = new GameModel({ mode: "impossible", seed: 712, autoStart: false });
     let artifacts = 0;
     for (let y = -100; y <= 100; y += 1) {
       for (let x = -100; x <= 100; x += 1) {
+        expect(game.artifactAt(x, y)).toBe(matching.artifactAt(x, y));
         if (!game.artifactAt(x, y)) continue;
         artifacts += 1;
         expect(game.mineAt(x, y)).toBe(false);
+        expect(game.clueAt(x, y)).toBe(0);
       }
     }
     expect(artifacts).toBeGreaterThan(40);

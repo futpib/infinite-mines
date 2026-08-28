@@ -9,7 +9,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
     let artifact: { x: number; y: number } | null = null;
     for (let y = 50; y < 200 && !artifact; y += 1) {
       for (let x = 50; x < 200; x += 1) {
-        if (model.artifactAt(x, y) && model.clueAt(x, y) > 0 && model.getState(x, y) === 0) {
+        if (model.artifactAt(x, y) && model.clueAt(x, y) === 0 && model.getState(x, y) === 0) {
           artifact = { x, y };
           break;
         }

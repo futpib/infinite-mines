@@ -40,7 +40,8 @@ The production build uses relative asset paths, so it works as a GitHub project 
 - At detailed zoom, sparse 8×8 CPU tiles are cached by version and only revealed or marked cells are compacted into the GPU instance buffer.
 - Number, flag, question, and explosion art is uploaded once as a compact sprite atlas.
 - Detailed cells render in one instanced WebGL draw. At pixel LOD, intersecting sparse chunks are packed into one tightly cropped integer state texture and drawn as one camera-transformed quad.
-- During ordinary dragging, JavaScript only updates camera uniforms and submits one draw. Detailed instances and the overscanned pixel texture stay unchanged until the camera leaves their buffered range.
+- Small cell actions retain the previous framebuffer and scissor rendering to a one-cell dependency halo. At 1×, sufficiently dense detail views scroll preserved color pixels for integral-pixel pans and shade only newly exposed strips; ordinary sparse, fractional, high-DPI, and pixel-LOD movement keeps the faster full-frame path.
+- During dragging, detailed instances and the overscanned pixel texture stay unchanged until the camera leaves their buffered range. Zoom, resize, theme changes, and large damage deliberately redraw the full frame.
 - Zoom reaches one CSS pixel per cell. Glyphs crossfade into state squares from 8px through 4px; the sparse texture takes over only after detail reaches zero, and borders disappear below 3px.
 - Low-zoom state colors are alpha-weighted averages of the active theme's base cells and actual sprite atlas, so each pixel resembles its zoomed-in tile rather than a raw accent color.
 - Cell edges are snapped to the device-pixel grid and shared borders are generated in the shader at exactly one CSS pixel; glyphs come from a 64px antialiased atlas.

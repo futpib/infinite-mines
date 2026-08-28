@@ -451,3 +451,136 @@ test("R31 — a one-pixel pan translates framebuffer grid edges without a start 
     await context.close();
   }
 });
+
+test("R34 — cell damage and integral pans preserve untouched framebuffer pixels", async ({ page }) => {
+  await openDeterministicGame(page);
+  const result = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const gl = renderer.gl;
+    const canvas = document.querySelector<HTMLCanvasElement>("#board");
+    if (!canvas) throw new Error("Missing board");
+    const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const readFrame = () => {
+      const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+      gl.finish();
+      gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return pixels;
+    };
+    const equalFrames = (left: Uint8Array, right: Uint8Array) => {
+      if (left.length !== right.length) return false;
+      for (let index = 0; index < left.length; index += 1) {
+        if (left[index] !== right[index]) return false;
+      }
+      return true;
+    };
+
+    renderer.home();
+    await settle();
+    let target: { x: number; y: number } | null = null;
+    for (let y = -12; y <= 12 && target === null; y += 1) {
+      for (let x = -20; x <= 20; x += 1) {
+        if (api.model.getState(x, y) === 0) {
+          target = { x, y };
+          break;
+        }
+      }
+    }
+    if (!target) throw new Error("No covered on-screen cell");
+
+    const beforeDamage = readFrame();
+    const action = api.model.cycleMark(target.x, target.y);
+    if (!action.damage) throw new Error("Missing action damage");
+    renderer.requestRender(action.damage);
+    await settle();
+    const damageDiagnostics = api.diagnostics();
+    const afterDamage = readFrame();
+    renderer.requestRender();
+    await settle();
+    const forcedDamageFrame = readFrame();
+
+    let changedPixels = 0;
+    for (let index = 0; index < beforeDamage.length; index += 4) {
+      if (
+        beforeDamage[index] !== afterDamage[index] ||
+        beforeDamage[index + 1] !== afterDamage[index + 1] ||
+        beforeDamage[index + 2] !== afterDamage[index + 2] ||
+        beforeDamage[index + 3] !== afterDamage[index + 3]
+      ) {
+        changedPixels += 1;
+      }
+    }
+
+    const beforePan = forcedDamageFrame;
+    renderer.panBy(1, 0);
+    await settle();
+    const panDiagnostics = api.diagnostics();
+    const afterPan = readFrame();
+    renderer.requestRender();
+    await settle();
+    const forcedPanFrame = readFrame();
+
+    renderer.panBy(0.5, 0);
+    await settle();
+    const fractionalDiagnostics = api.diagnostics();
+    const afterFractional = readFrame();
+    renderer.requestRender();
+    await settle();
+    const forcedFractionalFrame = readFrame();
+
+    renderer.home();
+    renderer.zoom = 0.32;
+    for (let y = -65; y <= 65; y += 1) {
+      for (let x = -110; x <= 110; x += 1) api.model.store.set(x, y, 2);
+    }
+    renderer.requestRender();
+    await settle();
+    const beforeDensePan = readFrame();
+    renderer.panBy(1, 0);
+    await settle();
+    const densePanDiagnostics = api.diagnostics();
+    const afterDensePan = readFrame();
+    renderer.requestRender();
+    await settle();
+    const forcedDensePanFrame = readFrame();
+
+    return {
+      contextPreserved: gl.getContextAttributes()?.preserveDrawingBuffer ?? false,
+      canvasWidth: canvas.width,
+      changedPixels,
+      damageDiagnostics,
+      damageMatchesFull: equalFrames(afterDamage, forcedDamageFrame),
+      panDiagnostics,
+      panMatchesFull: equalFrames(afterPan, forcedPanFrame),
+      panChanged: !equalFrames(beforePan, afterPan),
+      fractionalDiagnostics,
+      fractionalMatchesFull: equalFrames(afterFractional, forcedFractionalFrame),
+      densePanDiagnostics,
+      densePanChanged: !equalFrames(beforeDensePan, afterDensePan),
+      densePanMatchesFull: equalFrames(afterDensePan, forcedDensePanFrame),
+    };
+  });
+
+  expect(result.contextPreserved).toBe(true);
+  expect(result.changedPixels).toBeGreaterThan(0);
+  expect(result.damageDiagnostics.redrawMode).toBe("damage");
+  expect(result.damageDiagnostics.redrawnPixels / result.damageDiagnostics.canvasPixels).toBeLessThan(0.02);
+  expect(result.damageMatchesFull).toBe(true);
+  expect(result.panDiagnostics.redrawMode).toBe("full");
+  expect(result.panDiagnostics.redrawnPixels).toBe(result.panDiagnostics.canvasPixels);
+  expect(result.panDiagnostics.blittedPixels).toBe(0);
+  expect(result.panChanged).toBe(true);
+  expect(result.panMatchesFull).toBe(true);
+  expect(result.fractionalDiagnostics.redrawMode).toBe("full");
+  expect(result.fractionalMatchesFull).toBe(true);
+  expect(result.densePanDiagnostics.drawnCells).toBeGreaterThanOrEqual(20_000);
+  expect(result.densePanDiagnostics.redrawMode).toBe("pan");
+  expect(result.densePanDiagnostics.redrawnPixels).toBe(
+    result.densePanDiagnostics.canvasPixels / result.canvasWidth,
+  );
+  expect(result.densePanDiagnostics.blittedPixels).toBe(
+    result.densePanDiagnostics.canvasPixels - result.densePanDiagnostics.redrawnPixels,
+  );
+  expect(result.densePanChanged).toBe(true);
+  expect(result.densePanMatchesFull).toBe(true);
+});

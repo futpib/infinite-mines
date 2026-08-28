@@ -544,3 +544,75 @@ test("R33 — the FPS counter observes active rendering without keeping the rend
   expect(await value.textContent()).toBe("IDLE");
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(settledFrames);
 });
+
+test("R34 — retained-strip pan is enabled only where it beats a full detail redraw", async ({ page }, testInfo) => {
+  test.setTimeout(45_000);
+  await openDeterministicGame(page);
+  const report = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const percentile = (values: number[], fraction: number) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+    };
+    const run = async (retained: boolean) => {
+      renderer.panX = 0;
+      renderer.panY = 0;
+      renderer.requestRender();
+      await settle();
+      const before = api.diagnostics();
+      const intervals: number[] = [];
+      let previous = 0;
+      await new Promise<void>((resolve) => {
+        let frame = 0;
+        const step = (time: number) => {
+          if (previous > 0) intervals.push(time - previous);
+          previous = time;
+          const delta = frame % 2 === 0 ? 1 : -1;
+          if (retained) renderer.panBy(delta, 0);
+          else {
+            renderer.panX += delta;
+            renderer.requestRender();
+          }
+          frame += 1;
+          if (frame < 10) requestAnimationFrame(step);
+          else requestAnimationFrame(() => resolve());
+        };
+        requestAnimationFrame(step);
+      });
+      const after = api.diagnostics();
+      return {
+        p50: percentile(intervals, 0.5),
+        p95: percentile(intervals, 0.95),
+        uploads: after.instanceUploads - before.instanceUploads,
+        redrawMode: after.redrawMode,
+        drawnCells: after.drawnCells,
+        redrawnPixels: after.redrawnPixels,
+        canvasPixels: after.canvasPixels,
+      };
+    };
+
+    renderer.zoom = 0.32;
+    for (let y = -65; y <= 65; y += 1) {
+      for (let x = -110; x <= 110; x += 1) api.model.store.set(x, y, 2);
+    }
+    renderer.requestRender();
+    await settle();
+    return { full: await run(false), retained: await run(true) };
+  });
+
+  await testInfo.attach("retained-pan-benchmark.json", {
+    body: JSON.stringify(report, null, 2),
+    contentType: "application/json",
+  });
+  console.log(`\nRETAINED_PAN_BENCHMARK ${JSON.stringify(report, null, 2)}`);
+  expect(report.full.redrawMode).toBe("full");
+  expect(report.retained.redrawMode).toBe("pan");
+  expect(report.retained.drawnCells).toBeGreaterThanOrEqual(20_000);
+  expect(report.full.uploads).toBe(0);
+  expect(report.retained.uploads).toBe(0);
+  expect(report.retained.redrawnPixels / report.retained.canvasPixels).toBeLessThan(0.002);
+  expect(report.retained.p50).toBeLessThanOrEqual(report.full.p50);
+  expect(report.retained.p95).toBeLessThan(350);
+});

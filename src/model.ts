@@ -51,6 +51,7 @@ export interface ActionResult {
   healthDelta: number;
   exploded: boolean;
   autoFlagged: number;
+  damage: ExploredBounds | null;
 }
 
 export interface ExploredBounds {
@@ -92,6 +93,9 @@ const INT32_MIN = -0x8000_0000;
 const INT32_MAX = 0x7fff_ffff;
 export const STATE_TILE_SIZE = 8;
 const ARTIFACT_ZONE = 24;
+const ARTIFACT_INTERIOR = 18;
+const ARTIFACT_CANDIDATE_LIMIT = 128;
+const MAX_ARTIFACT_CACHE_ZONES = 4096;
 const UINT32_RANGE = 0x1_0000_0000;
 
 const EMPTY_RESULT = (): ActionResult => ({
@@ -101,6 +105,7 @@ const EMPTY_RESULT = (): ActionResult => ({
   healthDelta: 0,
   exploded: false,
   autoFlagged: 0,
+  damage: null,
 });
 
 export function floorDiv(value: number, divisor: number): number {
@@ -310,6 +315,7 @@ export class GameModel {
   bounds: ExploredBounds | null = null;
   private safeX = 0;
   private safeY = 0;
+  private readonly artifactCache = new Map<string, Readonly<{ x: number; y: number }> | null>();
 
   constructor(options: GameOptions = {}) {
     this.mode = options.mode ?? "beginner";
@@ -394,6 +400,7 @@ export class GameModel {
     this.safeX = snapshot.safeX;
     this.safeY = snapshot.safeY;
     this.bounds = snapshot.bounds ? { ...snapshot.bounds } : null;
+    this.artifactCache.clear();
     return true;
   }
 
@@ -406,6 +413,7 @@ export class GameModel {
     this.cheats = 0;
     this.started = false;
     this.bounds = null;
+    this.artifactCache.clear();
     this.store.clear();
     return autoStart ? this.reveal(0, 0) : EMPTY_RESULT();
   }
@@ -431,15 +439,55 @@ export class GameModel {
   mineAt(x: number, y: number): boolean {
     if (this.started && Math.abs(x - this.safeX) <= 2 && Math.abs(y - this.safeY) <= 2) return false;
     if (this.artifactAt(x, y)) return false;
-    return hash32(x, y, this.seed, 0x51ed270b) / UINT32_RANGE < this.difficulty.density;
+    return this.rawMineAt(x, y);
   }
 
   artifactAt(x: number, y: number): boolean {
     const zoneX = floorDiv(x, ARTIFACT_ZONE);
     const zoneY = floorDiv(y, ARTIFACT_ZONE);
-    const artifactX = zoneX * ARTIFACT_ZONE + 3 + (hash32(zoneX, zoneY, this.seed, 0x1b56c4e9) % 18);
-    const artifactY = zoneY * ARTIFACT_ZONE + 3 + (hash32(zoneX, zoneY, this.seed, 0x72f8a31d) % 18);
-    return x === artifactX && y === artifactY;
+    const artifact = this.artifactForZone(zoneX, zoneY);
+    return artifact !== null && x === artifact.x && y === artifact.y;
+  }
+
+  private rawMineAt(x: number, y: number): boolean {
+    return hash32(x, y, this.seed, 0x51ed270b) / UINT32_RANGE < this.difficulty.density;
+  }
+
+  private artifactForZone(zoneX: number, zoneY: number): Readonly<{ x: number; y: number }> | null {
+    const key = `${zoneX},${zoneY}`;
+    if (this.artifactCache.has(key)) {
+      return this.artifactCache.get(key) ?? null;
+    }
+
+    const candidateCount = ARTIFACT_INTERIOR * ARTIFACT_INTERIOR;
+    const start = hash32(zoneX, zoneY, this.seed, 0x1b56c4e9) % candidateCount;
+    let artifact: Readonly<{ x: number; y: number }> | null = null;
+    for (let attempt = 0; attempt < ARTIFACT_CANDIDATE_LIMIT; attempt += 1) {
+      const candidate = (start + attempt) % candidateCount;
+      const candidateX = zoneX * ARTIFACT_ZONE + 3 + (candidate % ARTIFACT_INTERIOR);
+      const candidateY = zoneY * ARTIFACT_ZONE + 3 + Math.floor(candidate / ARTIFACT_INTERIOR);
+      if (this.rawMineAt(candidateX, candidateY)) continue;
+      let zero = true;
+      for (let offsetY = -1; offsetY <= 1 && zero; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if ((offsetX !== 0 || offsetY !== 0) && this.rawMineAt(candidateX + offsetX, candidateY + offsetY)) {
+            zero = false;
+            break;
+          }
+        }
+      }
+      if (zero) {
+        artifact = { x: candidateX, y: candidateY };
+        break;
+      }
+    }
+    this.artifactCache.set(key, artifact);
+    while (this.artifactCache.size > MAX_ARTIFACT_CACHE_ZONES) {
+      const oldest = this.artifactCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.artifactCache.delete(oldest);
+    }
+    return artifact;
   }
 
   clueAt(x: number, y: number): number {
@@ -458,7 +506,7 @@ export class GameModel {
     if (state === CellState.Flagged || state === CellState.Exploded) return EMPTY_RESULT();
     if (state === CellState.Question) {
       this.store.set(x, y, CellState.Covered);
-      return { ...EMPTY_RESULT(), changed: 1 };
+      return { ...EMPTY_RESULT(), changed: 1, damage: { minX: x, minY: y, maxX: x, maxY: y } };
     }
     if (isOpened(state)) return this.chord(x, y);
 
@@ -483,7 +531,7 @@ export class GameModel {
           ? CellState.Question
           : CellState.Covered;
     this.store.set(x, y, next);
-    return { ...EMPTY_RESULT(), changed: 1 };
+    return { ...EMPTY_RESULT(), changed: 1, damage: { minX: x, minY: y, maxX: x, maxY: y } };
   }
 
   private chord(x: number, y: number): ActionResult {
@@ -491,7 +539,12 @@ export class GameModel {
     if (plan.kind === "reveal") return this.openCascade(plan.cells.flat());
     if (plan.kind === "flag") {
       for (const [neighborX, neighborY] of plan.cells) this.store.set(neighborX, neighborY, CellState.Flagged);
-      return { ...EMPTY_RESULT(), changed: plan.cells.length, autoFlagged: plan.cells.length };
+      return {
+        ...EMPTY_RESULT(),
+        changed: plan.cells.length,
+        autoFlagged: plan.cells.length,
+        damage: this.boundsForCells(plan.cells),
+      };
     }
     return EMPTY_RESULT();
   }
@@ -558,9 +611,17 @@ export class GameModel {
     let scoreDelta = 0;
     let thingsDelta = 0;
     let exploded = false;
+    let damage: ExploredBounds | null = null;
     while (head < tail) {
       const x = queue[head++];
       const y = queue[head++];
+      if (damage === null) damage = { minX: x, minY: y, maxX: x, maxY: y };
+      else {
+        damage.minX = Math.min(damage.minX, x);
+        damage.minY = Math.min(damage.minY, y);
+        damage.maxX = Math.max(damage.maxX, x);
+        damage.maxY = Math.max(damage.maxY, y);
+      }
 
       if (this.mineAt(x, y)) {
         this.store.set(x, y, CellState.Exploded);
@@ -594,7 +655,26 @@ export class GameModel {
       healthDelta: this.health - previousHealth,
       exploded,
       autoFlagged: 0,
+      damage,
     };
+  }
+
+  private boundsForCells(cells: ReadonlyArray<readonly [number, number]>): ExploredBounds | null {
+    if (cells.length === 0) return null;
+    const bounds: ExploredBounds = {
+      minX: cells[0][0],
+      minY: cells[0][1],
+      maxX: cells[0][0],
+      maxY: cells[0][1],
+    };
+    for (let index = 1; index < cells.length; index += 1) {
+      const [x, y] = cells[index];
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.maxY = Math.max(bounds.maxY, y);
+    }
+    return bounds;
   }
 
   private forEachNeighbor(x: number, y: number, visitor: (neighborX: number, neighborY: number) => void): void {

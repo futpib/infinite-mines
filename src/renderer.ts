@@ -1,4 +1,4 @@
-import { CellState, GameModel, STATE_TILE_SIZE, floorDiv, isOpened } from "./model";
+import { CellState, GameModel, STATE_TILE_SIZE, floorDiv, isOpened, type ExploredBounds } from "./model";
 import type { ViewSnapshotV1 } from "./persistence";
 
 export interface RenderDiagnostics {
@@ -21,6 +21,13 @@ export interface RenderDiagnostics {
   pixelRatio: number;
   hoveredCells: number;
   fps: number | null;
+  redrawMode: "full" | "damage" | "pan" | "none";
+  redrawnPixels: number;
+  blittedPixels: number;
+  canvasPixels: number;
+  fullRedraws: number;
+  damageRedraws: number;
+  panRedraws: number;
 }
 
 const BASE_CELL_SIZE = 25;
@@ -38,6 +45,20 @@ const INSTANCE_FLOATS = 5;
 const SPRITE_COUNT = 12;
 const SPRITE_PIXELS = 64;
 const MAX_CACHED_TILES = 2048;
+const MAX_DAMAGE_AREA_RATIO = 0.4;
+const PAN_BLIT_MIN_DETAIL_INSTANCES = 20_000;
+
+interface FrameRequest {
+  kind: "full" | "damage" | "pan";
+  damage?: ExploredBounds;
+}
+
+interface PixelRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 interface RenderTheme {
   background: string;
@@ -235,6 +256,8 @@ interface GlResources {
   instanceBuffer: WebGLBuffer;
   atlasTexture: WebGLTexture;
   stateTexture: WebGLTexture;
+  scratchTexture: WebGLTexture;
+  scratchFramebuffer: WebGLFramebuffer;
   viewportUniform: WebGLUniformLocation;
   cameraCellUniform: WebGLUniformLocation;
   cellSizeUniform: WebGLUniformLocation;
@@ -333,6 +356,13 @@ export class WebGLRenderer {
     pixelRatio: 1,
     hoveredCells: 0,
     fps: null,
+    redrawMode: "none",
+    redrawnPixels: 0,
+    blittedPixels: 0,
+    canvasPixels: 1,
+    fullRedraws: 0,
+    damageRedraws: 0,
+    panRedraws: 0,
   };
 
   private resources: GlResources;
@@ -357,6 +387,19 @@ export class WebGLRenderer {
   private readonly tileCache = new Map<string, CachedTile>();
   private hoverCells: Array<{ x: number; y: number }> = [];
   private hoverKey = "";
+  private pendingFullRedraw = false;
+  private pendingDamage: ExploredBounds | null = null;
+  private retainedFrame = false;
+  private retainedPanX = 0;
+  private retainedPanY = 0;
+  private retainedZoom = 1;
+  private retainedGeneration = -1;
+  private retainedVersion = -1;
+  private scratchWidth = 0;
+  private scratchHeight = 0;
+  private fullRedraws = 0;
+  private damageRedraws = 0;
+  private panRedraws = 0;
 
   constructor(canvas: HTMLCanvasElement, model: GameModel) {
     const gl = canvas.getContext("webgl2", {
@@ -365,7 +408,7 @@ export class WebGLRenderer {
       depth: false,
       stencil: false,
       desynchronized: true,
-      preserveDrawingBuffer: false,
+      preserveDrawingBuffer: true,
       powerPreference: "high-performance",
     });
     if (!gl) throw new Error("WebGL 2 is required to render Infinite Mines");
@@ -378,13 +421,18 @@ export class WebGLRenderer {
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
       this.contextLost = true;
+      this.retainedFrame = false;
       if (this.frameId !== null) cancelAnimationFrame(this.frameId);
       this.frameId = null;
     });
     canvas.addEventListener("webglcontextrestored", () => {
       this.contextLost = false;
       this.resources = this.createResources();
+      this.scratchWidth = 0;
+      this.scratchHeight = 0;
+      this.updateBackingStore(this.dpr);
       this.resetTileCache();
+      this.retainedFrame = false;
       this.requestRender();
     });
   }
@@ -457,7 +505,7 @@ export class WebGLRenderer {
   panBy(deltaX: number, deltaY: number): void {
     this.panX += deltaX;
     this.panY += deltaY;
-    this.requestRender();
+    this.requestPan();
   }
 
   finishPan(): void {
@@ -502,33 +550,49 @@ export class WebGLRenderer {
     return this.hoverCells.map((cell) => ({ ...cell }));
   }
 
-  requestRender(): void {
+  requestRender(damage?: ExploredBounds): void {
+    if (damage) {
+      if (!this.pendingFullRedraw) this.pendingDamage = this.unionBounds(this.pendingDamage, damage);
+    } else {
+      this.pendingFullRedraw = true;
+      this.pendingDamage = null;
+    }
+    this.scheduleRender();
+  }
+
+  private requestPan(): void {
+    if (!this.pendingFullRedraw) {
+      if (this.pendingDamage) {
+        this.pendingFullRedraw = true;
+        this.pendingDamage = null;
+      }
+    }
+    this.scheduleRender();
+  }
+
+  private scheduleRender(): void {
     if (this.contextLost || this.frameId !== null) return;
     this.frameId = requestAnimationFrame(() => {
       this.frameId = null;
-      this.render();
+      const request: FrameRequest = this.pendingFullRedraw
+        ? { kind: "full" }
+        : this.pendingDamage
+          ? { kind: "damage", damage: this.pendingDamage }
+          : { kind: "pan" };
+      this.pendingFullRedraw = false;
+      this.pendingDamage = null;
+      this.render(request);
     });
   }
 
-  render(): void {
+  render(request: FrameRequest = { kind: "full" }): void {
     if (this.contextLost) return;
     const startedAt = performance.now();
-    const frameInterval = this.previousFrameStartedAt === 0 ? 0 : startedAt - this.previousFrameStartedAt;
-    this.previousFrameStartedAt = startedAt;
-    if (frameInterval > 0 && frameInterval < 250) {
-      this.smoothedFrameInterval =
-        this.smoothedFrameInterval === 0
-          ? frameInterval
-          : this.smoothedFrameInterval * 0.8 + frameInterval * 0.2;
-    } else {
-      this.smoothedFrameInterval = 0;
-    }
-    const gl = this.gl;
-    const resources = this.resources;
     const cellSize = this.cellSize;
     if (this.cachedGeneration !== this.model.store.generation) {
       this.resetTileCache();
       this.cachedGeneration = this.model.store.generation;
+      if (request.kind !== "full") this.retainedFrame = false;
     }
 
     const centerWorldX = 0.5 - this.panX / cellSize;
@@ -585,35 +649,84 @@ export class WebGLRenderer {
       else this.rebuildInstances(anchorX, anchorY, minX, minY, maxX, maxY);
     }
 
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clearColor(...this.theme.backgroundRgb, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
     const relativeCameraX = centerWorldX - anchorX * RENDER_TILE_CELLS;
     const relativeCameraY = centerWorldY - anchorY * RENDER_TILE_CELLS;
-    if (pixelLod) {
-      gl.useProgram(resources.pixelProgram);
-      gl.bindVertexArray(resources.pixelVertexArray);
-      gl.uniform2f(resources.pixelViewportUniform, this.width, this.height);
-      gl.uniform2f(resources.pixelCameraCellUniform, relativeCameraX, relativeCameraY);
-      gl.uniform2i(resources.pixelTextureOriginUniform, this.pixelTextureOriginX, this.pixelTextureOriginY);
-      gl.uniform2i(resources.pixelTextureSizeUniform, this.pixelTextureWidth, this.pixelTextureHeight);
-      gl.uniform1f(resources.pixelCellSizeUniform, cellSize);
-      gl.uniform1f(resources.pixelDprUniform, this.dpr);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, resources.stateTexture);
-      if (this.instanceCount > 0) gl.drawArrays(gl.TRIANGLES, 0, 6);
-    } else {
-      gl.useProgram(resources.program);
-      gl.bindVertexArray(resources.vertexArray);
-      gl.uniform2f(resources.viewportUniform, this.width, this.height);
-      gl.uniform2f(resources.cameraCellUniform, relativeCameraX, relativeCameraY);
-      gl.uniform1f(resources.cellSizeUniform, cellSize);
-      gl.uniform1f(resources.dprUniform, this.dpr);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, resources.atlasTexture);
-      if (this.instanceCount > 0) gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
+    const canvasPixels = this.canvas.width * this.canvas.height;
+    let redrawMode: RenderDiagnostics["redrawMode"] = request.kind;
+    let redrawnPixels = canvasPixels;
+    let blittedPixels = 0;
+    let drawRects: PixelRect[] = [{ x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }];
+
+    if (request.kind === "damage" && request.damage && this.canReuseRetained(false)) {
+      const rect = this.damageRect(request.damage, cellSize);
+      if (!rect) {
+        redrawMode = "none";
+        redrawnPixels = 0;
+        drawRects = [];
+      } else if (rect.width * rect.height <= canvasPixels * MAX_DAMAGE_AREA_RATIO) {
+        drawRects = [rect];
+        redrawnPixels = rect.width * rect.height;
+      } else {
+        redrawMode = "full";
+      }
+    } else if (
+      request.kind === "pan" &&
+      !pixelLod &&
+      this.dpr === 1 &&
+      this.instanceCount >= PAN_BLIT_MIN_DETAIL_INSTANCES &&
+      this.canReuseRetained(true)
+    ) {
+      const shiftXFloat = (this.panX - this.retainedPanX) * this.dpr;
+      const shiftYFloat = -(this.panY - this.retainedPanY) * this.dpr;
+      const shiftX = Math.round(shiftXFloat);
+      const shiftY = Math.round(shiftYFloat);
+      if (Math.abs(shiftXFloat - shiftX) > 1e-6 || Math.abs(shiftYFloat - shiftY) > 1e-6) {
+        redrawMode = "full";
+      } else if (shiftX === 0 && shiftY === 0) {
+        redrawMode = "none";
+        redrawnPixels = 0;
+        drawRects = [];
+      } else if (Math.abs(shiftX) >= this.canvas.width || Math.abs(shiftY) >= this.canvas.height) {
+        redrawMode = "full";
+      } else {
+        blittedPixels = this.blitRetainedFrame(shiftX, shiftY);
+        drawRects = this.exposedPanRects(shiftX, shiftY);
+        redrawnPixels = drawRects.reduce((sum, rect) => sum + rect.width * rect.height, 0);
+      }
+    } else if (request.kind !== "full") {
+      redrawMode = "full";
     }
-    gl.bindVertexArray(null);
+
+    if (redrawMode === "none") {
+      this.captureRetainedState();
+      this.diagnostics = {
+        ...this.diagnostics,
+        redrawMode,
+        redrawnPixels,
+        blittedPixels,
+        canvasPixels,
+        instanceUploads: this.instanceUploads,
+        cachedTiles: this.tileCache.size,
+        storedCells: this.model.store.nonZeroCells,
+      };
+      return;
+    }
+
+    const frameInterval = this.previousFrameStartedAt === 0 ? 0 : startedAt - this.previousFrameStartedAt;
+    this.previousFrameStartedAt = startedAt;
+    if (frameInterval > 0 && frameInterval < 250) {
+      this.smoothedFrameInterval =
+        this.smoothedFrameInterval === 0
+          ? frameInterval
+          : this.smoothedFrameInterval * 0.8 + frameInterval * 0.2;
+    } else {
+      this.smoothedFrameInterval = 0;
+    }
+    const drawCalls = this.drawScene(pixelLod, relativeCameraX, relativeCameraY, cellSize, drawRects);
+    if (redrawMode === "full") this.fullRedraws += 1;
+    else if (redrawMode === "damage") this.damageRedraws += 1;
+    else this.panRedraws += 1;
+    this.captureRetainedState();
 
     const visibleMin = this.screenToCell(0, 0);
     const visibleMax = this.screenToCell(this.width, this.height);
@@ -633,13 +746,173 @@ export class WebGLRenderer {
       chunks: this.model.store.chunkCount,
       storedCells: this.model.store.nonZeroCells,
       cachedTiles: this.tileCache.size,
-      drawCalls: this.instanceCount > 0 ? 1 : 0,
+      drawCalls,
       instanceUploads: this.instanceUploads,
       pixelRatio: this.dpr,
       hoveredCells: this.hoverCells.length,
       fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
+      redrawMode,
+      redrawnPixels,
+      blittedPixels,
+      canvasPixels,
+      fullRedraws: this.fullRedraws,
+      damageRedraws: this.damageRedraws,
+      panRedraws: this.panRedraws,
     };
     this.frameObserver?.(this.diagnostics);
+  }
+
+  private drawScene(
+    pixelLod: boolean,
+    relativeCameraX: number,
+    relativeCameraY: number,
+    cellSize: number,
+    rects: ReadonlyArray<PixelRect>,
+  ): number {
+    const gl = this.gl;
+    const resources = this.resources;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.clearColor(...this.theme.backgroundRgb, 1);
+    if (pixelLod) {
+      gl.useProgram(resources.pixelProgram);
+      gl.bindVertexArray(resources.pixelVertexArray);
+      gl.uniform2f(resources.pixelViewportUniform, this.width, this.height);
+      gl.uniform2f(resources.pixelCameraCellUniform, relativeCameraX, relativeCameraY);
+      gl.uniform2i(resources.pixelTextureOriginUniform, this.pixelTextureOriginX, this.pixelTextureOriginY);
+      gl.uniform2i(resources.pixelTextureSizeUniform, this.pixelTextureWidth, this.pixelTextureHeight);
+      gl.uniform1f(resources.pixelCellSizeUniform, cellSize);
+      gl.uniform1f(resources.pixelDprUniform, this.dpr);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, resources.stateTexture);
+    } else {
+      gl.useProgram(resources.program);
+      gl.bindVertexArray(resources.vertexArray);
+      gl.uniform2f(resources.viewportUniform, this.width, this.height);
+      gl.uniform2f(resources.cameraCellUniform, relativeCameraX, relativeCameraY);
+      gl.uniform1f(resources.cellSizeUniform, cellSize);
+      gl.uniform1f(resources.dprUniform, this.dpr);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, resources.atlasTexture);
+    }
+
+    const fullFrame =
+      rects.length === 1 &&
+      rects[0].x === 0 &&
+      rects[0].y === 0 &&
+      rects[0].width === this.canvas.width &&
+      rects[0].height === this.canvas.height;
+    if (fullFrame) gl.disable(gl.SCISSOR_TEST);
+    else gl.enable(gl.SCISSOR_TEST);
+    let drawCalls = 0;
+    for (const rect of rects) {
+      if (!fullFrame) gl.scissor(rect.x, rect.y, rect.width, rect.height);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (this.instanceCount === 0) continue;
+      if (pixelLod) gl.drawArrays(gl.TRIANGLES, 0, 6);
+      else gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
+      drawCalls += 1;
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindVertexArray(null);
+    return drawCalls;
+  }
+
+  private damageRect(bounds: ExploredBounds, cellSize: number): PixelRect | null {
+    const leftCss = this.width / 2 + this.panX + (bounds.minX - 1.5) * cellSize;
+    const rightCss = this.width / 2 + this.panX + (bounds.maxX + 1.5) * cellSize;
+    const topCss = this.height / 2 + this.panY + (bounds.minY - 1.5) * cellSize;
+    const bottomCss = this.height / 2 + this.panY + (bounds.maxY + 1.5) * cellSize;
+    const left = Math.max(0, Math.floor(leftCss * this.dpr) - 1);
+    const right = Math.min(this.canvas.width, Math.ceil(rightCss * this.dpr) + 1);
+    const top = Math.max(0, Math.floor(topCss * this.dpr) - 1);
+    const bottom = Math.min(this.canvas.height, Math.ceil(bottomCss * this.dpr) + 1);
+    if (left >= right || top >= bottom) return null;
+    return { x: left, y: this.canvas.height - bottom, width: right - left, height: bottom - top };
+  }
+
+  private exposedPanRects(shiftX: number, shiftY: number): PixelRect[] {
+    const rects: PixelRect[] = [];
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    if (shiftX > 0) rects.push({ x: 0, y: 0, width: shiftX, height });
+    else if (shiftX < 0) rects.push({ x: width + shiftX, y: 0, width: -shiftX, height });
+
+    const overlapX = shiftX > 0 ? shiftX : 0;
+    const overlapWidth = width - Math.abs(shiftX);
+    if (shiftY > 0) rects.push({ x: overlapX, y: 0, width: overlapWidth, height: shiftY });
+    else if (shiftY < 0) rects.push({ x: overlapX, y: height + shiftY, width: overlapWidth, height: -shiftY });
+    return rects.filter((rect) => rect.width > 0 && rect.height > 0);
+  }
+
+  private blitRetainedFrame(shiftX: number, shiftY: number): number {
+    const gl = this.gl;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const sourceX0 = Math.max(0, -shiftX);
+    const sourceY0 = Math.max(0, -shiftY);
+    const sourceX1 = Math.min(width, width - shiftX);
+    const sourceY1 = Math.min(height, height - shiftY);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.resources.scratchFramebuffer);
+    gl.blitFramebuffer(
+      sourceX0,
+      sourceY0,
+      sourceX1,
+      sourceY1,
+      sourceX0,
+      sourceY0,
+      sourceX1,
+      sourceY1,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST,
+    );
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.resources.scratchFramebuffer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(
+      sourceX0,
+      sourceY0,
+      sourceX1,
+      sourceY1,
+      sourceX0 + shiftX,
+      sourceY0 + shiftY,
+      sourceX1 + shiftX,
+      sourceY1 + shiftY,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST,
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return (sourceX1 - sourceX0) * (sourceY1 - sourceY0);
+  }
+
+  private canReuseRetained(requireCurrentVersion: boolean): boolean {
+    return (
+      this.retainedFrame &&
+      this.retainedZoom === this.zoom &&
+      this.retainedGeneration === this.model.store.generation &&
+      (!requireCurrentVersion || this.retainedVersion === this.model.store.version) &&
+      (requireCurrentVersion || (this.retainedPanX === this.panX && this.retainedPanY === this.panY))
+    );
+  }
+
+  private captureRetainedState(): void {
+    this.retainedFrame = true;
+    this.retainedPanX = this.panX;
+    this.retainedPanY = this.panY;
+    this.retainedZoom = this.zoom;
+    this.retainedGeneration = this.model.store.generation;
+    this.retainedVersion = this.model.store.version;
+  }
+
+  private unionBounds(left: ExploredBounds | null, right: ExploredBounds): ExploredBounds {
+    if (!left) return { ...right };
+    return {
+      minX: Math.min(left.minX, right.minX),
+      minY: Math.min(left.minY, right.minY),
+      maxX: Math.max(left.maxX, right.maxX),
+      maxY: Math.max(left.maxY, right.maxY),
+    };
   }
 
   drawOverview(canvas: HTMLCanvasElement): string {
@@ -713,8 +986,18 @@ export class WebGLRenderer {
     this.dpr = dpr;
     const pixelWidth = Math.round(this.width * dpr);
     const pixelHeight = Math.round(this.height * dpr);
+    const resized = this.canvas.width !== pixelWidth || this.canvas.height !== pixelHeight;
     if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
     if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
+    if (resized || this.scratchWidth !== pixelWidth || this.scratchHeight !== pixelHeight) {
+      const gl = this.gl;
+      gl.bindTexture(gl.TEXTURE_2D, this.resources.scratchTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, pixelWidth, pixelHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      this.scratchWidth = pixelWidth;
+      this.scratchHeight = pixelHeight;
+      this.retainedFrame = false;
+    }
   }
 
   private detailMix(cellSize: number): number {
@@ -910,7 +1193,18 @@ export class WebGLRenderer {
     const instanceBuffer = gl.createBuffer();
     const atlasTexture = gl.createTexture();
     const stateTexture = gl.createTexture();
-    if (!vertexArray || !pixelVertexArray || !quadBuffer || !instanceBuffer || !atlasTexture || !stateTexture) {
+    const scratchTexture = gl.createTexture();
+    const scratchFramebuffer = gl.createFramebuffer();
+    if (
+      !vertexArray ||
+      !pixelVertexArray ||
+      !quadBuffer ||
+      !instanceBuffer ||
+      !atlasTexture ||
+      !stateTexture ||
+      !scratchTexture ||
+      !scratchFramebuffer
+    ) {
       throw new Error("Unable to allocate WebGL renderer resources");
     }
 
@@ -951,6 +1245,19 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.bindTexture(gl.TEXTURE_2D, scratchTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratchFramebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, scratchTexture, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error("Unable to allocate retained framebuffer");
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
     gl.bindTexture(gl.TEXTURE_2D, stateTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, 1, 1, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(1));
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -974,6 +1281,8 @@ export class WebGLRenderer {
       instanceBuffer,
       atlasTexture,
       stateTexture,
+      scratchTexture,
+      scratchFramebuffer,
       viewportUniform: requireUniform(gl, program, "u_viewport"),
       cameraCellUniform: requireUniform(gl, program, "u_cameraCell"),
       cellSizeUniform: requireUniform(gl, program, "u_cellSize"),
