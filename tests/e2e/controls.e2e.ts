@@ -223,6 +223,9 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   }));
   const initialBoard = await page.locator("#board").boundingBox();
   const initialFixedCell = await cellAtFixedScreenPoint();
+  expect(initialBoard).toEqual({ x: 0, y: 0, width: 1440, height: 900 });
+  await expect(page.locator(".topbar")).toHaveCSS("position", "absolute");
+  expect(await page.evaluate(() => document.elementFromPoint(720, 32)?.closest(".topbar") !== null)).toBe(true);
 
   expect(await page.evaluate(() => document.fullscreenEnabled)).toBe(true);
   await fullscreen.click();
@@ -233,6 +236,8 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await page.evaluate(() => document.exitFullscreen());
   await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
   await expect(fullscreen).toHaveAttribute("aria-pressed", "false");
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const beforeHideFrames = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
 
   await hide.click();
   await expect(page.locator("body")).toHaveClass(/ui-hidden/);
@@ -261,8 +266,9 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(show).toBeVisible();
   await expect(show).toHaveAttribute("aria-pressed", "true");
   const hiddenBoard = await page.locator("#board").boundingBox();
-  expect(hiddenBoard).toEqual({ x: 0, y: 0, width: 1440, height: 900 });
-  expect(initialBoard).toEqual({ x: 0, y: 64, width: 1440, height: 836 });
+  expect(hiddenBoard).toEqual(initialBoard);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(beforeHideFrames);
   expect(await cellAtFixedScreenPoint()).toEqual(initialFixedCell);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(initial.view);
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
@@ -283,6 +289,7 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   const hiddenView = await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot());
   const hiddenFixedCell = await cellAtFixedScreenPoint();
   await page.evaluate(() => window.__infiniteMines.flushSave());
+  const beforeShowFrames = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
 
   await show.click();
   await expect(page.locator("body")).not.toHaveClass(/ui-hidden/);
@@ -292,6 +299,8 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(hide).toBeVisible();
   await expect(hide).toHaveAttribute("aria-pressed", "false");
   expect(await page.locator("#board").boundingBox()).toEqual(initialBoard);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(beforeShowFrames);
   expect(await cellAtFixedScreenPoint()).toEqual(hiddenFixedCell);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(hiddenView);
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);

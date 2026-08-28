@@ -194,17 +194,7 @@ function setUiHidden(hidden: boolean): void {
   uiToggleButton.ariaPressed = String(hidden);
   uiToggleButton.ariaLabel = hidden ? "Show controls" : "Hide controls";
   uiToggleButton.title = uiToggleButton.ariaLabel;
-  syncBoardLayout();
-}
-
-function syncBoardLayout(): void {
-  const topbarHeight = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--topbar-height")) || 0;
-  renderer.setViewportOffset(0, uiHidden ? topbarHeight / 2 : 0);
-  boardWidth = canvas.clientWidth;
-  boardHeight = canvas.clientHeight;
-  hoverVisualKey = "";
-  renderer.resize();
-  if (uiHidden) updateHoverPreview([]);
+  if (hidden) updateHoverPreview([]);
   else refreshCellLocator(true);
 }
 
@@ -473,7 +463,8 @@ const resizeObserver = new ResizeObserver(([entry]) => {
     boardHeight = Math.max(1, Math.round(entry.contentRect.height));
     hoverVisualKey = "";
   }
-  syncBoardLayout();
+  renderer.resize();
+  refreshCellLocator(true);
 });
 resizeObserver.observe(canvas);
 renderer.resize();
@@ -835,7 +826,10 @@ document.addEventListener("visibilitychange", () => {
 });
 document.addEventListener("fullscreenchange", () => {
   updateFullscreenState();
-  requestAnimationFrame(syncBoardLayout);
+  requestAnimationFrame(() => {
+    renderer.resize();
+    refreshCellLocator(true);
+  });
 });
 window.addEventListener("pagehide", () => void flushGameSave(true));
 

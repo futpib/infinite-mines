@@ -132,8 +132,11 @@ a:focus-visible {
 }
 
 .topbar {
-  position: relative;
+  position: absolute;
   z-index: 20;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
   align-items: center;
   height: var(--topbar-height);
@@ -214,7 +217,7 @@ a:focus-visible {
 .game {
   position: relative;
   width: 100%;
-  height: calc(100dvh - var(--topbar-height));
+  height: 100dvh;
   overflow: hidden;
   isolation: isolate;
   background: var(--board-bg);
@@ -271,7 +274,7 @@ a:focus-visible {
 .controls {
   position: absolute;
   z-index: 3;
-  top: 18px;
+  top: calc(var(--topbar-height) + 18px);
   left: 18px;
   display: flex;
   gap: 3px;
@@ -335,7 +338,7 @@ a:focus-visible {
 .stats {
   position: absolute;
   z-index: 3;
-  top: 18px;
+  top: calc(var(--topbar-height) + 18px);
   right: 18px;
   display: grid;
   grid-template-columns: repeat(2, minmax(104px, 1fr));
@@ -518,8 +521,6 @@ body.ui-hidden > .topbar,
 body.ui-hidden > dialog,
 .ui-hidden .game > :not(#board):not(.controls),
 .ui-hidden .controls button:not(#ui-toggle-button) { display: none; }
-
-.ui-hidden .game { height: 100dvh; }
 
 .ui-hidden .controls {
   top: max(12px, env(safe-area-inset-top));
@@ -832,11 +833,11 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .brand-mark { width: 31px; height: 31px; border-radius: 9px; font-size: 24px; }
   .mode-pill { margin-left: 10px; padding: 6px 8px; font-size: 7px; }
   .header-help { width: 32px; height: 32px; box-shadow: none; }
-  .controls { top: 10px; left: 10px; gap: 2px; padding: 4px; border-radius: 14px; }
+  .controls { top: calc(var(--topbar-height) + 10px); left: 10px; gap: 2px; padding: 4px; border-radius: 14px; }
   .controls button { width: 34px; min-width: 34px; height: 34px; padding: 0; border-radius: 9px; }
   .control-icon { width: 17px; height: 17px; }
   .stats {
-    top: 62px;
+    top: calc(var(--topbar-height) + 62px);
     right: 10px;
     left: 10px;
     grid-template-columns: repeat(5, minmax(0, 1fr));
