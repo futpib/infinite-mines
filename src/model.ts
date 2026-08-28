@@ -1,3 +1,5 @@
+import { TOPOLOGIES, isTopologyId, type Topology, type TopologyId } from "./topology";
+
 export const MODES = ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const;
 export type Mode = (typeof MODES)[number];
 
@@ -30,19 +32,52 @@ export enum CellState {
   Question = 11,
   Exploded = 12,
   Queued = 13,
+  Opened9 = 14,
+  Opened10 = 15,
+  Opened11 = 16,
+  Opened12 = 17,
+  Opened13 = 18,
+  Opened14 = 19,
+  Opened15 = 20,
+  Opened16 = 21,
+  Opened17 = 22,
+  Opened18 = 23,
 }
 
+const MAX_PACKED_CLUE = 18;
+
 export function isOpened(state: CellState): boolean {
-  return state >= CellState.Opened && state <= CellState.Opened8;
+  return (
+    (state >= CellState.Opened && state <= CellState.Opened8) ||
+    (state >= CellState.Opened9 && state <= CellState.Opened18)
+  );
 }
 
 export function openedClue(state: CellState): number {
-  return isOpened(state) ? state - CellState.Opened : 0;
+  if (state >= CellState.Opened && state <= CellState.Opened8) return state - CellState.Opened;
+  if (state >= CellState.Opened9 && state <= CellState.Opened18) return state - 5;
+  return 0;
 }
 
 function openedState(clue: number): CellState {
-  return (CellState.Opened + clue) as CellState;
+  if (!Number.isInteger(clue) || clue < 0 || clue > MAX_PACKED_CLUE) {
+    throw new RangeError(`Cannot pack clue ${clue}`);
+  }
+  return (clue <= 8 ? CellState.Opened + clue : clue + 5) as CellState;
 }
+
+const isPersistedCellState = (state: number): state is CellState => {
+  return (
+    isOpened(state as CellState) ||
+    state === CellState.Flagged ||
+    state === CellState.Question ||
+    state === CellState.Exploded
+  );
+};
+
+const migrateLegacyState = (state: number): CellState | null => {
+  return isPersistedCellState(state) && state <= CellState.Exploded ? state : null;
+};
 
 export interface ActionResult {
   changed: number;
@@ -75,6 +110,24 @@ export interface GameSnapshotV1 {
   bounds: ExploredBounds | null;
   cells: ArrayBuffer;
 }
+
+export interface GameSnapshotV2 {
+  version: 2;
+  topology: TopologyId;
+  mode: Mode;
+  seed: number;
+  score: number;
+  things: number;
+  health: number;
+  cheats?: number;
+  started: boolean;
+  safeX: number;
+  safeY: number;
+  bounds: ExploredBounds | null;
+  cells: ArrayBuffer;
+}
+
+export type GameSnapshot = GameSnapshotV1 | GameSnapshotV2;
 
 interface StateChunk {
   cells: Uint8Array;
@@ -202,7 +255,7 @@ export class CellStore {
     return packed;
   }
 
-  restorePacked(value: unknown): boolean {
+  restorePacked(value: unknown, legacyV1 = false, maxClue = MAX_PACKED_CLUE): boolean {
     if (!(value instanceof ArrayBuffer) || value.byteLength % CELL_RECORD_BYTES !== 0) return false;
 
     const nextChunks = new Map<string, StateChunk>();
@@ -212,8 +265,10 @@ export class CellStore {
     for (let offset = 0; offset < value.byteLength; offset += CELL_RECORD_BYTES) {
       const x = view.getInt32(offset, true);
       const y = view.getInt32(offset + 4, true);
-      const state = view.getUint8(offset + 8) as CellState;
-      if (state === CellState.Covered || state > CellState.Exploded) return false;
+      const encoded = view.getUint8(offset + 8);
+      const state = legacyV1 ? migrateLegacyState(encoded) : isPersistedCellState(encoded) ? encoded : null;
+      if (state === null) return false;
+      if (isOpened(state) && openedClue(state) > maxClue) return false;
 
       const chunkX = floorDiv(x, CHUNK_SIZE);
       const chunkY = floorDiv(y, CHUNK_SIZE);
@@ -301,12 +356,14 @@ export interface GameOptions {
   mode?: Mode;
   seed?: number;
   autoStart?: boolean;
+  topology?: TopologyId;
 }
 
 export class GameModel {
   readonly store = new CellStore();
   mode: Mode;
   seed: number;
+  topologyId: TopologyId;
   score = 0;
   things = 0;
   health = 3;
@@ -315,12 +372,14 @@ export class GameModel {
   bounds: ExploredBounds | null = null;
   private safeX = 0;
   private safeY = 0;
+  private readonly safeCells = new Set<string>();
   private readonly artifactCache = new Map<string, Readonly<{ x: number; y: number }> | null>();
 
   constructor(options: GameOptions = {}) {
     this.mode = options.mode ?? "beginner";
     this.seed = options.seed ?? 1;
-    this.reset(this.mode, this.seed, options.autoStart ?? true);
+    this.topologyId = options.topology ?? "square";
+    this.reset(this.mode, this.seed, options.autoStart ?? true, this.topologyId);
   }
 
   get alive(): boolean {
@@ -331,13 +390,18 @@ export class GameModel {
     return DIFFICULTIES[this.mode];
   }
 
+  get topology(): Topology {
+    return TOPOLOGIES[this.topologyId];
+  }
+
   get safeOrigin(): Readonly<{ x: number; y: number }> | null {
     return this.started ? { x: this.safeX, y: this.safeY } : null;
   }
 
-  createSnapshot(): GameSnapshotV1 {
+  createSnapshot(): GameSnapshotV2 {
     return {
-      version: 1,
+      version: 2,
+      topology: this.topologyId,
       mode: this.mode,
       seed: this.seed,
       score: this.score,
@@ -354,7 +418,8 @@ export class GameModel {
 
   restoreSnapshot(value: unknown): boolean {
     if (!value || typeof value !== "object") return false;
-    const snapshot = value as Partial<GameSnapshotV1>;
+    const snapshot = value as Partial<GameSnapshot>;
+    const restoredTopology: TopologyId = snapshot.version === 2 && isTopologyId(snapshot.topology) ? snapshot.topology : "square";
     const validUnsignedInteger = (candidate: unknown): candidate is number =>
       Number.isSafeInteger(candidate) && (candidate as number) >= 0;
     const validCoordinate = (candidate: unknown): candidate is number =>
@@ -373,7 +438,8 @@ export class GameModel {
     };
 
     if (
-      snapshot.version !== 1 ||
+      (snapshot.version !== 1 && snapshot.version !== 2) ||
+      (snapshot.version === 2 && !isTopologyId(snapshot.topology)) ||
       !MODES.includes(snapshot.mode as Mode) ||
       !validUnsignedInteger(snapshot.seed) ||
       snapshot.seed > 0xffff_ffff ||
@@ -385,13 +451,14 @@ export class GameModel {
       !validCoordinate(snapshot.safeX) ||
       !validCoordinate(snapshot.safeY) ||
       (snapshot.bounds !== null && !validBounds(snapshot.bounds)) ||
-      !this.store.restorePacked(snapshot.cells)
+      !this.store.restorePacked(snapshot.cells, snapshot.version === 1, TOPOLOGIES[restoredTopology].maxNeighbors)
     ) {
       return false;
     }
 
     this.mode = snapshot.mode as Mode;
     this.seed = snapshot.seed;
+    this.topologyId = restoredTopology;
     this.score = snapshot.score;
     this.things = snapshot.things;
     this.health = snapshot.health;
@@ -400,19 +467,28 @@ export class GameModel {
     this.safeX = snapshot.safeX;
     this.safeY = snapshot.safeY;
     this.bounds = snapshot.bounds ? { ...snapshot.bounds } : null;
+    this.safeCells.clear();
+    if (this.started) this.buildSafeRegion(this.safeX, this.safeY);
     this.artifactCache.clear();
     return true;
   }
 
-  reset(mode: Mode = this.mode, seed: number = this.seed, autoStart = true): ActionResult {
+  reset(
+    mode: Mode = this.mode,
+    seed: number = this.seed,
+    autoStart = true,
+    topology: TopologyId = this.topologyId,
+  ): ActionResult {
     this.mode = mode;
     this.seed = seed >>> 0;
+    this.topologyId = topology;
     this.score = 0;
     this.things = 0;
     this.health = DIFFICULTIES[mode].startingHealth;
     this.cheats = 0;
     this.started = false;
     this.bounds = null;
+    this.safeCells.clear();
     this.artifactCache.clear();
     this.store.clear();
     return autoStart ? this.reveal(0, 0) : EMPTY_RESULT();
@@ -437,7 +513,7 @@ export class GameModel {
   }
 
   mineAt(x: number, y: number): boolean {
-    if (this.started && Math.abs(x - this.safeX) <= 2 && Math.abs(y - this.safeY) <= 2) return false;
+    if (this.started && this.safeCells.has(`${x},${y}`)) return false;
     if (this.artifactAt(x, y)) return false;
     return this.rawMineAt(x, y);
   }
@@ -450,7 +526,8 @@ export class GameModel {
   }
 
   private rawMineAt(x: number, y: number): boolean {
-    return hash32(x, y, this.seed, 0x51ed270b) / UINT32_RANGE < this.difficulty.density;
+    const topologySalt = this.topologyId === "square" ? 0 : this.topologyId === "triangular" ? 0x34c1a5d7 : 0x69b284eb;
+    return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.difficulty.density;
   }
 
   private artifactForZone(zoneX: number, zoneY: number): Readonly<{ x: number; y: number }> | null {
@@ -468,14 +545,9 @@ export class GameModel {
       const candidateY = zoneY * ARTIFACT_ZONE + 3 + Math.floor(candidate / ARTIFACT_INTERIOR);
       if (this.rawMineAt(candidateX, candidateY)) continue;
       let zero = true;
-      for (let offsetY = -1; offsetY <= 1 && zero; offsetY += 1) {
-        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-          if ((offsetX !== 0 || offsetY !== 0) && this.rawMineAt(candidateX + offsetX, candidateY + offsetY)) {
-            zero = false;
-            break;
-          }
-        }
-      }
+      this.topology.forEachNeighbor(candidateX, candidateY, (neighborX, neighborY) => {
+        if (zero && this.rawMineAt(neighborX, neighborY)) zero = false;
+      });
       if (zero) {
         artifact = { x: candidateX, y: candidateY };
         break;
@@ -492,11 +564,9 @@ export class GameModel {
 
   clueAt(x: number, y: number): number {
     let mines = 0;
-    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-        if ((offsetX !== 0 || offsetY !== 0) && this.mineAt(x + offsetX, y + offsetY)) mines += 1;
-      }
-    }
+    this.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+      if (this.mineAt(neighborX, neighborY)) mines += 1;
+    });
     return mines;
   }
 
@@ -514,6 +584,7 @@ export class GameModel {
       this.started = true;
       this.safeX = x;
       this.safeY = y;
+      this.buildSafeRegion(x, y);
     }
     return this.openCascade([x, y]);
   }
@@ -678,10 +749,24 @@ export class GameModel {
   }
 
   private forEachNeighbor(x: number, y: number, visitor: (neighborX: number, neighborY: number) => void): void {
-    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-        if (offsetX !== 0 || offsetY !== 0) visitor(x + offsetX, y + offsetY);
+    this.topology.forEachNeighbor(x, y, visitor);
+  }
+
+  private buildSafeRegion(originX: number, originY: number): void {
+    this.safeCells.clear();
+    let frontier: Array<[number, number]> = [[originX, originY]];
+    this.safeCells.add(`${originX},${originY}`);
+    for (let distance = 0; distance < 2; distance += 1) {
+      const next: Array<[number, number]> = [];
+      for (const [x, y] of frontier) {
+        this.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+          const key = `${neighborX},${neighborY}`;
+          if (this.safeCells.has(key)) return;
+          this.safeCells.add(key);
+          next.push([neighborX, neighborY]);
+        });
       }
+      frontier = next;
     }
   }
 

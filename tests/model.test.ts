@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { CellState, CellStore, DIFFICULTIES, GameModel, MODES, floorDiv, hash32, isOpened } from "../src/model";
+import { CellState, CellStore, DIFFICULTIES, GameModel, MODES, floorDiv, hash32, isOpened, openedClue } from "../src/model";
+import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
 describe("deterministic infinite field", () => {
   it("returns identical hashes and mine layouts for the same seed", () => {
@@ -32,6 +33,74 @@ describe("deterministic infinite field", () => {
       const observed = mines / (side * side);
       expect(Math.abs(observed - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
     }
+  });
+});
+
+describe("topology-driven fields", () => {
+  it("keeps deterministic density, clues, and graph-distance-two starts on every topology", () => {
+    for (const topologyId of TOPOLOGY_IDS) {
+      const first = new GameModel({ mode: "master", seed: 0x71a9, autoStart: false, topology: topologyId });
+      const second = new GameModel({ mode: "master", seed: 0x71a9, autoStart: false, topology: topologyId });
+      for (let y = -20; y <= 20; y += 4) {
+        for (let x = -30; x <= 30; x += 5) {
+          expect(first.mineAt(x, y)).toBe(second.mineAt(x, y));
+          let expectedClue = 0;
+          TOPOLOGIES[topologyId].forEachNeighbor(x, y, (neighborX, neighborY) => {
+            expectedClue += Number(first.mineAt(neighborX, neighborY));
+          });
+          expect(first.clueAt(x, y)).toBe(expectedClue);
+        }
+      }
+
+      first.reveal(7, -11);
+      let frontier: Array<[number, number]> = [[7, -11]];
+      const safe = new Set(["7,-11"]);
+      for (let distance = 0; distance < 2; distance += 1) {
+        const next: Array<[number, number]> = [];
+        for (const [x, y] of frontier) {
+          TOPOLOGIES[topologyId].forEachNeighbor(x, y, (neighborX, neighborY) => {
+            const key = `${neighborX},${neighborY}`;
+            if (safe.has(key)) return;
+            safe.add(key);
+            next.push([neighborX, neighborY]);
+          });
+        }
+        frontier = next;
+      }
+      for (const key of safe) {
+        const [x, y] = key.split(",").map(Number);
+        expect(first.mineAt(x, y), `${topologyId} safe ${key}`).toBe(false);
+      }
+    }
+  });
+
+  it("stores and exposes clues above eight without widening sparse cell records", () => {
+    for (const topologyId of ["triangular", "rhombille"] as const) {
+      const game = new GameModel({ seed: 8, autoStart: false, topology: topologyId });
+      const mines = new Set<string>();
+      game.topology.forEachNeighbor(0, 0, (x, y) => mines.add(`${x},${y}`));
+      vi.spyOn(game, "mineAt").mockImplementation((x, y) => mines.has(`${x},${y}`));
+      game.reveal(0, 0);
+      expect(openedClue(game.getState(0, 0))).toBe(game.topology.maxNeighbors);
+      expect(game.createSnapshot().cells.byteLength).toBe(game.store.nonZeroCells * 9);
+    }
+  });
+
+  it("persists topology in v2 and migrates v1 fields as Square", () => {
+    const source = new GameModel({ seed: 99, topology: "rhombille" });
+    const snapshot = source.createSnapshot();
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.topology).toBe("rhombille");
+    const restored = new GameModel({ seed: 1, autoStart: false });
+    expect(restored.restoreSnapshot(snapshot)).toBe(true);
+    expect(restored.topologyId).toBe("rhombille");
+
+    const squareSnapshot = new GameModel({ seed: 99, topology: "square" }).createSnapshot();
+    const legacy = { ...squareSnapshot, version: 1 } as Record<string, unknown>;
+    delete legacy.topology;
+    const migrated = new GameModel({ seed: 1, autoStart: false, topology: "triangular" });
+    expect(migrated.restoreSnapshot(legacy)).toBe(true);
+    expect(migrated.topologyId).toBe("square");
   });
 });
 

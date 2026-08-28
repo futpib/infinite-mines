@@ -46,6 +46,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
       const api = window.__infiniteMines;
       return {
         seed: api.model.seed,
+        topology: api.model.topologyId,
         mode: api.model.mode,
         score: api.model.score,
         things: api.model.things,
@@ -78,7 +79,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         };
       }),
   );
-  expect(databaseRecord.version).toBe(1);
+  expect(databaseRecord.version).toBe(2);
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
 
@@ -89,6 +90,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
       const api = window.__infiniteMines;
       return {
         seed: api.model.seed,
+        topology: api.model.topologyId,
         mode: api.model.mode,
         score: api.model.score,
         things: api.model.things,

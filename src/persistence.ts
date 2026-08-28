@@ -1,4 +1,4 @@
-import type { GameSnapshotV1 } from "./model";
+import type { GameSnapshotV1, GameSnapshotV2 } from "./model";
 
 export interface ViewSnapshotV1 {
   version: 1;
@@ -13,6 +13,15 @@ export interface PersistedGameV1 {
   model: GameSnapshotV1;
   view: ViewSnapshotV1;
 }
+
+export interface PersistedGameV2 {
+  version: 2;
+  savedAt: number;
+  model: GameSnapshotV2;
+  view: ViewSnapshotV1;
+}
+
+export type PersistedGame = PersistedGameV1 | PersistedGameV2;
 
 const DATABASE_NAME = "infinite-mines";
 const DATABASE_VERSION = 1;
@@ -44,7 +53,7 @@ const openDatabase = (): Promise<IDBDatabase> => {
   return pending;
 };
 
-export async function loadActiveGame(): Promise<PersistedGameV1 | null> {
+export async function loadActiveGame(): Promise<PersistedGame | null> {
   try {
     const database = await openDatabase();
     const value = await new Promise<unknown>((resolve, reject) => {
@@ -53,14 +62,16 @@ export async function loadActiveGame(): Promise<PersistedGameV1 | null> {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("Unable to read the saved game"));
     });
-    if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) return null;
-    return value as PersistedGameV1;
+    if (!value || typeof value !== "object") return null;
+    const version = (value as { version?: unknown }).version;
+    if (version !== 1 && version !== 2) return null;
+    return value as PersistedGame;
   } catch {
     return null;
   }
 }
 
-export async function saveActiveGame(snapshot: PersistedGameV1): Promise<boolean> {
+export async function saveActiveGame(snapshot: PersistedGame): Promise<boolean> {
   try {
     const database = await openDatabase();
     await new Promise<void>((resolve, reject) => {

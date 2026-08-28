@@ -1,8 +1,9 @@
 import "./styles.css";
 import { requiresRevealGuard } from "./controls";
-import { ActionResult, CellState, GameModel, Mode, MODES, openedClue } from "./model";
-import { loadActiveGame, saveActiveGame, type PersistedGameV1 } from "./persistence";
+import { ActionResult, CellState, GameModel, Mode, MODES, isOpened, openedClue } from "./model";
+import { loadActiveGame, saveActiveGame, type PersistedGame } from "./persistence";
 import { WebGLRenderer } from "./renderer";
+import { TOPOLOGIES, isTopologyId, type TopologyId } from "./topology";
 
 const element = <T extends Element>(selector: string): T => {
   const found = document.querySelector<T>(selector);
@@ -33,6 +34,8 @@ const fpsValue = element<HTMLElement>("#fps-value");
 const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
+const topologyOptions = element<HTMLElement>("#topology-options");
+const topologyPill = element<HTMLElement>("#topology-pill");
 const guardedDescription = element<HTMLElement>("#guarded-description");
 const helpGuardedDescription = element<HTMLElement>("#help-guarded-description");
 const fullscreenButton = element<HTMLButtonElement>("#fullscreen-button");
@@ -43,7 +46,7 @@ const cellLocator = element<HTMLButtonElement>("#cell-locator");
 const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
-const hoverMarkers = Array.from({ length: 9 }, () => {
+const hoverMarkers = Array.from({ length: 19 }, () => {
   const marker = document.createElement("span");
   marker.className = "hover-cell";
   hoverOverlay.append(marker);
@@ -67,6 +70,8 @@ const storageSet = (key: string, value: string): void => {
 
 const savedMode = storageGet("infinite-mines-mode");
 const initialMode: Mode = MODES.includes(savedMode as Mode) ? (savedMode as Mode) : "beginner";
+const savedTopology = storageGet("infinite-mines-topology");
+const initialTopology: TopologyId = isTopologyId(savedTopology) ? savedTopology : "square";
 type ControlsMode = "guarded" | "classic";
 const savedControls = storageGet("infinite-mines-controls");
 let controlsMode: ControlsMode = savedControls === "classic" ? "classic" : "guarded";
@@ -84,10 +89,13 @@ const revealModifierName = applePlatform ? "Command (⌘)" : "Ctrl";
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0];
 const fallbackSeed = randomSeed();
 const persistedGame = await loadActiveGame();
-const model = new GameModel({ mode: initialMode, seed: fallbackSeed, autoStart: false });
+const model = new GameModel({ mode: initialMode, seed: fallbackSeed, autoStart: false, topology: initialTopology });
 const restoredGame = persistedGame !== null && model.restoreSnapshot(persistedGame.model);
-if (!restoredGame) model.reset(initialMode, fallbackSeed);
-else storageSet("infinite-mines-mode", model.mode);
+if (!restoredGame) model.reset(initialMode, fallbackSeed, true, initialTopology);
+else {
+  storageSet("infinite-mines-mode", model.mode);
+  storageSet("infinite-mines-topology", model.topologyId);
+}
 const FPS_IDLE_AFTER_MS = 400;
 const FPS_UI_INTERVAL_MS = 250;
 let fpsLastFrameAt = 0;
@@ -128,7 +136,7 @@ let markTool = false;
 let toastTimer = 0;
 let saveTimer = 0;
 let saveRevision = 0;
-let pendingSave: { revision: number; snapshot: PersistedGameV1 } | null = null;
+let pendingSave: { revision: number; snapshot: PersistedGame } | null = null;
 let saveDrain: Promise<void> | null = null;
 let persistenceStatus = restoredGame ? "restored" : "idle";
 let lastSavedAt = restoredGame && Number.isFinite(persistedGame.savedAt) ? persistedGame.savedAt : 0;
@@ -149,7 +157,8 @@ let gameplayInteractionCount = 0;
 const AUTO_HIDE_GAMEPLAY_INTERACTIONS = 50;
 const locatorTextInterval = (): number => (renderer.cellSize < 4 ? 100 : 50);
 
-const highScoreKey = (mode: Mode): string => `infinite-mines-high-${mode}`;
+const highScoreKey = (mode: Mode): string =>
+  model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
 const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) ?? 0);
 
 function updateControlsMode(): void {
@@ -176,10 +185,18 @@ function updateAutoHideMode(): void {
   }
 }
 
+function updateTopologyOptions(): void {
+  topologyPill.textContent = TOPOLOGIES[model.topologyId].label.toUpperCase();
+  for (const button of topologyOptions.querySelectorAll<HTMLButtonElement>("button[data-topology]")) {
+    button.ariaPressed = String(button.dataset.topology === model.topologyId);
+  }
+}
+
 function updateStats(): void {
   const previousHigh = readHighScore();
   if (model.score > previousHigh) storageSet(highScoreKey(model.mode), String(model.score));
   modeStat.textContent = model.mode.toUpperCase();
+  updateTopologyOptions();
   highStat.textContent = Math.max(previousHigh, model.score).toLocaleString();
   scoreStat.textContent = model.score.toLocaleString();
   thingsStat.textContent = model.things.toLocaleString();
@@ -251,7 +268,7 @@ function describeVisibleCell(x: number, y: number): string {
   if (state === CellState.Flagged) return "flagged";
   if (state === CellState.Question) return "question";
   if (state === CellState.Exploded) return "exploded";
-  if (state >= CellState.Opened && state <= CellState.Opened8) {
+  if (isOpened(state)) {
     if (model.artifactAt(x, y)) return "opened artifact";
     const clue = openedClue(state);
     return clue === 0 ? "opened clear" : `opened clue ${clue}`;
@@ -270,7 +287,7 @@ function updateHoverPreview(cells: ReadonlyArray<{ x: number; y: number }>): voi
   const lod = renderer.cellSize < 4 ? "pixel" : "detail";
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const visualSize = Math.max(1 / dpr, Math.round(renderer.cellSize * dpr) / dpr);
-  const key = `${lod}:${visualSize}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
+  const key = `${model.topologyId}:${lod}:${visualSize}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
     .map(({ x, y }) => `${x},${y}`)
     .join(";")}`;
   if (key === hoverVisualKey) return;
@@ -280,7 +297,6 @@ function updateHoverPreview(cells: ReadonlyArray<{ x: number; y: number }>): voi
   if (hoverOverlay.style.getPropertyValue("--hover-cell-size") !== sizeValue) {
     hoverOverlay.style.setProperty("--hover-cell-size", sizeValue);
   }
-  const half = renderer.cellSize / 2;
   for (let index = 0; index < hoverMarkers.length; index += 1) {
     const marker = hoverMarkers[index];
     const cell = cells[index];
@@ -288,10 +304,26 @@ function updateHoverPreview(cells: ReadonlyArray<{ x: number; y: number }>): voi
       marker.classList.remove("is-visible");
       continue;
     }
-    const left = boardWidth / 2 + renderer.panX + cell.x * renderer.cellSize - half;
-    const top = boardHeight / 2 + renderer.panY + cell.y * renderer.cellSize - half;
+    const polygon = renderer.cellScreenPolygon(cell.x, cell.y);
+    const left = Math.min(...polygon.map((point) => point.x));
+    const top = Math.min(...polygon.map((point) => point.y));
+    const right = Math.max(...polygon.map((point) => point.x));
+    const bottom = Math.max(...polygon.map((point) => point.y));
     const snappedLeft = Math.round(left * dpr) / dpr;
     const snappedTop = Math.round(top * dpr) / dpr;
+    const width = Math.max(1 / dpr, Math.round((right - left) * dpr) / dpr);
+    const height = Math.max(1 / dpr, Math.round((bottom - top) * dpr) / dpr);
+    marker.style.width = `${width}px`;
+    marker.style.height = `${height}px`;
+    if (model.topologyId === "square") {
+      marker.classList.remove("is-polygon");
+      marker.style.clipPath = "";
+    } else {
+      marker.classList.add("is-polygon");
+      marker.style.clipPath = `polygon(${polygon
+        .map((point) => `${(((point.x - left) / Math.max(right - left, 1e-6)) * 100).toFixed(3)}% ${(((point.y - top) / Math.max(bottom - top, 1e-6)) * 100).toFixed(3)}%`)
+        .join(",")})`;
+    }
     marker.style.transform = `translate3d(${snappedLeft}px, ${snappedTop}px, 0)`;
     marker.classList.add("is-visible");
   }
@@ -360,6 +392,7 @@ function createCellReference(): string {
   return [
     `Infinite Mines cell (${locatedCell.x}, ${locatedCell.y})`,
     `mode=${model.mode}`,
+    `topology=${model.topologyId}`,
     `seed=${model.seed}`,
     `safe=${safe}`,
     `state=${describeVisibleCell(locatedCell.x, locatedCell.y)}`,
@@ -411,7 +444,7 @@ function flushGameSave(force = false): Promise<void> {
     pendingSave = {
       revision: saveRevision,
       snapshot: {
-        version: 1,
+        version: 2,
         savedAt: Date.now(),
         model: model.createSnapshot(),
         view: renderer.createViewSnapshot(),
@@ -475,14 +508,15 @@ function cheatDeath(): void {
   showToast(`Cheat ${model.cheats.toLocaleString()} — back with one health`);
 }
 
-function newGame(mode: Mode = model.mode): void {
-  model.reset(mode, randomSeed());
+function newGame(mode: Mode = model.mode, topology: TopologyId = model.topologyId): void {
+  model.reset(mode, randomSeed(), true, topology);
   storageSet("infinite-mines-mode", mode);
+  storageSet("infinite-mines-topology", topology);
   renderer.home();
   updateStats();
   refreshCellLocator(true);
   scheduleGameSave(0);
-  showToast(`${mode[0].toUpperCase()}${mode.slice(1)} field generated`);
+  showToast(`${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field generated`);
 }
 
 function goHome(): void {
@@ -507,6 +541,7 @@ updateStats();
 updateControlsMode();
 updateHoverMode();
 updateAutoHideMode();
+updateTopologyOptions();
 updateFullscreenState();
 setUiHidden(false);
 if (!restoredGame) scheduleGameSave(0);
@@ -801,6 +836,14 @@ element("#difficulty-list").addEventListener("click", (event) => {
   newGame(mode);
 });
 
+topologyOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-topology]");
+  if (!button || !isTopologyId(button.dataset.topology)) return;
+  if (button.dataset.topology === model.topologyId) return;
+  settingsDialog.close();
+  newGame(model.mode, button.dataset.topology);
+});
+
 controlOptions.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-controls]");
   if (!button) return;
@@ -884,7 +927,7 @@ declare global {
       diagnostics: () => ReturnType<typeof getDiagnostics>;
       reveal: (x: number, y: number) => void;
       cheatDeath: () => void;
-      newGame: (mode?: Mode) => void;
+      newGame: (mode?: Mode, topology?: TopologyId) => void;
       flushSave: () => Promise<void>;
     };
   }
@@ -898,6 +941,7 @@ function getDiagnostics() {
     health: model.health,
     cheats: model.cheats,
     openedCells: model.store.openedCells,
+    topology: model.topologyId,
     controlsMode,
     hoverMode,
     autoHideMode,

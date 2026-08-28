@@ -19,7 +19,7 @@
         <span class="brand-mark" aria-hidden="true">∞</span>
         <span>MINES</span>
       </a>
-      <div class="mode-pill"><span></span> INFINITE</div>
+      <div class="mode-pill"><span class="mode-dot"></span><span class="mode-word">INFINITE</span> · <strong id="topology-pill">SQUARE</strong></div>
       <div class="fps-pill" id="fps-counter" data-state="idle" aria-label="Render frame rate" title="Active render FPS; IDLE means the event-driven renderer is sleeping">
         <span>FPS</span>
         <strong id="fps-value">IDLE</strong>
@@ -182,6 +182,21 @@
             </button>
           </div>
         </section>
+        <section class="settings-section" aria-labelledby="topology-heading">
+          <p class="settings-label" id="topology-heading">CELL TOPOLOGY</p>
+          <div class="control-options topology-options" id="topology-options" aria-labelledby="topology-heading">
+            <button type="button" data-topology="square" aria-pressed="true">
+              <b>Square</b><small>8 touching neighbors</small>
+            </button>
+            <button type="button" data-topology="triangular" aria-pressed="false">
+              <b>Triangular</b><small>12 touching neighbors</small>
+            </button>
+            <button type="button" data-topology="rhombille" aria-pressed="false">
+              <b>Rhombille</b><small>10 touching neighbors</small>
+            </button>
+          </div>
+          <p class="dialog-note">Changing topology starts a fresh, randomly seeded field.</p>
+        </section>
         <section class="settings-section" aria-labelledby="density-heading">
           <p class="settings-label" id="density-heading">MINE DENSITY</p>
           <div class="difficulty-list" id="difficulty-list">
@@ -235,6 +250,7 @@
           <div><b>Chord</b><p>Click an open number when its mines are flagged to clear the rest.</p></div>
           <div><b>Survive</b><p>A blast costs one life. Score milestones earn lives back.</p></div>
           <div><b>Explore</b><p>Drag the field in any direction. It is generated only as you need it.</p></div>
+          <div><b>Topology</b><p>Square clues count 8 touching cells, triangular clues count 12, and rhombille clues count 10.</p></div>
           <div><b>Collect</b><p>Rare cyan artifacts are safe. Reveal them to add to Things.</p></div>
           <div><b>Reference</b><p>Hover a cell, then click its coordinate card to copy a reproducible debug reference.</p></div>
         </div>

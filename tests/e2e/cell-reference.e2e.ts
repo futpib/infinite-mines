@@ -42,7 +42,7 @@ test("R16 — cell coordinates produce a safe, reproducible clipboard reference"
     state: (element as HTMLElement).dataset.state,
   }));
   expect(reference).toBe(
-    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | theme=light`,
+    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | topology=square | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | theme=light`,
   );
   expect(reference).not.toMatch(/mine=(?:true|false)/);
   expect(reference).not.toContain("concealed mine");
@@ -80,7 +80,7 @@ test("R18 — subtle compositor markers preview covered, chord, and auto-flag cl
   ];
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.renderer.hoverPreview)).toEqual(chordPreview);
   const markers = page.locator("#hover-overlay .hover-cell");
-  await expect(markers).toHaveCount(9);
+  await expect(markers).toHaveCount(19);
   await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(5);
   const outline = await markers.first().evaluate((marker) => {
     const styles = getComputedStyle(marker);
@@ -248,7 +248,7 @@ test("R20 — one-pixel hover motion causes no WebGL work and rate-limits locato
   expect(result.webglFrames).toBe(0);
   expect(result.instanceUploads).toBe(0);
   expect(result.locatorMutations).toBeLessThanOrEqual(50);
-  expect(result.markerCount).toBe(9);
+  expect(result.markerCount).toBe(19);
   expect(result.visibleMarkers).toBe(1);
   expect(result.lod).toBe("pixel");
 });

@@ -44,14 +44,16 @@ export async function findCell(
 export async function worldPoint(page: Page, cell: WorldCell): Promise<{ x: number; y: number }> {
   const bounds = await page.locator("#board").boundingBox();
   if (!bounds) throw new Error("Board is not visible");
-  const view = await page.evaluate(() => ({
-    panX: window.__infiniteMines.renderer.panX,
-    panY: window.__infiniteMines.renderer.panY,
-    cellSize: window.__infiniteMines.renderer.cellSize,
-  }));
+  const center = await page.evaluate(({ x, y }) => {
+    const polygon = window.__infiniteMines.renderer.cellScreenPolygon(x, y);
+    return {
+      x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
+      y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
+    };
+  }, cell);
   return {
-    x: bounds.x + bounds.width / 2 + view.panX + cell.x * view.cellSize,
-    y: bounds.y + bounds.height / 2 + view.panY + cell.y * view.cellSize,
+    x: bounds.x + center.x,
+    y: bounds.y + center.y,
   };
 }
 

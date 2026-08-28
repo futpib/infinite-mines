@@ -1,8 +1,15 @@
-import { CellState, GameModel, STATE_TILE_SIZE, floorDiv, isOpened, type ExploredBounds } from "./model";
+import { CellState, GameModel, STATE_TILE_SIZE, floorDiv, isOpened, openedClue, type ExploredBounds } from "./model";
 import type { ViewSnapshotV1 } from "./persistence";
+import {
+  compareCells,
+  type TopologyId,
+  type WorldBounds,
+  type WorldPoint,
+} from "./topology";
 
 export interface RenderDiagnostics {
   backend: "webgl2";
+  topology: TopologyId;
   lod: "detail" | "pixel";
   cellSize: number;
   borderCssPixels: 0 | 1;
@@ -42,7 +49,17 @@ const RENDER_TILE_CELLS = STATE_TILE_SIZE;
 const CELLS_PER_TILE = RENDER_TILE_CELLS * RENDER_TILE_CELLS;
 const CACHED_CELL_FLOATS = 4;
 const INSTANCE_FLOATS = 5;
-const SPRITE_COUNT = 12;
+const GENERIC_INSTANCE_FLOATS = 10;
+const SQUARE_MAX_CLUE_SPRITE = 8;
+const SQUARE_FLAG_SPRITE = 9;
+const SQUARE_QUESTION_SPRITE = 10;
+const SQUARE_EXPLODED_SPRITE = 11;
+const SQUARE_SPRITE_COUNT = 12;
+const MAX_CLUE_SPRITE = 18;
+const FLAG_SPRITE = 19;
+const QUESTION_SPRITE = 20;
+const EXPLODED_SPRITE = 21;
+const SPRITE_COUNT = 22;
 const SPRITE_PIXELS = 64;
 const MAX_CACHED_TILES = 2048;
 const MAX_DAMAGE_AREA_RATIO = 0.4;
@@ -141,7 +158,7 @@ uniform vec3 u_cellBorder;
 uniform vec3 u_background;
 uniform vec3 u_marked;
 uniform vec3 u_exploded;
-uniform vec3 u_lodColors[12];
+uniform vec3 u_lodColors[${SQUARE_SPRITE_COUNT}];
 uniform float u_dpr;
 uniform float u_cellSize;
 
@@ -155,7 +172,7 @@ void main() {
   int edges = int(v_edges + 0.5);
   bool insideCell = v_cellUv.x >= 0.0 && v_cellUv.y >= 0.0 && v_cellUv.x < 1.0 && v_cellUv.y < 1.0;
   bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
-  vec3 fill = v_sprite == 11.0 ? u_exploded : (v_sprite >= 9.0 ? u_marked : u_cell);
+  vec3 fill = v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell);
   vec3 base = fill;
   if (u_cellSize >= 3.0) {
     vec2 pixelWidth = max(fwidth(v_cellUv), vec2(0.000001));
@@ -170,11 +187,11 @@ void main() {
     base = mix(u_cellBorder, fill, fillMix);
   }
 
-  int stateIndex = int(clamp(v_sprite, 0.0, 11.0) + 0.5);
+  int stateIndex = int(clamp(v_sprite, 0.0, ${SQUARE_EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
 
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
-  vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
+  vec2 atlasSize = vec2(float(${SQUARE_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
   if (!insideCell) glyph.a = 0.0;
   vec4 color = vec4(mix(base, glyph.rgb, glyph.a), 1.0);
@@ -193,6 +210,123 @@ void main() {
     return;
   }
   outColor = vec4(mix(stateColor, color.rgb, detailMix), 1.0);
+}`;
+
+const GENERIC_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec2 a_corner;
+layout(location = 1) in vec4 a_centerAxisU;
+layout(location = 2) in vec4 a_axisVState;
+layout(location = 3) in vec2 a_shapeEdges;
+
+uniform vec2 u_viewport;
+uniform vec2 u_cameraWorld;
+uniform float u_cellSize;
+
+out vec2 v_local;
+flat out float v_sprite;
+flat out float v_artifact;
+flat out float v_shape;
+flat out float v_edges;
+
+void main() {
+  vec2 local = a_corner * 2.0 - 1.0;
+  vec2 world = a_centerAxisU.xy + local.x * a_centerAxisU.zw + local.y * a_axisVState.xy;
+  vec2 pixel = u_viewport * 0.5 + (world - u_cameraWorld) * u_cellSize;
+  vec2 clip = pixel / u_viewport * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_local = local;
+  v_sprite = a_axisVState.z;
+  v_artifact = a_axisVState.w;
+  v_shape = a_shapeEdges.x;
+  v_edges = a_shapeEdges.y;
+}`;
+
+const GENERIC_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_atlas;
+uniform vec3 u_artifact;
+uniform vec3 u_artifactEdge;
+uniform vec3 u_lodArtifact;
+uniform vec3 u_cell;
+uniform vec3 u_cellBorder;
+uniform vec3 u_marked;
+uniform vec3 u_exploded;
+uniform vec3 u_lodColors[${SPRITE_COUNT}];
+uniform float u_dpr;
+uniform float u_cellSize;
+
+in vec2 v_local;
+flat in float v_sprite;
+flat in float v_artifact;
+flat in float v_shape;
+flat in float v_edges;
+out vec4 outColor;
+
+void includeEdge(float lineValue, int bit, int edges, inout float edgePixels) {
+  if ((edges & bit) != 0) edgePixels = min(edgePixels, lineValue / max(fwidth(lineValue), 0.000001));
+}
+
+void main() {
+  int shape = int(v_shape + 0.5);
+  int edges = int(v_edges + 0.5);
+  float edgePixels = 100000.0;
+  bool inside = false;
+  if (shape == 1) {
+    float left = v_local.x + (v_local.y + 1.0) * 0.5;
+    float right = (v_local.y + 1.0) * 0.5 - v_local.x;
+    float base = 1.0 - v_local.y;
+    inside = left >= 0.0 && right >= 0.0 && base >= 0.0;
+    includeEdge(left, 1, edges, edgePixels);
+    includeEdge(right, 2, edges, edgePixels);
+    includeEdge(base, 4, edges, edgePixels);
+  } else if (shape == 2) {
+    float base = v_local.y + 1.0;
+    float right = (1.0 - v_local.y) * 0.5 - v_local.x;
+    float left = v_local.x + (1.0 - v_local.y) * 0.5;
+    inside = base >= 0.0 && right >= 0.0 && left >= 0.0;
+    includeEdge(base, 1, edges, edgePixels);
+    includeEdge(right, 2, edges, edgePixels);
+    includeEdge(left, 4, edges, edgePixels);
+  } else {
+    float edge0 = 1.0 + v_local.x + v_local.y;
+    float edge1 = 1.0 - v_local.x + v_local.y;
+    float edge2 = 1.0 - v_local.x - v_local.y;
+    float edge3 = 1.0 + v_local.x - v_local.y;
+    inside = edge0 >= 0.0 && edge1 >= 0.0 && edge2 >= 0.0 && edge3 >= 0.0;
+    includeEdge(edge0, 1, edges, edgePixels);
+    includeEdge(edge1, 2, edges, edgePixels);
+    includeEdge(edge2, 4, edges, edgePixels);
+    includeEdge(edge3, 8, edges, edgePixels);
+  }
+  if (!inside) discard;
+
+  vec3 fill = v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell);
+  vec3 detailedBase = fill;
+  if (u_cellSize >= 3.0 && edgePixels < 100000.0) {
+    float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, edgePixels);
+    detailedBase = mix(u_cellBorder, fill, fillMix);
+  }
+
+  int stateIndex = int(clamp(v_sprite, 0.0, ${EXPLODED_SPRITE.toFixed(1)}) + 0.5);
+  vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
+  vec2 uv = clamp(v_local * 0.78 + 0.5, 0.0, 1.0);
+  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
+  vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
+  vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
+  vec3 detailed = mix(detailedBase, glyph.rgb, glyph.a);
+
+  if (v_artifact > 0.5) {
+    vec2 rotated = vec2(v_local.x + v_local.y, v_local.y - v_local.x) * 0.707107;
+    float square = max(abs(rotated.x), abs(rotated.y));
+    if (square < 0.27) detailed = u_artifactEdge;
+    if (square < 0.22) detailed = u_artifact;
+  }
+
+  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
+  outColor = vec4(mix(stateColor, detailed, detailMix), 1.0);
 }`;
 
 const PIXEL_VERTEX_SHADER = `#version 300 es
@@ -231,7 +365,7 @@ precision highp usampler2D;
 uniform usampler2D u_stateTexture;
 uniform ivec2 u_textureSize;
 uniform vec3 u_lodArtifact;
-uniform vec3 u_lodColors[12];
+uniform vec3 u_lodColors[${SQUARE_SPRITE_COUNT}];
 
 in vec2 v_textureUv;
 out vec4 outColor;
@@ -260,11 +394,15 @@ interface VisibleTile {
 
 interface GlResources {
   program: WebGLProgram;
+  genericProgram: WebGLProgram;
   pixelProgram: WebGLProgram;
   vertexArray: WebGLVertexArrayObject;
+  genericVertexArray: WebGLVertexArrayObject;
   pixelVertexArray: WebGLVertexArrayObject;
   instanceBuffer: WebGLBuffer;
+  genericInstanceBuffer: WebGLBuffer;
   atlasTexture: WebGLTexture;
+  genericAtlasTexture: WebGLTexture;
   stateTexture: WebGLTexture;
   scratchTexture: WebGLTexture;
   scratchFramebuffer: WebGLFramebuffer;
@@ -281,6 +419,18 @@ interface GlResources {
   markedUniform: WebGLUniformLocation;
   explodedUniform: WebGLUniformLocation;
   lodColorsUniform: WebGLUniformLocation;
+  genericViewportUniform: WebGLUniformLocation;
+  genericCameraWorldUniform: WebGLUniformLocation;
+  genericCellSizeUniform: WebGLUniformLocation;
+  genericDprUniform: WebGLUniformLocation;
+  genericArtifactUniform: WebGLUniformLocation;
+  genericArtifactEdgeUniform: WebGLUniformLocation;
+  genericLodArtifactUniform: WebGLUniformLocation;
+  genericCellUniform: WebGLUniformLocation;
+  genericCellBorderUniform: WebGLUniformLocation;
+  genericMarkedUniform: WebGLUniformLocation;
+  genericExplodedUniform: WebGLUniformLocation;
+  genericLodColorsUniform: WebGLUniformLocation;
   pixelViewportUniform: WebGLUniformLocation;
   pixelCameraCellUniform: WebGLUniformLocation;
   pixelTextureOriginUniform: WebGLUniformLocation;
@@ -349,6 +499,7 @@ export class WebGLRenderer {
   panY = 0;
   diagnostics: RenderDiagnostics = {
     backend: "webgl2",
+    topology: "square",
     lod: "detail",
     cellSize: BASE_CELL_SIZE,
     borderCssPixels: 1,
@@ -395,6 +546,8 @@ export class WebGLRenderer {
   private pixelTextureOriginY = 0;
   private pixelTextureWidth = 1;
   private pixelTextureHeight = 1;
+  private genericAnchorWorldX = 0;
+  private genericAnchorWorldY = 0;
   private readonly tileCache = new Map<string, CachedTile>();
   private hoverCells: Array<{ x: number; y: number }> = [];
   private hoverKey = "";
@@ -485,10 +638,13 @@ export class WebGLRenderer {
     this.theme = this.readTheme();
     if (this.contextLost) return;
     const gl = this.gl;
-    const atlas = this.createAtlas();
+    const atlas = this.createAtlas(SQUARE_MAX_CLUE_SPRITE, SQUARE_FLAG_SPRITE, SQUARE_QUESTION_SPRITE, SQUARE_EXPLODED_SPRITE);
+    const genericAtlas = this.createAtlas(MAX_CLUE_SPRITE, FLAG_SPRITE, QUESTION_SPRITE, EXPLODED_SPRITE);
     gl.bindTexture(gl.TEXTURE_2D, this.resources.atlasTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
-    this.applyTheme(this.resources, atlas);
+    gl.bindTexture(gl.TEXTURE_2D, this.resources.genericAtlasTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, genericAtlas);
+    this.applyTheme(this.resources, atlas, genericAtlas);
     this.requestRender();
   }
 
@@ -525,22 +681,31 @@ export class WebGLRenderer {
 
   zoomAt(screenX: number, screenY: number, factor: number): void {
     const previousSize = this.cellSize;
-    const worldX = (screenX - this.width / 2 - this.panX) / previousSize + 0.5;
-    const worldY = (screenY - this.height / 2 - this.panY) / previousSize + 0.5;
+    const worldX = (screenX - this.width / 2 - this.panX) / previousSize;
+    const worldY = (screenY - this.height / 2 - this.panY) / previousSize;
     const nextZoom = Math.max(MIN_ZOOM, Math.min(2.2, this.zoom * factor));
     if (nextZoom === this.zoom) return;
     this.zoom = nextZoom;
     const nextSize = this.cellSize;
-    this.panX = screenX - this.width / 2 - (worldX - 0.5) * nextSize;
-    this.panY = screenY - this.height / 2 - (worldY - 0.5) * nextSize;
+    this.panX = screenX - this.width / 2 - worldX * nextSize;
+    this.panY = screenY - this.height / 2 - worldY * nextSize;
     this.requestRender();
   }
 
   screenToCell(screenX: number, screenY: number): { x: number; y: number } {
-    return {
-      x: Math.floor((screenX - this.width / 2 - this.panX) / this.cellSize + 0.5),
-      y: Math.floor((screenY - this.height / 2 - this.panY) / this.cellSize + 0.5),
-    };
+    const origin = this.model.topology.origin;
+    return this.model.topology.hitTest(
+      origin.x + (screenX - this.width / 2 - this.panX) / this.cellSize,
+      origin.y + (screenY - this.height / 2 - this.panY) / this.cellSize,
+    );
+  }
+
+  cellScreenPolygon(x: number, y: number): WorldPoint[] {
+    const origin = this.model.topology.origin;
+    return this.model.topology.geometry(x, y).vertices.map((point) => ({
+      x: this.width / 2 + this.panX + (point.x - origin.x) * this.cellSize,
+      y: this.height / 2 + this.panY + (point.y - origin.y) * this.cellSize,
+    }));
   }
 
   setHoverCells(cells: ReadonlyArray<{ x: number; y: number }>): void {
@@ -549,7 +714,7 @@ export class WebGLRenderer {
       if (!Number.isInteger(cell.x) || !Number.isInteger(cell.y)) continue;
       unique.set(`${cell.x},${cell.y}`, { x: cell.x, y: cell.y });
     }
-    const next = [...unique.values()].slice(0, 9);
+    const next = [...unique.values()].slice(0, this.model.topology.maxNeighbors + 1);
     const key = next.map(({ x, y }) => `${x},${y}`).join(";");
     if (key === this.hoverKey) return;
     this.hoverKey = key;
@@ -606,10 +771,15 @@ export class WebGLRenderer {
       if (request.kind !== "full") this.retainedFrame = false;
     }
 
-    const centerWorldX = 0.5 - this.panX / cellSize;
-    const centerWorldY = 0.5 - this.panY / cellSize;
+    const squareTopology = this.model.topologyId === "square";
+    const topologyOrigin = this.model.topology.origin;
+    const cameraWorldX = topologyOrigin.x - this.panX / cellSize;
+    const cameraWorldY = topologyOrigin.y - this.panY / cellSize;
+    const centerWorldX = squareTopology ? cameraWorldX + 0.5 : cameraWorldX;
+    const centerWorldY = squareTopology ? cameraWorldY + 0.5 : cameraWorldY;
     const detailMix = this.detailMix(cellSize);
     const pixelLod = cellSize <= SPARSE_LOD_THRESHOLD;
+    const usePixelTexture = squareTopology && pixelLod;
     let anchorX: number;
     let anchorY: number;
     let minX: number;
@@ -620,7 +790,27 @@ export class WebGLRenderer {
     let requiredMinY: number;
     let requiredMaxX: number;
     let requiredMaxY: number;
-    if (pixelLod) {
+    if (!squareTopology) {
+      const visibleWorldBounds = this.worldViewportBounds(0);
+      const overscanCss = pixelLod ? PIXEL_LOD_OVERSCAN_CSS : cellSize * RENDER_TILE_CELLS;
+      const renderWorldBounds = this.worldViewportBounds(overscanCss);
+      const required = this.model.topology.cellRangeForWorldBounds(visibleWorldBounds);
+      const rendered = this.model.topology.cellRangeForWorldBounds(renderWorldBounds);
+      const anchorCell = this.model.topology.hitTest(cameraWorldX, cameraWorldY);
+      const anchorCells = pixelLod ? SPARSE_ANCHOR_CELLS : RENDER_TILE_CELLS * 8;
+      const anchorCellX = floorDiv(anchorCell.x + anchorCells / 2, anchorCells) * anchorCells;
+      const anchorCellY = floorDiv(anchorCell.y + anchorCells / 2, anchorCells) * anchorCells;
+      anchorX = anchorCellX / RENDER_TILE_CELLS;
+      anchorY = anchorCellY / RENDER_TILE_CELLS;
+      minX = rendered.minX;
+      minY = rendered.minY;
+      maxX = rendered.maxX;
+      maxY = rendered.maxY;
+      requiredMinX = required.minX;
+      requiredMinY = required.minY;
+      requiredMaxX = required.maxX;
+      requiredMaxY = required.maxY;
+    } else if (pixelLod) {
       const anchorWorldX =
         floorDiv(Math.floor(centerWorldX) + SPARSE_ANCHOR_CELLS / 2, SPARSE_ANCHOR_CELLS) * SPARSE_ANCHOR_CELLS;
       const anchorWorldY =
@@ -656,12 +846,17 @@ export class WebGLRenderer {
 
     const lod = pixelLod ? "pixel" : "detail";
     if (this.rangeChanged(lod, anchorX, anchorY, requiredMinX, requiredMinY, requiredMaxX, requiredMaxY)) {
-      if (pixelLod) this.rebuildPixelTexture(anchorX, anchorY, minX, minY, maxX, maxY);
+      if (!squareTopology) this.rebuildGenericInstances(anchorX, anchorY, minX, minY, maxX, maxY);
+      else if (pixelLod) this.rebuildPixelTexture(anchorX, anchorY, minX, minY, maxX, maxY);
       else this.rebuildInstances(anchorX, anchorY, minX, minY, maxX, maxY);
     }
 
-    const relativeCameraX = centerWorldX - anchorX * RENDER_TILE_CELLS;
-    const relativeCameraY = centerWorldY - anchorY * RENDER_TILE_CELLS;
+    const relativeCameraX = squareTopology
+      ? centerWorldX - anchorX * RENDER_TILE_CELLS
+      : cameraWorldX - this.genericAnchorWorldX;
+    const relativeCameraY = squareTopology
+      ? centerWorldY - anchorY * RENDER_TILE_CELLS
+      : cameraWorldY - this.genericAnchorWorldY;
     const canvasPixels = this.canvas.width * this.canvas.height;
     let redrawMode: RenderDiagnostics["redrawMode"] = request.kind;
     let redrawnPixels = canvasPixels;
@@ -733,7 +928,7 @@ export class WebGLRenderer {
     } else {
       this.smoothedFrameInterval = 0;
     }
-    const drawCalls = this.drawScene(pixelLod, relativeCameraX, relativeCameraY, cellSize, drawRects);
+    const drawCalls = this.drawScene(usePixelTexture, !squareTopology, relativeCameraX, relativeCameraY, cellSize, drawRects);
     if (redrawMode === "full") this.fullRedraws += 1;
     else if (redrawMode === "damage") this.damageRedraws += 1;
     else this.panRedraws += 1;
@@ -744,6 +939,7 @@ export class WebGLRenderer {
     this.frameCount += 1;
     this.diagnostics = {
       backend: "webgl2",
+      topology: this.model.topologyId,
       lod,
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
@@ -752,7 +948,7 @@ export class WebGLRenderer {
       backgroundColor: this.theme.background,
       frameCount: this.frameCount,
       frameMs: performance.now() - startedAt,
-      visibleCells: (visibleMax.x - visibleMin.x + 1) * (visibleMax.y - visibleMin.y + 1),
+      visibleCells: Math.abs((visibleMax.x - visibleMin.x + 1) * (visibleMax.y - visibleMin.y + 1)),
       drawnCells: this.instanceCount,
       chunks: this.model.store.chunkCount,
       storedCells: this.model.store.nonZeroCells,
@@ -774,7 +970,8 @@ export class WebGLRenderer {
   }
 
   private drawScene(
-    pixelLod: boolean,
+    pixelTexture: boolean,
+    genericTopology: boolean,
     relativeCameraX: number,
     relativeCameraY: number,
     cellSize: number,
@@ -785,7 +982,7 @@ export class WebGLRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(...this.theme.backgroundRgb, 1);
-    if (pixelLod) {
+    if (pixelTexture) {
       gl.useProgram(resources.pixelProgram);
       gl.bindVertexArray(resources.pixelVertexArray);
       gl.uniform2f(resources.pixelViewportUniform, this.width, this.height);
@@ -796,6 +993,15 @@ export class WebGLRenderer {
       gl.uniform1f(resources.pixelDprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, resources.stateTexture);
+    } else if (genericTopology) {
+      gl.useProgram(resources.genericProgram);
+      gl.bindVertexArray(resources.genericVertexArray);
+      gl.uniform2f(resources.genericViewportUniform, this.width, this.height);
+      gl.uniform2f(resources.genericCameraWorldUniform, relativeCameraX, relativeCameraY);
+      gl.uniform1f(resources.genericCellSizeUniform, cellSize);
+      gl.uniform1f(resources.genericDprUniform, this.dpr);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, resources.genericAtlasTexture);
     } else {
       gl.useProgram(resources.program);
       gl.bindVertexArray(resources.vertexArray);
@@ -820,7 +1026,7 @@ export class WebGLRenderer {
       if (!fullFrame) gl.scissor(rect.x, rect.y, rect.width, rect.height);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (this.instanceCount === 0) continue;
-      if (pixelLod) gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (pixelTexture) gl.drawArrays(gl.TRIANGLES, 0, 6);
       else gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
       drawCalls += 1;
     }
@@ -830,6 +1036,21 @@ export class WebGLRenderer {
   }
 
   private damageRect(bounds: ExploredBounds, cellSize: number): PixelRect | null {
+    if (this.model.topologyId !== "square") {
+      const world = this.model.topology.worldBoundsForCellRange(bounds);
+      const origin = this.model.topology.origin;
+      const dependencyPadding = this.model.topology.maxCellRadius * 2;
+      const leftCss = this.width / 2 + this.panX + (world.minX - origin.x - dependencyPadding) * cellSize;
+      const rightCss = this.width / 2 + this.panX + (world.maxX - origin.x + dependencyPadding) * cellSize;
+      const topCss = this.height / 2 + this.panY + (world.minY - origin.y - dependencyPadding) * cellSize;
+      const bottomCss = this.height / 2 + this.panY + (world.maxY - origin.y + dependencyPadding) * cellSize;
+      const left = Math.max(0, Math.floor(leftCss * this.dpr) - 1);
+      const right = Math.min(this.canvas.width, Math.ceil(rightCss * this.dpr) + 1);
+      const top = Math.max(0, Math.floor(topCss * this.dpr) - 1);
+      const bottom = Math.min(this.canvas.height, Math.ceil(bottomCss * this.dpr) + 1);
+      if (left >= right || top >= bottom) return null;
+      return { x: left, y: this.canvas.height - bottom, width: right - left, height: bottom - top };
+    }
     const leftCss = this.width / 2 + this.panX + (bounds.minX - 1.5) * cellSize;
     const rightCss = this.width / 2 + this.panX + (bounds.maxX + 1.5) * cellSize;
     const topCss = this.height / 2 + this.panY + (bounds.minY - 1.5) * cellSize;
@@ -940,6 +1161,40 @@ export class WebGLRenderer {
 
     const bounds = this.model.bounds;
     if (!bounds) return "Nothing explored yet";
+    if (this.model.topologyId !== "square") {
+      const world = this.model.topology.worldBoundsForCellRange(bounds);
+      const worldWidth = Math.max(1e-6, world.maxX - world.minX);
+      const worldHeight = Math.max(1e-6, world.maxY - world.minY);
+      const padding = 24;
+      const scale = Math.min((cssWidth - padding * 2) / worldWidth, (cssHeight - padding * 2) / worldHeight, 22);
+      const originX = (cssWidth - worldWidth * scale) / 2 - world.minX * scale;
+      const originY = (cssHeight - worldHeight * scale) / 2 - world.minY * scale;
+      this.model.store.forEachNonZero((x, y, state) => {
+        if (isOpened(state)) context.fillStyle = this.model.artifactAt(x, y) ? this.theme.artifact : this.theme.overviewOpened;
+        else if (state === CellState.Exploded) context.fillStyle = this.theme.exploded;
+        else if (state === CellState.Flagged) context.fillStyle = this.theme.flag;
+        else return;
+        const vertices = this.model.topology.geometry(x, y).vertices;
+        context.beginPath();
+        for (let index = 0; index < vertices.length; index += 1) {
+          const pointX = originX + vertices[index].x * scale;
+          const pointY = originY + vertices[index].y * scale;
+          if (index === 0) context.moveTo(pointX, pointY);
+          else context.lineTo(pointX, pointY);
+        }
+        context.closePath();
+        context.fill();
+      });
+      const origin = this.model.topology.origin;
+      context.fillStyle = this.theme.background;
+      context.strokeStyle = this.theme.ink;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.arc(originX + origin.x * scale, originY + origin.y * scale, Math.max(3, scale * 0.45), 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      return `${this.model.topology.label} · ${this.model.store.openedCells.toLocaleString()} revealed`;
+    }
     const worldWidth = bounds.maxX - bounds.minX + 1;
     const worldHeight = bounds.maxY - bounds.minY + 1;
     const padding = 24;
@@ -1014,6 +1269,81 @@ export class WebGLRenderer {
   private detailMix(cellSize: number): number {
     const progress = Math.max(0, Math.min(1, (cellSize - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START)));
     return progress * progress * (3 - 2 * progress);
+  }
+
+  private worldViewportBounds(paddingCss: number): WorldBounds {
+    const cellSize = this.cellSize;
+    const origin = this.model.topology.origin;
+    return {
+      minX: origin.x + (-paddingCss - this.width / 2 - this.panX) / cellSize,
+      minY: origin.y + (-paddingCss - this.height / 2 - this.panY) / cellSize,
+      maxX: origin.x + (this.width + paddingCss - this.width / 2 - this.panX) / cellSize,
+      maxY: origin.y + (this.height + paddingCss - this.height / 2 - this.panY) / cellSize,
+    };
+  }
+
+  private rebuildGenericInstances(
+    anchorX: number,
+    anchorY: number,
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+  ): void {
+    const topology = this.model.topology;
+    const anchorCellX = anchorX * RENDER_TILE_CELLS;
+    const anchorCellY = anchorY * RENDER_TILE_CELLS;
+    const anchor = topology.geometry(anchorCellX, anchorCellY).center;
+    this.genericAnchorWorldX = anchor.x;
+    this.genericAnchorWorldY = anchor.y;
+    const rangeCells = Math.max(1, Math.min(this.model.store.nonZeroCells, (maxX - minX + 1) * (maxY - minY + 1)));
+    const instances = new Float32Array(rangeCells * GENERIC_INSTANCE_FLOATS);
+    let index = 0;
+
+    this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+      if (index + GENERIC_INSTANCE_FLOATS > instances.length) return;
+      const geometry = topology.geometry(x, y);
+      const edgeNeighbors = topology.edgeNeighbors(x, y);
+      let edges = 0;
+      for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
+        const neighbor = edgeNeighbors[edge];
+        if (
+          compareCells({ x, y }, neighbor) < 0 ||
+          !this.isRenderable(this.model.getState(neighbor.x, neighbor.y))
+        ) {
+          edges |= 1 << edge;
+        }
+      }
+      const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+      instances[index++] = geometry.center.x - anchor.x;
+      instances[index++] = geometry.center.y - anchor.y;
+      instances[index++] = geometry.axisU.x;
+      instances[index++] = geometry.axisU.y;
+      instances[index++] = geometry.axisV.x;
+      instances[index++] = geometry.axisV.y;
+      instances[index++] = this.spriteFor(state);
+      instances[index++] = isOpened(state) && this.model.artifactAt(x, y) ? 1 : 0;
+      instances[index++] = shape;
+      instances[index++] = edges;
+    });
+
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.resources.genericInstanceBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, instances.subarray(0, index), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    this.instanceUploads += 1;
+    this.instanceCount = index / GENERIC_INSTANCE_FLOATS;
+    this.range = {
+      lod: this.cellSize <= SPARSE_LOD_THRESHOLD ? "pixel" : "detail",
+      anchorX,
+      anchorY,
+      minX,
+      minY,
+      maxX,
+      maxY,
+      generation: this.model.store.generation,
+      version: this.model.store.version,
+    };
   }
 
   private rebuildInstances(anchorX: number, anchorY: number, minX: number, minY: number, maxX: number, maxY: number): void {
@@ -1108,7 +1438,7 @@ export class WebGLRenderer {
     const textureHeight = visibleStates > 0 ? storedMaxY - storedMinY + 1 : 1;
     const statePixels = new Uint8Array(textureWidth * textureHeight);
     this.model.store.forEachNonZeroInBounds(minWorldX, minWorldY, maxWorldX, maxWorldY, (x, y, state) => {
-      const sprite = this.spriteFor(state);
+      const sprite = this.squareSpriteFor(state);
       const artifact = isOpened(state) && this.model.artifactAt(x, y) ? 16 : 0;
       statePixels[(y - textureOriginY) * textureWidth + x - textureOriginX] = sprite + 1 + artifact;
     });
@@ -1157,7 +1487,7 @@ export class WebGLRenderer {
         if (state === CellState.Covered || state === CellState.Queued) continue;
         cells[index++] = localX;
         cells[index++] = localY;
-        cells[index++] = this.spriteFor(state);
+        cells[index++] = this.squareSpriteFor(state);
         cells[index++] = isOpened(state) && this.model.artifactAt(originX + localX, originY + localY) ? 1 : 0;
       }
     }
@@ -1172,10 +1502,17 @@ export class WebGLRenderer {
   }
 
   private spriteFor(state: CellState): number {
-    if (isOpened(state)) return state - CellState.Opened;
-    if (state === CellState.Flagged) return 9;
-    if (state === CellState.Question) return 10;
-    return 11;
+    if (isOpened(state)) return openedClue(state);
+    if (state === CellState.Flagged) return FLAG_SPRITE;
+    if (state === CellState.Question) return QUESTION_SPRITE;
+    return EXPLODED_SPRITE;
+  }
+
+  private squareSpriteFor(state: CellState): number {
+    if (isOpened(state)) return Math.min(SQUARE_MAX_CLUE_SPRITE, openedClue(state));
+    if (state === CellState.Flagged) return SQUARE_FLAG_SPRITE;
+    if (state === CellState.Question) return SQUARE_QUESTION_SPRITE;
+    return SQUARE_EXPLODED_SPRITE;
   }
 
   private isRenderable(state: CellState): boolean {
@@ -1199,21 +1536,28 @@ export class WebGLRenderer {
   private createResources(): GlResources {
     const gl = this.gl;
     const program = requireProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
+    const genericProgram = requireProgram(gl, GENERIC_VERTEX_SHADER, GENERIC_FRAGMENT_SHADER);
     const pixelProgram = requireProgram(gl, PIXEL_VERTEX_SHADER, PIXEL_FRAGMENT_SHADER);
     const vertexArray = gl.createVertexArray();
+    const genericVertexArray = gl.createVertexArray();
     const pixelVertexArray = gl.createVertexArray();
     const quadBuffer = gl.createBuffer();
     const instanceBuffer = gl.createBuffer();
+    const genericInstanceBuffer = gl.createBuffer();
     const atlasTexture = gl.createTexture();
+    const genericAtlasTexture = gl.createTexture();
     const stateTexture = gl.createTexture();
     const scratchTexture = gl.createTexture();
     const scratchFramebuffer = gl.createFramebuffer();
     if (
       !vertexArray ||
+      !genericVertexArray ||
       !pixelVertexArray ||
       !quadBuffer ||
       !instanceBuffer ||
+      !genericInstanceBuffer ||
       !atlasTexture ||
+      !genericAtlasTexture ||
       !stateTexture ||
       !scratchTexture ||
       !scratchFramebuffer
@@ -1247,12 +1591,37 @@ export class WebGLRenderer {
     gl.vertexAttribDivisor(2, 1);
     gl.bindVertexArray(null);
 
+    gl.bindVertexArray(genericVertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, genericInstanceBuffer);
+    const genericStride = GENERIC_INSTANCE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, genericStride, 0);
+    gl.vertexAttribDivisor(1, 1);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, genericStride, 4 * Float32Array.BYTES_PER_ELEMENT);
+    gl.vertexAttribDivisor(2, 1);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 2, gl.FLOAT, false, genericStride, 8 * Float32Array.BYTES_PER_ELEMENT);
+    gl.vertexAttribDivisor(3, 1);
+    gl.bindVertexArray(null);
+
     gl.bindVertexArray(pixelVertexArray);
     gl.bindVertexArray(null);
 
-    const atlas = this.createAtlas();
+    const atlas = this.createAtlas(SQUARE_MAX_CLUE_SPRITE, SQUARE_FLAG_SPRITE, SQUARE_QUESTION_SPRITE, SQUARE_EXPLODED_SPRITE);
+    const genericAtlas = this.createAtlas(MAX_CLUE_SPRITE, FLAG_SPRITE, QUESTION_SPRITE, EXPLODED_SPRITE);
     gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.bindTexture(gl.TEXTURE_2D, genericAtlasTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, genericAtlas);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -1280,6 +1649,8 @@ export class WebGLRenderer {
 
     gl.useProgram(program);
     gl.uniform1i(requireUniform(gl, program, "u_atlas"), 0);
+    gl.useProgram(genericProgram);
+    gl.uniform1i(requireUniform(gl, genericProgram, "u_atlas"), 0);
     gl.useProgram(pixelProgram);
     gl.uniform1i(requireUniform(gl, pixelProgram, "u_stateTexture"), 1);
     gl.disable(gl.BLEND);
@@ -1288,11 +1659,15 @@ export class WebGLRenderer {
 
     const resources = {
       program,
+      genericProgram,
       pixelProgram,
       vertexArray,
+      genericVertexArray,
       pixelVertexArray,
       instanceBuffer,
+      genericInstanceBuffer,
       atlasTexture,
+      genericAtlasTexture,
       stateTexture,
       scratchTexture,
       scratchFramebuffer,
@@ -1309,6 +1684,18 @@ export class WebGLRenderer {
       markedUniform: requireUniform(gl, program, "u_marked"),
       explodedUniform: requireUniform(gl, program, "u_exploded"),
       lodColorsUniform: requireUniform(gl, program, "u_lodColors[0]"),
+      genericViewportUniform: requireUniform(gl, genericProgram, "u_viewport"),
+      genericCameraWorldUniform: requireUniform(gl, genericProgram, "u_cameraWorld"),
+      genericCellSizeUniform: requireUniform(gl, genericProgram, "u_cellSize"),
+      genericDprUniform: requireUniform(gl, genericProgram, "u_dpr"),
+      genericArtifactUniform: requireUniform(gl, genericProgram, "u_artifact"),
+      genericArtifactEdgeUniform: requireUniform(gl, genericProgram, "u_artifactEdge"),
+      genericLodArtifactUniform: requireUniform(gl, genericProgram, "u_lodArtifact"),
+      genericCellUniform: requireUniform(gl, genericProgram, "u_cell"),
+      genericCellBorderUniform: requireUniform(gl, genericProgram, "u_cellBorder"),
+      genericMarkedUniform: requireUniform(gl, genericProgram, "u_marked"),
+      genericExplodedUniform: requireUniform(gl, genericProgram, "u_exploded"),
+      genericLodColorsUniform: requireUniform(gl, genericProgram, "u_lodColors[0]"),
       pixelViewportUniform: requireUniform(gl, pixelProgram, "u_viewport"),
       pixelCameraCellUniform: requireUniform(gl, pixelProgram, "u_cameraCell"),
       pixelTextureOriginUniform: requireUniform(gl, pixelProgram, "u_textureOrigin"),
@@ -1318,13 +1705,19 @@ export class WebGLRenderer {
       pixelLodArtifactUniform: requireUniform(gl, pixelProgram, "u_lodArtifact"),
       pixelLodColorsUniform: requireUniform(gl, pixelProgram, "u_lodColors[0]"),
     };
-    this.applyTheme(resources, atlas);
+    this.applyTheme(resources, atlas, genericAtlas);
     return resources;
   }
 
-  private applyTheme(resources: GlResources, atlas: HTMLCanvasElement): void {
+  private applyTheme(resources: GlResources, atlas: HTMLCanvasElement, genericAtlas: HTMLCanvasElement): void {
     const gl = this.gl;
-    const lodColors = this.createLodColors(atlas);
+    const lodColors = this.createLodColors(
+      atlas,
+      SQUARE_SPRITE_COUNT,
+      SQUARE_FLAG_SPRITE,
+      SQUARE_EXPLODED_SPRITE,
+    );
+    const genericLodColors = this.createLodColors(genericAtlas, SPRITE_COUNT, FLAG_SPRITE, EXPLODED_SPRITE);
     const cell = hexToRgb(this.theme.cell);
     const artifactArea = 0.44 * 0.44;
     const artifactEdgeArea = 0.54 * 0.54 - artifactArea;
@@ -1344,22 +1737,36 @@ export class WebGLRenderer {
     gl.uniform3fv(resources.markedUniform, hexToRgb(this.theme.marked));
     gl.uniform3fv(resources.explodedUniform, hexToRgb(this.theme.exploded));
     gl.uniform3fv(resources.lodColorsUniform, lodColors);
+    gl.useProgram(resources.genericProgram);
+    gl.uniform3fv(resources.genericArtifactUniform, this.theme.artifactRgb);
+    gl.uniform3fv(resources.genericArtifactEdgeUniform, this.theme.artifactEdgeRgb);
+    gl.uniform3fv(resources.genericLodArtifactUniform, artifactLod);
+    gl.uniform3fv(resources.genericCellUniform, cell);
+    gl.uniform3fv(resources.genericCellBorderUniform, hexToRgb(this.theme.cellBorder));
+    gl.uniform3fv(resources.genericMarkedUniform, hexToRgb(this.theme.marked));
+    gl.uniform3fv(resources.genericExplodedUniform, hexToRgb(this.theme.exploded));
+    gl.uniform3fv(resources.genericLodColorsUniform, genericLodColors);
     gl.useProgram(resources.pixelProgram);
     gl.uniform3fv(resources.pixelLodArtifactUniform, artifactLod);
     gl.uniform3fv(resources.pixelLodColorsUniform, lodColors);
   }
 
-  private createLodColors(atlas: HTMLCanvasElement): Float32Array {
+  private createLodColors(
+    atlas: HTMLCanvasElement,
+    spriteCount: number,
+    flagSprite: number,
+    explodedSprite: number,
+  ): Float32Array {
     const context = atlas.getContext("2d");
     if (!context) throw new Error("Unable to sample sprite atlas");
     const pixels = context.getImageData(0, 0, atlas.width, atlas.height).data;
-    const colors = new Float32Array(SPRITE_COUNT * 3);
+    const colors = new Float32Array(spriteCount * 3);
     const cell = hexToRgb(this.theme.cell);
     const marked = hexToRgb(this.theme.marked);
     const exploded = hexToRgb(this.theme.exploded);
     const spriteArea = SPRITE_PIXELS * SPRITE_PIXELS;
-    for (let sprite = 0; sprite < SPRITE_COUNT; sprite += 1) {
-      const base = sprite === 11 ? exploded : sprite >= 9 ? marked : cell;
+    for (let sprite = 0; sprite < spriteCount; sprite += 1) {
+      const base = sprite === explodedSprite ? exploded : sprite >= flagSprite ? marked : cell;
       const totals = [0, 0, 0];
       for (let y = 0; y < SPRITE_PIXELS; y += 1) {
         for (let x = 0; x < SPRITE_PIXELS; x += 1) {
@@ -1400,33 +1807,45 @@ export class WebGLRenderer {
       artifactEdgeRgb: hexToRgb(artifactEdge),
       overview: color("--overview-bg"),
       overviewOpened: color("--overview-opened"),
-      numbers: Array.from({ length: 9 }, (_, index) => color(`--board-number-${index}`)),
+      numbers: Array.from({ length: MAX_CLUE_SPRITE + 1 }, (_, index) =>
+        color(`--board-number-${Math.min(index, 8)}`),
+      ),
     };
   }
 
-  private createAtlas(): HTMLCanvasElement {
+  private createAtlas(maxClue: number, flagSprite: number, questionSprite: number, explodedSprite: number): HTMLCanvasElement {
     const canvas = document.createElement("canvas");
-    canvas.width = SPRITE_PIXELS * SPRITE_COUNT;
+    const spriteCount = explodedSprite + 1;
+    canvas.width = SPRITE_PIXELS * spriteCount;
     canvas.height = SPRITE_PIXELS;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Unable to create sprite atlas");
-    for (let sprite = 0; sprite < SPRITE_COUNT; sprite += 1) {
-      this.drawSprite(context, sprite * SPRITE_PIXELS, SPRITE_PIXELS, sprite);
+    for (let sprite = 0; sprite < spriteCount; sprite += 1) {
+      this.drawSprite(context, sprite * SPRITE_PIXELS, SPRITE_PIXELS, sprite, maxClue, flagSprite, questionSprite, explodedSprite);
     }
     return canvas;
   }
 
-  private drawSprite(context: CanvasRenderingContext2D, left: number, size: number, sprite: number): void {
+  private drawSprite(
+    context: CanvasRenderingContext2D,
+    left: number,
+    size: number,
+    sprite: number,
+    maxClue: number,
+    flagSprite: number,
+    questionSprite: number,
+    explodedSprite: number,
+  ): void {
     const theme = this.theme;
     context.clearRect(left, 0, size, size);
 
-    if (sprite >= 1 && sprite <= 8) {
+    if (sprite >= 1 && sprite <= maxClue) {
       context.fillStyle = theme.numbers[sprite];
       context.font = `800 ${Math.round(size * 0.62)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText(String(sprite), left + size / 2, size * 0.53);
-    } else if (sprite === 9) {
+    } else if (sprite === flagSprite) {
       context.strokeStyle = theme.flagStroke;
       context.fillStyle = theme.flag;
       context.lineWidth = Math.max(1.3, size / 14);
@@ -1442,13 +1861,13 @@ export class WebGLRenderer {
       context.closePath();
       context.fill();
       context.stroke();
-    } else if (sprite === 10) {
+    } else if (sprite === questionSprite) {
       context.fillStyle = theme.question;
       context.font = `800 ${Math.round(size * 0.7)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText("?", left + size / 2, size * 0.52);
-    } else if (sprite === 11) {
+    } else if (sprite === explodedSprite) {
       const centerX = left + size / 2;
       const centerY = size / 2;
       context.fillStyle = theme.mine;
