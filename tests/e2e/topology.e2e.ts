@@ -419,11 +419,14 @@ test("R39 — non-square hover separates hint neighborhoods from click effects w
 }) => {
   await openDeterministicGame(page, 0x417e_c7ed);
   for (const topology of ["rhombille", "triangular"] as const) {
-    await page.evaluate((topologyId) => {
+    const frameBeforeReset = await page.evaluate((topologyId) => {
       const api = window.__infiniteMines;
+      const frameCount = api.diagnostics().frameCount;
       api.model.reset("master", 0x417e_c7ed, false, topologyId);
       api.renderer.home();
+      return frameCount;
     }, topology);
+    await waitForNextFrame(page, frameBeforeReset);
     const center = await worldPoint(page, { x: 0, y: 0 });
     const frameBeforeHover = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await page.mouse.move(center.x + 40, center.y);
@@ -439,8 +442,31 @@ test("R39 — non-square hover separates hint neighborhoods from click effects w
     expect(colors.hint).not.toBe(colors.affected);
     expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(frameBeforeHover);
 
-    await page.getByRole("button", { name: "Hide controls" }).click();
-    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 1);
-    await page.getByRole("button", { name: "Show controls" }).click();
+    const revealedNeighbors = await page.evaluate(
+      ({ opened1, opened2, exploded }) => {
+        const api = window.__infiniteMines;
+        const neighbors: Array<{ x: number; y: number }> = [];
+        api.model.topology.forEachNeighbor(0, 0, (x, y) => neighbors.push({ x, y }));
+        api.model.store.set(neighbors[0].x, neighbors[0].y, opened1);
+        api.model.store.set(neighbors[1].x, neighbors[1].y, opened2);
+        api.model.store.set(neighbors[2].x, neighbors[2].y, exploded);
+        return neighbors.slice(0, 3);
+      },
+      { opened1: CellState.Opened1, opened2: CellState.Opened2, exploded: CellState.Exploded },
+    );
+    await page.mouse.move(center.x + 40, center.y);
+    await page.mouse.move(center.x, center.y);
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(expectedCells - 3);
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 4);
+    for (const revealed of revealedNeighbors) {
+      await expect(
+        page.locator(`#hover-overlay .hover-cell.is-visible[data-x="${revealed.x}"][data-y="${revealed.y}"]`),
+      ).toHaveCount(0);
+    }
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(frameBeforeHover);
+
+    await page.getByRole("button", { name: "Hide controls" }).evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 4);
+    await page.getByRole("button", { name: "Show controls" }).evaluate((button: HTMLButtonElement) => button.click());
   }
 });

@@ -394,7 +394,10 @@ function refreshCellLocator(forceText = false, showHover = true): void {
     hoverMode === "affected" ? model.previewClickCells(locatedCell.x, locatedCell.y) : [{ ...locatedCell }];
   const hintCells: Array<{ x: number; y: number }> = [];
   if (model.topologyId !== "square") {
-    model.topology.forEachNeighbor(locatedCell.x, locatedCell.y, (x, y) => hintCells.push({ x, y }));
+    model.topology.forEachNeighbor(locatedCell.x, locatedCell.y, (x, y) => {
+      const state = model.getState(x, y);
+      if (!isOpened(state) && state !== CellState.Exploded) hintCells.push({ x, y });
+    });
   }
   updateHoverPreview(showHover && pointerOnBoard ? affectedCells : [], showHover && pointerOnBoard ? hintCells : []);
   scheduleLocatorText(forceText);
