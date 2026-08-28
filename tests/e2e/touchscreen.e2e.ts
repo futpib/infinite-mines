@@ -51,7 +51,7 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
       type: "touchMove",
       touchPoints: [touchPoint(1, startX + 80, startY + 30)],
     });
-    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
     await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
     const after = await page.evaluate(() => ({
@@ -112,7 +112,7 @@ test("R22 — two-finger touch pans and zooms focally without opening cells, the
         ],
       });
     }
-    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
     const during = await page.evaluate(() => ({
       view: window.__infiniteMines.renderer.createViewSnapshot(),
       hoveredCells: window.__infiniteMines.diagnostics().hoveredCells,

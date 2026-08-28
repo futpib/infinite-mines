@@ -338,8 +338,6 @@ export class WebGLRenderer {
   private width = 1;
   private height = 1;
   private dpr = 1;
-  private displayDpr = 1;
-  private dragging = false;
   private frameId: number | null = null;
   private contextLost = false;
   private instanceCount = 0;
@@ -435,8 +433,7 @@ export class WebGLRenderer {
       this.height = nextHeight;
       this.range = null;
     }
-    this.displayDpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.updateBackingStore(this.dragging ? 1 : this.displayDpr);
+    this.updateBackingStore(Math.min(window.devicePixelRatio || 1, 2));
     this.requestRender();
   }
 
@@ -449,21 +446,13 @@ export class WebGLRenderer {
   }
 
   panBy(deltaX: number, deltaY: number): void {
-    if (!this.dragging) {
-      this.dragging = true;
-      this.updateBackingStore(1);
-    }
     this.panX += deltaX;
     this.panY += deltaY;
     this.requestRender();
   }
 
   finishPan(): void {
-    if (this.dragging) {
-      this.dragging = false;
-      this.updateBackingStore(this.displayDpr);
-    }
-    this.requestRender();
+    // Panning has no temporary render state, so release must remain redraw-free.
   }
 
   zoomAt(screenX: number, screenY: number, factor: number): void {

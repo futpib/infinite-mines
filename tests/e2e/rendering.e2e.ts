@@ -285,7 +285,7 @@ test("R04/R12 — million-cell zoom and drag stay on one sparse GPU draw", async
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(frameCount);
 });
 
-test("R06 — Retina output, fractional transforms, and drag-time resolution switching remain exact", async ({ browser }) => {
+test("R06 — Retina output and fractional transforms remain exact throughout dragging", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor: 3 });
   const page = await context.newPage();
   const errors: Error[] = [];
@@ -320,9 +320,132 @@ test("R06 — Retina output, fractional transforms, and drag-time resolution swi
     await page.mouse.move(450, 400);
     await page.mouse.down();
     await page.mouse.move(470, 400);
-    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
+    expect(
+      await page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>("#board");
+        if (!canvas) throw new Error("Missing board");
+        return canvas.width / canvas.getBoundingClientRect().width;
+      }),
+    ).toBe(2);
     await page.mouse.up();
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
+    expect(errors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("R31 — a one-pixel pan translates framebuffer grid edges without a start or release resnap", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor: 3 });
+  const page = await context.newPage();
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  try {
+    await openDeterministicGame(page);
+    const result = await page.evaluate(async () => {
+      const api = window.__infiniteMines;
+      const renderer = api.renderer;
+      const canvas = document.querySelector<HTMLCanvasElement>("#board");
+      if (!canvas) throw new Error("Missing board");
+      const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      renderer.home();
+      for (let y = -2; y <= 2; y += 1) {
+        for (let x = -8; x <= 8; x += 1) api.model.store.set(x, y, 1);
+      }
+      renderer.requestRender();
+      await settle();
+
+      const borderHex = getComputedStyle(document.documentElement).getPropertyValue("--board-cell-border").trim();
+      const border = [
+        Number.parseInt(borderHex.slice(1, 3), 16),
+        Number.parseInt(borderHex.slice(3, 5), 16),
+        Number.parseInt(borderHex.slice(5, 7), 16),
+      ];
+      const readBorderCenters = () => {
+        const bounds = canvas.getBoundingClientRect();
+        const dpr = canvas.width / bounds.width;
+        const startCss = bounds.width / 2 - 80;
+        const widthCss = 160;
+        const x = Math.floor(startCss * dpr);
+        const y = Math.floor((bounds.height / 2 + 8) * dpr);
+        const width = Math.floor(widthCss * dpr);
+        const pixels = new Uint8Array(width * 4);
+        renderer.gl.finish();
+        renderer.gl.readPixels(
+          x,
+          canvas.height - 1 - y,
+          width,
+          1,
+          renderer.gl.RGBA,
+          renderer.gl.UNSIGNED_BYTE,
+          pixels,
+        );
+        const matches: number[] = [];
+        for (let index = 0; index < width; index += 1) {
+          const offset = index * 4;
+          const distance = Math.hypot(
+            pixels[offset] - border[0],
+            pixels[offset + 1] - border[1],
+            pixels[offset + 2] - border[2],
+          );
+          if (distance < 45) matches.push((x + index + 0.5) / dpr);
+        }
+        const runs: number[][] = [];
+        for (const position of matches) {
+          const run = runs.at(-1);
+          if (!run || position - run.at(-1)! > 1 / dpr + 0.0001) runs.push([position]);
+          else run.push(position);
+        }
+        return {
+          dpr,
+          centers: runs.map((run) => (run[0] + run.at(-1)!) / 2),
+        };
+      };
+
+      const before = readBorderCenters();
+      renderer.panBy(1, 0);
+      await settle();
+      const during = readBorderCenters();
+      const framesBeforeRelease = api.diagnostics().frameCount;
+      renderer.finishPan();
+      await settle();
+      const after = readBorderCenters();
+      const releaseFrames = api.diagnostics().frameCount - framesBeforeRelease;
+      const frameIntervals: number[] = [];
+      await new Promise<void>((resolve) => {
+        let previous = 0;
+        let frame = 0;
+        const step = (time: number) => {
+          if (previous > 0) frameIntervals.push(time - previous);
+          previous = time;
+          renderer.panBy(frame % 2 === 0 ? 1 : -1, 0);
+          frame += 1;
+          if (frame < 90) requestAnimationFrame(step);
+          else {
+            renderer.finishPan();
+            requestAnimationFrame(() => resolve());
+          }
+        };
+        requestAnimationFrame(step);
+      });
+      frameIntervals.sort((a, b) => a - b);
+      const frameP95 = frameIntervals[Math.floor(frameIntervals.length * 0.95)];
+      return { before, during, after, releaseFrames, frameP95 };
+    });
+
+    expect(result.before.dpr).toBe(2);
+    expect(result.during.dpr).toBe(2);
+    expect(result.after.dpr).toBe(2);
+    expect(result.before.centers.length).toBeGreaterThanOrEqual(5);
+    expect(result.during.centers).toHaveLength(result.before.centers.length);
+    expect(result.after.centers).toHaveLength(result.before.centers.length);
+    expect(result.releaseFrames).toBe(0);
+    result.before.centers.forEach((center, index) => {
+      expect(result.during.centers[index] - center).toBeCloseTo(1, 8);
+      expect(result.after.centers[index]).toBeCloseTo(result.during.centers[index], 8);
+    });
+    expect(result.frameP95).toBeLessThan(35);
     expect(errors).toEqual([]);
   } finally {
     await context.close();
