@@ -332,4 +332,79 @@ describe("gameplay", () => {
     expect(game.getState(1, 1)).toBe(CellState.Flagged);
     expect(game.getState(-1, -1)).toBe(CellState.Flagged);
   });
+
+  it("bounds invalid chords and mine blasts across topologies and signed chunk seams", () => {
+    const anchors: ReadonlyArray<readonly [number, number]> = [
+      [-7, -1],
+      [-64, -64],
+      [-65, -65],
+      [63, -65],
+      [64, 64],
+    ];
+
+    for (const topologyId of TOPOLOGY_IDS) {
+      for (const [centerX, centerY] of anchors) {
+        const overFlagged = new GameModel({ mode: "impossible", seed: 84, autoStart: false, topology: topologyId });
+        const neighbors: Array<[number, number]> = [];
+        overFlagged.topology.forEachNeighbor(centerX, centerY, (x, y) => neighbors.push([x, y]));
+        overFlagged.store.set(centerX, centerY, CellState.Opened2);
+        for (const [x, y] of neighbors.slice(0, 3)) overFlagged.store.set(x, y, CellState.Flagged);
+        const healthBeforeNoOp = overFlagged.health;
+        const noOp = overFlagged.reveal(centerX, centerY);
+        expect(noOp, `${topologyId} over-flagged at ${centerX},${centerY}`).toEqual({
+          changed: 0,
+          scoreDelta: 0,
+          thingsDelta: 0,
+          healthDelta: 0,
+          exploded: false,
+          autoFlagged: 0,
+          damage: null,
+        });
+        expect(overFlagged.health).toBe(healthBeforeNoOp);
+
+        const connectedMines = new GameModel({
+          mode: "impossible",
+          seed: 84,
+          autoStart: false,
+          topology: topologyId,
+        });
+        connectedMines.store.set(centerX, centerY, CellState.Opened4);
+        const wrongFlags = new Set(neighbors.slice(0, 4).map(([x, y]) => `${x},${y}`));
+        const initialKeys = new Set(neighbors.map(([x, y]) => `${x},${y}`));
+        const actualMines = new Set(neighbors.slice(4, 8).map(([x, y]) => `${x},${y}`));
+        for (const [x, y] of neighbors.slice(0, 4)) connectedMines.store.set(x, y, CellState.Flagged);
+        let mineLookups = 0;
+        vi.spyOn(connectedMines, "mineAt").mockImplementation((x, y) => {
+          mineLookups += 1;
+          if (mineLookups > 2_000) throw new Error("unbounded mine-chain traversal");
+          const key = `${x},${y}`;
+          return actualMines.has(key) || ((x !== centerX || y !== centerY) && !initialKeys.has(key) && !wrongFlags.has(key));
+        });
+
+        expect(connectedMines.clueAt(centerX, centerY)).toBe(4);
+        mineLookups = 0;
+        const blast = connectedMines.reveal(centerX, centerY);
+        expect(blast.exploded, `${topologyId} blast at ${centerX},${centerY}`).toBe(true);
+        expect(blast.changed).toBe(neighbors.length - 4);
+        expect(blast.healthDelta).toBe(-1);
+        expect(mineLookups).toBeLessThan(200);
+        expect(blast.damage).not.toBeNull();
+        expect(blast.damage!.minX).toBeGreaterThanOrEqual(Math.min(...neighbors.map(([x]) => x)));
+        expect(blast.damage!.maxX).toBeLessThanOrEqual(Math.max(...neighbors.map(([x]) => x)));
+        expect(blast.damage!.minY).toBeGreaterThanOrEqual(Math.min(...neighbors.map(([, y]) => y)));
+        expect(blast.damage!.maxY).toBeLessThanOrEqual(Math.max(...neighbors.map(([, y]) => y)));
+
+        const secondaryMine = neighbors
+          .flatMap(([x, y]) => {
+            const secondary: Array<[number, number]> = [];
+            connectedMines.topology.forEachNeighbor(x, y, (nextX, nextY) => secondary.push([nextX, nextY]));
+            return secondary;
+          })
+          .find(([x, y]) => (x !== centerX || y !== centerY) && !initialKeys.has(`${x},${y}`));
+        expect(secondaryMine).toBeDefined();
+        expect(connectedMines.getState(secondaryMine![0], secondaryMine![1])).toBe(CellState.Covered);
+        expect(connectedMines.store.nonZeroCells).toBe(neighbors.length + 1);
+      }
+    }
+  });
 });

@@ -699,7 +699,25 @@ export class GameModel {
         this.extendBounds(x, y);
         exploded = true;
         changed += 1;
-        this.forEachNeighbor(x, y, enqueue);
+        // A blast opens its immediately touching safe cells, but covered mines
+        // are barriers. Recursively queueing adjacent mines can walk an
+        // unbounded mine component on an infinite high-degree topology and
+        // monopolize the main thread forever. Mines explicitly included in the
+        // original reveal/chord still detonate because they were queued before
+        // the cascade began.
+        this.forEachNeighbor(x, y, (neighborX, neighborY) => {
+          const neighborState = this.store.get(neighborX, neighborY);
+          if (
+            isOpened(neighborState) ||
+            neighborState === CellState.Exploded ||
+            neighborState === CellState.Flagged ||
+            neighborState === CellState.Queued ||
+            this.mineAt(neighborX, neighborY)
+          ) {
+            return;
+          }
+          enqueue(neighborX, neighborY);
+        });
         continue;
       }
 

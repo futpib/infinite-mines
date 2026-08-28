@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { openDeterministicGame } from "./helpers";
+import { CellState } from "../../src/model";
+import { openDeterministicGame, worldPoint } from "./helpers";
 
 test("R01/R03 — the LAN host serves the Infinite-only WebGL app", async ({ page, request }) => {
   const lanResponse = await request.get("http://127.0.0.1:4175/", { headers: { Host: "claude-laptop.lan" } });
@@ -210,6 +211,166 @@ test("R02/R30 — chording works and automatic flagging stays silent", async ({ 
   await expect(page.locator("#toast")).toBeEmpty();
   expect(result.milestoneScore).toBe(1000);
   expect(result.milestoneHealth).toBe(4);
+});
+
+test("R42 — invalid negative-coordinate chords and mine chains remain bounded", async ({ page }) => {
+  test.setTimeout(10_000);
+  await openDeterministicGame(page, 84);
+  await page.evaluate(() => {
+    const model = window.__infiniteMines.model;
+    const auditWindow = window as typeof window & {
+      __r42Actions?: Array<{ x: number; y: number; durationMs: number; result: ReturnType<typeof model.reveal> }>;
+    };
+    auditWindow.__r42Actions = [];
+    const reveal = model.reveal.bind(model);
+    model.reveal = (x, y) => {
+      const startedAt = performance.now();
+      const result = reveal(x, y);
+      auditWindow.__r42Actions!.push({ x, y, durationMs: performance.now() - startedAt, result });
+      return result;
+    };
+  });
+
+  const overFlagged = await page.evaluate(
+    ({ opened2, flagged }) => {
+      const api = window.__infiniteMines;
+      const center = { x: -6, y: -1 };
+      api.model.reset("impossible", 84, false, "triangular");
+      api.model.store.set(center.x, center.y, opened2);
+      const safeNeighbors: Array<{ x: number; y: number }> = [];
+      api.model.topology.forEachNeighbor(center.x, center.y, (x, y) => {
+        if (!api.model.mineAt(x, y)) safeNeighbors.push({ x, y });
+      });
+      for (const cell of safeNeighbors.slice(0, 3)) api.model.store.set(cell.x, cell.y, flagged);
+      api.renderer.home();
+      api.renderer.requestRender();
+      return { center, flags: safeNeighbors.slice(0, 3), health: api.model.health };
+    },
+    { opened2: CellState.Opened2, flagged: CellState.Flagged },
+  );
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const noOpFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  const overFlaggedPoint = await worldPoint(page, overFlagged.center);
+  await page.mouse.click(overFlaggedPoint.x, overFlaggedPoint.y);
+  const noOp = await page.evaluate(() => {
+    const auditWindow = window as typeof window & {
+      __r42Actions: Array<{ x: number; y: number; durationMs: number; result: { changed: number; damage: unknown } }>;
+    };
+    return {
+      action: auditWindow.__r42Actions.at(-1),
+      health: window.__infiniteMines.model.health,
+      frameCount: window.__infiniteMines.diagnostics().frameCount,
+    };
+  });
+  expect(noOp.action).toMatchObject({ x: -6, y: -1, result: { changed: 0, damage: null } });
+  expect(noOp.action!.durationMs).toBeLessThan(50);
+  expect(noOp.health).toBe(overFlagged.health);
+  expect(noOp.frameCount).toBe(noOpFrame);
+
+  const reproduction = await page.evaluate(
+    ({ opened2, opened4, flagged, covered }) => {
+      const api = window.__infiniteMines;
+      const center = { x: -7, y: -1 };
+      const nearbyTwo = { x: -6, y: -1 };
+      const wrongFlags = [
+        { x: -8, y: -2 },
+        { x: -7, y: -2 },
+        { x: -6, y: -2 },
+        { x: -5, y: -1 },
+      ];
+      api.model.reset("impossible", 84, false, "triangular");
+      api.model.store.set(center.x, center.y, opened4);
+      api.model.store.set(nearbyTwo.x, nearbyTwo.y, opened2);
+      for (const cell of wrongFlags) api.model.store.set(cell.x, cell.y, flagged);
+
+      const initialKeys = new Set<string>();
+      const initialMines: Array<{ x: number; y: number }> = [];
+      api.model.topology.forEachNeighbor(center.x, center.y, (x, y) => {
+        initialKeys.add(`${x},${y}`);
+        if (api.model.mineAt(x, y)) initialMines.push({ x, y });
+      });
+      let secondaryMine: { x: number; y: number } | null = null;
+      for (const mine of initialMines) {
+        const candidates: Array<{ x: number; y: number }> = [];
+        api.model.topology.forEachNeighbor(mine.x, mine.y, (x, y) => candidates.push({ x, y }));
+        const found = candidates.find(
+          ({ x, y }) =>
+            (x !== center.x || y !== center.y) &&
+            !initialKeys.has(`${x},${y}`) &&
+            api.model.getState(x, y) === covered &&
+            api.model.mineAt(x, y),
+        );
+        if (found) {
+          secondaryMine = found;
+          break;
+        }
+      }
+      if (secondaryMine === null) throw new Error("Seed 84 no longer exposes the connected-mine reproduction");
+      api.renderer.home();
+      api.renderer.requestRender();
+      return {
+        center,
+        nearbyTwo,
+        wrongFlags,
+        initialMines,
+        secondaryMine,
+        centerClue: api.model.clueAt(center.x, center.y),
+        nearbyClue: api.model.clueAt(nearbyTwo.x, nearbyTwo.y),
+      };
+    },
+    {
+      opened2: CellState.Opened2,
+      opened4: CellState.Opened4,
+      flagged: CellState.Flagged,
+      covered: CellState.Covered,
+    },
+  );
+  expect(reproduction.centerClue).toBe(4);
+  expect(reproduction.nearbyClue).toBe(2);
+  expect(reproduction.initialMines).toHaveLength(4);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const chordPoint = await worldPoint(page, reproduction.center);
+  await page.mouse.click(chordPoint.x, chordPoint.y);
+
+  const completed = await page.evaluate(({ initialMines, secondaryMine }) => {
+    const api = window.__infiniteMines;
+    const auditWindow = window as typeof window & {
+      __r42Actions: Array<{
+        x: number;
+        y: number;
+        durationMs: number;
+        result: {
+          changed: number;
+          exploded: boolean;
+          healthDelta: number;
+          damage: { minX: number; minY: number; maxX: number; maxY: number } | null;
+        };
+      }>;
+    };
+    return {
+      action: auditWindow.__r42Actions.at(-1),
+      health: api.model.health,
+      initialMineStates: initialMines.map(({ x, y }) => api.model.getState(x, y)),
+      secondaryMineState: api.model.getState(secondaryMine.x, secondaryMine.y),
+      packedBytes: api.model.createSnapshot().cells.byteLength,
+      storedCells: api.model.store.nonZeroCells,
+    };
+  }, reproduction);
+  expect(completed.action).toMatchObject({
+    x: -7,
+    y: -1,
+    result: { exploded: true, healthDelta: -1 },
+  });
+  expect(completed.action!.durationMs).toBeLessThan(100);
+  expect(completed.action!.result.changed).toBeGreaterThanOrEqual(4);
+  expect(completed.action!.result.changed).toBeLessThan(256);
+  expect(completed.action!.result.damage).not.toBeNull();
+  expect(completed.action!.result.damage!.maxX - completed.action!.result.damage!.minX).toBeLessThan(32);
+  expect(completed.action!.result.damage!.maxY - completed.action!.result.damage!.minY).toBeLessThan(32);
+  expect(completed.health).toBe(2);
+  expect(completed.initialMineStates).toEqual(Array(4).fill(CellState.Exploded));
+  expect(completed.secondaryMineState).toBe(CellState.Covered);
+  expect(completed.packedBytes).toBe(completed.storedCells * 9);
 });
 
 test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run counter", async ({ page }) => {
