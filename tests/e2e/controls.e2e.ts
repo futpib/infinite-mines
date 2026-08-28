@@ -4,7 +4,7 @@ import { findCell, openDeterministicGame, worldPoint } from "./helpers";
 test("R08/R10 — guarded mode protects only concealed reveal actions", async ({ page }) => {
   await openDeterministicGame(page);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().controlsMode)).toBe("guarded");
-  await expect(page.locator("#reveal-key")).toHaveText("CTRL + CLICK");
+  await expect(page.locator("#reveal-key")).toHaveText("CTRL + CLICK / DOUBLE-CLICK");
 
   const blocked = await findCell(page, "covered-safe");
   const blockedPoint = await worldPoint(page, blocked);
@@ -16,6 +16,18 @@ test("R08/R10 — guarded mode protects only concealed reveal actions", async ({
   await page.mouse.click(blockedPoint.x, blockedPoint.y);
   await page.keyboard.up("Control");
   expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), blocked)).toBeGreaterThan(0);
+
+  const doubleClicked = await findCell(page, "covered-safe");
+  const doubleClickedPoint = await worldPoint(page, doubleClicked);
+  const interactionsBeforeDoubleClick = await page.evaluate(
+    () => window.__infiniteMines.diagnostics().gameplayInteractionCount,
+  );
+  await page.mouse.dblclick(doubleClickedPoint.x, doubleClickedPoint.y);
+  expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), doubleClicked)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(
+    interactionsBeforeDoubleClick + 1,
+  );
+  await expect(page.locator("#toast")).not.toContainText("Hold Ctrl");
 
   const opened = await findCell(page, "opened");
   const openedPoint = await worldPoint(page, opened);
@@ -63,6 +75,20 @@ test("R08/R10 — guarded mode protects only concealed reveal actions", async ({
   await page.mouse.click(questionedPoint.x, questionedPoint.y);
   expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), questioned)).toBe(11);
   await expect(page.locator("#toast")).toContainText("Hold Ctrl");
+
+  const questionedDoubleClick = await findCell(page, "covered-safe");
+  const questionedDoubleClickPoint = await worldPoint(page, questionedDoubleClick);
+  await page.mouse.click(questionedDoubleClickPoint.x, questionedDoubleClickPoint.y, { button: "right" });
+  await page.mouse.click(questionedDoubleClickPoint.x, questionedDoubleClickPoint.y, { button: "right" });
+  expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), questionedDoubleClick)).toBe(11);
+  const interactionsBeforeQuestionDoubleClick = await page.evaluate(
+    () => window.__infiniteMines.diagnostics().gameplayInteractionCount,
+  );
+  await page.mouse.dblclick(questionedDoubleClickPoint.x, questionedDoubleClickPoint.y);
+  expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), questionedDoubleClick)).toBe(0);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(
+    interactionsBeforeQuestionDoubleClick + 1,
+  );
 });
 
 test("R08 — Classic controls restore click-to-reveal and persist", async ({ page }) => {
@@ -184,12 +210,14 @@ test("R19 — guarded guidance follows the browser platform", async ({ browser }
   });
   try {
     await openDeterministicGame(page);
-    await expect(page.locator("#reveal-key")).toHaveText("⌘ + CLICK");
+    await expect(page.locator("#reveal-key")).toHaveText("⌘ + CLICK / DOUBLE-CLICK");
     await page.getByRole("button", { name: "Game settings" }).click();
-    await expect(page.locator("#guarded-description")).toHaveText("Command (⌘) + click reveals");
+    await expect(page.locator("#guarded-description")).toHaveText("Command (⌘) + click or double-click reveals");
     await page.getByRole("button", { name: "Close" }).click();
     await page.getByRole("button", { name: "How to play" }).click();
-    await expect(page.locator("#help-guarded-description")).toContainText("need Command (⌘) only");
+    await expect(page.locator("#help-guarded-description")).toContainText(
+      "with Command (⌘) + click or double-click",
+    );
     await page.getByRole("button", { name: "Close" }).click();
 
     const cell = await findCell(page, "covered-safe");

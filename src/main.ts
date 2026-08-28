@@ -124,9 +124,9 @@ const highScoreKey = (mode: Mode): string => `infinite-mines-high-${mode}`;
 const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) ?? 0);
 
 function updateControlsMode(): void {
-  revealKey.textContent = controlsMode === "guarded" ? revealModifierLabel : "CLICK";
-  guardedDescription.textContent = `${revealModifierName} + click reveals`;
-  helpGuardedDescription.textContent = `Guarded controls need ${revealModifierName} only for concealed tiles; revealed clues click normally. Classic removes the guard.`;
+  revealKey.textContent = controlsMode === "guarded" ? `${revealModifierLabel} / DOUBLE-CLICK` : "CLICK";
+  guardedDescription.textContent = `${revealModifierName} + click or double-click reveals`;
+  helpGuardedDescription.textContent = `Guarded controls reveal concealed tiles with ${revealModifierName} + click or double-click; revealed clues click normally. Classic removes the guard.`;
   game.dataset.controls = controlsMode;
   for (const button of controlOptions.querySelectorAll<HTMLButtonElement>("button[data-controls]")) {
     button.ariaPressed = String(button.dataset.controls === controlsMode);
@@ -167,6 +167,12 @@ function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add("visible");
   toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 1800);
+}
+
+function clearToast(): void {
+  window.clearTimeout(toastTimer);
+  toast.textContent = "";
+  toast.classList.remove("visible");
 }
 
 function updateFullscreenState(): void {
@@ -680,7 +686,7 @@ const finishPointer = (event: PointerEvent): void => {
     const result = model.reveal(cell.x, cell.y);
     applyAction(result);
     if (result.changed > 0) completeGameplayInteraction();
-  } else showToast(`Hold ${revealModifierName} and click to reveal`);
+  } else showToast(`Hold ${revealModifierName} and click, or double-click to reveal`);
   refreshCellLocator(true);
 };
 
@@ -688,6 +694,15 @@ canvas.addEventListener("pointerup", (event) => {
   if (finishPinchTouch(event)) return;
   if (event.pointerType === "touch") activeTouches.delete(event.pointerId);
   finishPointer(event);
+});
+canvas.addEventListener("dblclick", (event) => {
+  if (controlsMode !== "guarded" || event.button !== 0 || event.shiftKey || markTool) return;
+  const cell = renderer.screenToCell(event.offsetX, event.offsetY);
+  if (!requiresRevealGuard(model.getState(cell.x, cell.y))) return;
+  clearToast();
+  const result = model.reveal(cell.x, cell.y);
+  applyAction(result);
+  if (result.changed > 0) completeGameplayInteraction();
 });
 canvas.addEventListener("pointerenter", (event) => {
   if (event.pointerType === "touch") return;
