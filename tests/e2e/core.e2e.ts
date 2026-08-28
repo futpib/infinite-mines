@@ -29,6 +29,47 @@ test("R01/R03 — the LAN host serves the Infinite-only WebGL app", async ({ pag
   expect(sparsity.stored).toBeLessThan(sparsity.visible);
 });
 
+test("R32 — the production SVG favicon remains legible at browser-tab size", async ({ page, request }) => {
+  const faviconResponse = await request.get("http://127.0.0.1:4175/favicon.svg", {
+    headers: { Host: "claude-laptop.lan" },
+  });
+  expect(faviconResponse.status()).toBe(200);
+  expect(faviconResponse.headers()["content-type"]).toContain("image/svg+xml");
+  const source = await faviconResponse.text();
+  expect(source).toContain("<title id=\"title\">Infinite Mines</title>");
+  expect(source).toContain('viewBox="0 0 64 64"');
+
+  await openDeterministicGame(page);
+  const icon = page.locator('link[rel="icon"][type="image/svg+xml"]');
+  await expect(icon).toHaveAttribute("href", "./favicon.svg");
+  await expect(icon).toHaveAttribute("sizes", "any");
+  const raster = await page.evaluate(async () => {
+    const href = document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.href;
+    if (!href) throw new Error("Missing favicon URL");
+    const image = new Image();
+    image.src = href;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = 16;
+    canvas.height = 16;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Missing 2D context");
+    context.drawImage(image, 0, 0, 16, 16);
+    const pixels = context.getImageData(0, 0, 16, 16).data;
+    let opaquePixels = 0;
+    const colors = new Set<string>();
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      if (pixels[offset + 3] < 128) continue;
+      opaquePixels += 1;
+      colors.add(`${pixels[offset]},${pixels[offset + 1]},${pixels[offset + 2]}`);
+    }
+    return { naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, opaquePixels, colors: colors.size };
+  });
+  expect(raster).toEqual({ naturalWidth: 64, naturalHeight: 64, opaquePixels: expect.any(Number), colors: expect.any(Number) });
+  expect(raster.opaquePixels).toBeGreaterThan(160);
+  expect(raster.colors).toBeGreaterThan(12);
+});
+
 test("R02 — the original Infinite gameplay loop is present end to end", async ({ page }) => {
   await openDeterministicGame(page);
   const safeOpening = await page.evaluate(() => {

@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151b1e" />
+    <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
     <meta
       name="description"
       content="A fast, infinite Minesweeper game with deterministic generation and a WebGL renderer."
@@ -19,6 +20,10 @@
         <span>MINES</span>
       </a>
       <div class="mode-pill"><span></span> INFINITE</div>
+      <div class="fps-pill" id="fps-counter" data-state="idle" aria-label="Render frame rate" title="Active render FPS; IDLE means the event-driven renderer is sleeping">
+        <span>FPS</span>
+        <strong id="fps-value">IDLE</strong>
+      </div>
       <button class="header-help" id="help-button" type="button" aria-label="How to play">?</button>
     </header>
 

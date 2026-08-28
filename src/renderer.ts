@@ -20,6 +20,7 @@ export interface RenderDiagnostics {
   instanceUploads: number;
   pixelRatio: number;
   hoveredCells: number;
+  fps: number | null;
 }
 
 const BASE_CELL_SIZE = 25;
@@ -331,6 +332,7 @@ export class WebGLRenderer {
     instanceUploads: 0,
     pixelRatio: 1,
     hoveredCells: 0,
+    fps: null,
   };
 
   private resources: GlResources;
@@ -343,6 +345,9 @@ export class WebGLRenderer {
   private instanceCount = 0;
   private instanceUploads = 0;
   private frameCount = 0;
+  private previousFrameStartedAt = 0;
+  private smoothedFrameInterval = 0;
+  private frameObserver: ((diagnostics: Readonly<RenderDiagnostics>) => void) | null = null;
   private cachedGeneration = -1;
   private range: TileRange | null = null;
   private pixelTextureOriginX = 0;
@@ -386,6 +391,10 @@ export class WebGLRenderer {
 
   get cellSize(): number {
     return BASE_CELL_SIZE * this.zoom;
+  }
+
+  setFrameObserver(observer: ((diagnostics: Readonly<RenderDiagnostics>) => void) | null): void {
+    this.frameObserver = observer;
   }
 
   createViewSnapshot(): ViewSnapshotV1 {
@@ -504,6 +513,16 @@ export class WebGLRenderer {
   render(): void {
     if (this.contextLost) return;
     const startedAt = performance.now();
+    const frameInterval = this.previousFrameStartedAt === 0 ? 0 : startedAt - this.previousFrameStartedAt;
+    this.previousFrameStartedAt = startedAt;
+    if (frameInterval > 0 && frameInterval < 250) {
+      this.smoothedFrameInterval =
+        this.smoothedFrameInterval === 0
+          ? frameInterval
+          : this.smoothedFrameInterval * 0.8 + frameInterval * 0.2;
+    } else {
+      this.smoothedFrameInterval = 0;
+    }
     const gl = this.gl;
     const resources = this.resources;
     const cellSize = this.cellSize;
@@ -618,7 +637,9 @@ export class WebGLRenderer {
       instanceUploads: this.instanceUploads,
       pixelRatio: this.dpr,
       hoveredCells: this.hoverCells.length,
+      fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
     };
+    this.frameObserver?.(this.diagnostics);
   }
 
   drawOverview(canvas: HTMLCanvasElement): string {

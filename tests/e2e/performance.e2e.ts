@@ -497,3 +497,50 @@ test("R24 — interaction cost stays bounded with a densely revealed field", asy
   expect(report.large.hover.instanceUploads).toBe(0);
   expect(report.large.interaction.instanceUploads).toBe(0);
 });
+
+test("R33 — the FPS counter observes active rendering without keeping the renderer awake", async ({ page }) => {
+  await openDeterministicGame(page);
+  const counter = page.locator("#fps-counter");
+  const value = page.locator("#fps-value");
+  await expect(counter).toBeVisible();
+  await expect(value).toHaveText("IDLE");
+  const idleFrames = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(idleFrames);
+
+  const active = await page.evaluate(
+    () =>
+      new Promise<{ fps: number | null; text: string }>((resolve) => {
+        const renderer = window.__infiniteMines.renderer;
+        let frame = 0;
+        const step = () => {
+          renderer.panBy(frame % 2 === 0 ? 1 : -1, 0);
+          frame += 1;
+          if (frame < 30) requestAnimationFrame(step);
+          else {
+            renderer.finishPan();
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() =>
+                resolve({
+                  fps: window.__infiniteMines.diagnostics().fps,
+                  text: document.querySelector("#fps-value")?.textContent ?? "",
+                }),
+              ),
+            );
+          }
+        };
+        requestAnimationFrame(step);
+      }),
+  );
+  expect(active.fps).not.toBeNull();
+  expect(active.fps!).toBeGreaterThan(0);
+  expect(active.text).toMatch(/^\d{1,3}$/);
+
+  await expect(value).toHaveText("IDLE");
+  const settledFrames = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.mouse.move(300, 300);
+  await page.mouse.move(301, 300, { steps: 20 });
+  await page.waitForTimeout(250);
+  expect(await value.textContent()).toBe("IDLE");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(settledFrames);
+});

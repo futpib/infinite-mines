@@ -45,6 +45,7 @@ The production build uses relative asset paths, so it works as a GitHub project 
 - Low-zoom state colors are alpha-weighted averages of the active theme's base cells and actual sprite atlas, so each pixel resembles its zoomed-in tile rather than a raw accent color.
 - Cell edges are snapped to the device-pixel grid and shared borders are generated in the shader at exactly one CSS pixel; glyphs come from a 64px antialiased atlas.
 - Retina backing resolution and the device-pixel edge lattice stay unchanged throughout navigation, so beginning or ending a drag never resnaps the grid.
+- The topbar FPS badge samples actual WebGL frame intervals, updates at most four times per second while rendering, and returns to `IDLE` without starting a measurement loop of its own.
 - Light and dark palettes follow `prefers-color-scheme`; a browser-theme change updates CSS, re-uploads the tiny sprite atlas, and re-derives its low-zoom averages.
 - HUD styling avoids backdrop filters and per-frame DOM writes, keeping the canvas off the layout/paint critical path.
 - A compact cell locator exposes the hovered coordinates and visible state; clicking it copies the seed, density, safe origin, scale, and theme needed to reproduce that cell without exposing concealed mines.

@@ -28,6 +28,8 @@ const helpDialog = element<HTMLDialogElement>("#help-dialog");
 const overviewCanvas = element<HTMLCanvasElement>("#overview-canvas");
 const overviewCaption = element<HTMLElement>("#overview-caption");
 const revealKey = element<HTMLElement>("#reveal-key");
+const fpsCounter = element<HTMLElement>("#fps-counter");
+const fpsValue = element<HTMLElement>("#fps-value");
 const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
@@ -86,7 +88,34 @@ const model = new GameModel({ mode: initialMode, seed: fallbackSeed, autoStart: 
 const restoredGame = persistedGame !== null && model.restoreSnapshot(persistedGame.model);
 if (!restoredGame) model.reset(initialMode, fallbackSeed);
 else storageSet("infinite-mines-mode", model.mode);
+const FPS_IDLE_AFTER_MS = 400;
+const FPS_UI_INTERVAL_MS = 250;
+let fpsLastFrameAt = 0;
+let fpsLastUiAt = 0;
+let fpsIdleTimer = 0;
+const settleFpsCounter = (): void => {
+  const remaining = FPS_IDLE_AFTER_MS - (performance.now() - fpsLastFrameAt);
+  if (remaining > 0) {
+    fpsIdleTimer = window.setTimeout(settleFpsCounter, remaining);
+    return;
+  }
+  fpsIdleTimer = 0;
+  fpsCounter.dataset.state = "idle";
+  fpsValue.textContent = "IDLE";
+};
 const renderer = new WebGLRenderer(canvas, model);
+renderer.setFrameObserver((diagnostics) => {
+  const now = performance.now();
+  fpsLastFrameAt = now;
+  if (diagnostics.fps === null) {
+    if (fpsCounter.dataset.state === "idle") fpsValue.textContent = "—";
+  } else if (fpsCounter.dataset.state !== "active" || now - fpsLastUiAt >= FPS_UI_INTERVAL_MS) {
+    fpsCounter.dataset.state = "active";
+    fpsValue.textContent = String(diagnostics.fps);
+    fpsLastUiAt = now;
+  }
+  if (fpsIdleTimer === 0) fpsIdleTimer = window.setTimeout(settleFpsCounter, FPS_IDLE_AFTER_MS);
+});
 if (restoredGame) renderer.restoreView(persistedGame.view);
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 colorScheme.addEventListener("change", () => {

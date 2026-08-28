@@ -182,6 +182,7 @@ a:focus-visible {
   border-radius: 999px;
   color: var(--muted);
   background: var(--surface-raised);
+  contain: layout paint style;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
   font-weight: 650;
@@ -195,6 +196,35 @@ a:focus-visible {
   background: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
+
+.fps-pill {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 69px;
+  height: 28px;
+  margin-left: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-raised);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.11em;
+}
+
+.fps-pill strong {
+  min-width: 3ch;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-align: right;
+}
+
+.fps-pill[data-state="idle"] strong { color: var(--muted); font-size: 8px; letter-spacing: 0.04em; }
 
 .header-help {
   display: grid;
@@ -832,6 +862,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .brand { gap: 8px; font-size: 16px; }
   .brand-mark { width: 31px; height: 31px; border-radius: 9px; font-size: 24px; }
   .mode-pill { margin-left: 10px; padding: 6px 8px; font-size: 7px; }
+  .fps-pill { min-width: 61px; margin-left: 6px; padding: 6px 7px; }
   .header-help { width: 32px; height: 32px; box-shadow: none; }
   .controls { top: calc(var(--topbar-height) + 10px); left: 10px; gap: 2px; padding: 4px; border-radius: 14px; }
   .controls button { width: 34px; min-width: 34px; height: 34px; padding: 0; border-radius: 9px; }
