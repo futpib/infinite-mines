@@ -33,6 +33,7 @@ const fpsCounter = element<HTMLElement>("#fps-counter");
 const fpsValue = element<HTMLElement>("#fps-value");
 const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
+const hintHoverOptions = element<HTMLElement>("#hint-hover-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
@@ -79,6 +80,9 @@ let controlsMode: ControlsMode = savedControls === "classic" ? "classic" : "guar
 type HoverMode = "affected" | "cell";
 const savedHoverMode = storageGet("infinite-mines-hover-preview");
 let hoverMode: HoverMode = savedHoverMode === "cell" ? "cell" : "affected";
+type HintHoverMode = "show" | "hide";
+const savedHintHoverMode = storageGet("infinite-mines-hint-hover");
+let hintHoverMode: HintHoverMode = savedHintHoverMode === "hide" ? "hide" : "show";
 type AutoHideMode = "after-fifty" | "never";
 const savedAutoHideMode = storageGet("infinite-mines-auto-hide-controls");
 let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "after-fifty";
@@ -177,6 +181,14 @@ function updateHoverMode(): void {
   game.dataset.hoverPreview = hoverMode;
   for (const button of hoverOptions.querySelectorAll<HTMLButtonElement>("button[data-hover]")) {
     button.ariaPressed = String(button.dataset.hover === hoverMode);
+  }
+  refreshCellLocator();
+}
+
+function updateHintHoverMode(): void {
+  game.dataset.hintHover = hintHoverMode;
+  for (const button of hintHoverOptions.querySelectorAll<HTMLButtonElement>("button[data-hint-hover]")) {
+    button.ariaPressed = String(button.dataset.hintHover === hintHoverMode);
   }
   refreshCellLocator();
 }
@@ -393,7 +405,7 @@ function refreshCellLocator(forceText = false, showHover = true): void {
   const affectedCells =
     hoverMode === "affected" ? model.previewClickCells(locatedCell.x, locatedCell.y) : [{ ...locatedCell }];
   const hintCells: Array<{ x: number; y: number }> = [];
-  if (model.topologyId !== "square") {
+  if (model.topologyId !== "square" && hintHoverMode === "show") {
     model.topology.forEachNeighbor(locatedCell.x, locatedCell.y, (x, y) => {
       const state = model.getState(x, y);
       if (!isOpened(state) && state !== CellState.Exploded) hintCells.push({ x, y });
@@ -612,6 +624,7 @@ locateCellAt(canvas.clientWidth / 2, canvas.clientHeight / 2, true);
 updateStats();
 updateControlsMode();
 updateHoverMode();
+updateHintHoverMode();
 updateAutoHideMode();
 updateTopologyOptions();
 updateFullscreenState();
@@ -932,6 +945,14 @@ hoverOptions.addEventListener("click", (event) => {
   updateHoverMode();
 });
 
+hintHoverOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-hint-hover]");
+  if (!button) return;
+  hintHoverMode = button.dataset.hintHover === "hide" ? "hide" : "show";
+  storageSet("infinite-mines-hint-hover", hintHoverMode);
+  updateHintHoverMode();
+});
+
 autoHideOptions.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-auto-hide]");
   if (!button) return;
@@ -1016,6 +1037,7 @@ function getDiagnostics() {
     topology: model.topologyId,
     controlsMode,
     hoverMode,
+    hintHoverMode,
     autoHideMode,
     gameplayInteractionCount,
     fullscreen: document.fullscreenElement !== null,

@@ -470,3 +470,58 @@ test("R39 — non-square hover separates hint neighborhoods from click effects w
     await page.getByRole("button", { name: "Show controls" }).evaluate((button: HTMLButtonElement) => button.click());
   }
 });
+
+test("R41 — hint-neighborhood hover can be disabled independently and persists", async ({ page }) => {
+  await openDeterministicGame(page, 0x41a1_0ff0);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().hintHoverMode)).toBe("show");
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-hint-hover"))).toBeNull();
+
+  const frameBeforeTopology = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    const frameCount = api.diagnostics().frameCount;
+    api.model.reset("master", 0x41a1_0ff0, false, "triangular");
+    api.renderer.home();
+    return frameCount;
+  });
+  await waitForNextFrame(page, frameBeforeTopology);
+  const center = await worldPoint(page, { x: 0, y: 0 });
+  await page.mouse.move(center.x, center.y);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(12);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);
+
+  const frameBeforeSetting = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator('#hint-hover-options button[data-hint-hover="show"]')).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#hint-hover-options").getByRole("button", { name: /^Hide/ }).click();
+  await expect(page.locator('#hint-hover-options button[data-hint-hover="hide"]')).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-hint-hover"))).toBe("hide");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().hintHoverMode)).toBe("hide");
+  await page.locator("#settings-dialog").getByRole("button", { name: "Close" }).click();
+  await page.mouse.move(center.x, center.y);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(0);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(frameBeforeSetting);
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().hintHoverMode)).toBe("hide");
+  const frameBeforeRestoredTopology = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    const frameCount = api.diagnostics().frameCount;
+    api.model.reset("master", 0x41a1_0ff0, false, "triangular");
+    api.renderer.home();
+    return frameCount;
+  });
+  await waitForNextFrame(page, frameBeforeRestoredTopology);
+  const restoredCenter = await worldPoint(page, { x: 0, y: 0 });
+  await page.mouse.move(restoredCenter.x, restoredCenter.y);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(0);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await page.locator("#hint-hover-options").getByRole("button", { name: /^Show/ }).click();
+  await page.locator("#settings-dialog").getByRole("button", { name: "Close" }).click();
+  await page.mouse.move(restoredCenter.x, restoredCenter.y);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(12);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-hint-hover"))).toBe("show");
+});
