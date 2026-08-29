@@ -566,8 +566,10 @@ test("R34 — retained-strip pan is enabled only where it beats a full detail re
       let previous = 0;
       await new Promise<void>((resolve) => {
         let frame = 0;
+        const warmupFrames = 4;
+        const measuredFrames = 24;
         const step = (time: number) => {
-          if (previous > 0) intervals.push(time - previous);
+          if (frame >= warmupFrames && previous > 0) intervals.push(time - previous);
           previous = time;
           const delta = frame % 2 === 0 ? 1 : -1;
           if (retained) renderer.panBy(delta, 0);
@@ -576,7 +578,7 @@ test("R34 — retained-strip pan is enabled only where it beats a full detail re
             renderer.requestRender();
           }
           frame += 1;
-          if (frame < 10) requestAnimationFrame(step);
+          if (frame < warmupFrames + measuredFrames) requestAnimationFrame(step);
           else requestAnimationFrame(() => resolve());
         };
         requestAnimationFrame(step);

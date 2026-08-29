@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+
+# Playwright 1.62.1 browsers and system libraries on the same Ubuntu release as
+# GitHub's ubuntu-24.04 runner. The digest fixes the complete base filesystem.
+FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+
+ARG NODE_VERSION=22.23.2
+ARG NODE_LINUX_X64_SHA256=b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a
+ARG NPM_VERSION=10.9.8
+ARG NPM_SHA512=7d8c1be8e0d298792aac9410682c58dccda53dffe6a600bb8a4d074b3cc8c06e421ad69b469e1b36a8a46adbc2a13e366f920d412aae7551f447bc95982f6156
+
+# The Playwright image deliberately follows current Node. Overlay the exact
+# Node/npm pair supplied by GitHub's pinned Ubuntu runner instead.
+RUN curl --fail --location --show-error --silent \
+      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+      --output /tmp/node.tar.gz \
+    && echo "${NODE_LINUX_X64_SHA256}  /tmp/node.tar.gz" | sha256sum --check --strict \
+    && tar --extract --gzip --file /tmp/node.tar.gz --directory /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.gz \
+    && curl --fail --location --show-error --silent \
+      "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz" \
+      --output /tmp/npm.tgz \
+    && echo "${NPM_SHA512}  /tmp/npm.tgz" | sha512sum --check --strict \
+    && npm install --global /tmp/npm.tgz \
+    && rm /tmp/npm.tgz \
+    && test "$(node --version)" = "v${NODE_VERSION}" \
+    && test "$(npm --version)" = "${NPM_VERSION}"
+
+ENV CI=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    SOURCE_DATE_EPOCH=0 \
+    TZ=UTC
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY . .
+
+# The wrapper runs with the caller's uid so local artifacts are never root-owned.
+RUN mkdir -p dist node_modules/.vite playwright-report test-results \
+    && chmod a+rwx /workspace \
+    && chmod -R a+rwX dist node_modules/.vite playwright-report test-results
+
+CMD ["npm", "test"]

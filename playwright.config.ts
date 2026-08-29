@@ -1,13 +1,19 @@
 import { defineConfig } from "@playwright/test";
 
+const runningInCi = process.env.CI === "1" || process.env.CI === "true";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
+  forbidOnly: runningInCi,
+  retries: 0,
   workers: 1,
   timeout: 30_000,
   expect: { timeout: 5_000, toHaveScreenshot: { maxDiffPixelRatio: 0.005 } },
-  reporter: [["list"]],
+  reporter: runningInCi
+    ? [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]]
+    : [["list"]],
   use: {
     baseURL: "http://127.0.0.1:4175",
     viewport: { width: 1440, height: 900 },

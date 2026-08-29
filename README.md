@@ -5,7 +5,7 @@ A from-scratch, Infinite-only Minesweeper inspired by the gameplay loop of 1000 
 ## Run it
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -20,6 +20,14 @@ npm run preview
 ```
 
 `npm test` runs the engine tests, production build, and the Playwright acceptance contract. See [REQUIREMENTS.md](./REQUIREMENTS.md) for the thread-to-test matrix. Install the bundled browser once with `npx playwright install chromium`.
+
+For the exact environment used by GitHub Actions, run:
+
+```bash
+npm run test:docker
+```
+
+That command builds the pinned Linux x64 CI image and runs the complete unit and production-browser suite inside it. The image combines Ubuntu Noble and Playwright 1.62.1 with the GitHub `ubuntu-24.04` runner's Node 22.23.2 and npm 10.9.8; image, Node, and npm downloads are checksum-pinned. The build uses host networking only to fetch those verified inputs, while the test container itself has no network. GitHub invokes this same command rather than maintaining a second test recipe. Failed browser runs leave their HTML report and traces in `playwright-report/` and `test-results/` locally and upload both as the `playwright-diagnostics` Actions artifact.
 
 ## Publish it
 

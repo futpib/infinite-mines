@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "npm run test:unit && npm run test:e2e",
+    "test:docker": "bash scripts/test-ci-docker.sh",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "npm run build && playwright test",
@@ -15,10 +17,12 @@
     "benchmark": "npm run build && playwright test tests/e2e/performance.e2e.ts --reporter=line"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.62.1",
-    "typescript": "^5.9.2",
-    "vite": "^7.1.3",
-    "vitest": "^3.2.4"
+    "@axe-core/playwright": "4.13.0",
+    "@fontsource-variable/inter": "5.3.0",
+    "@playwright/test": "1.62.1",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
   }
 }

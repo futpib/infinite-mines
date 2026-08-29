@@ -1,8 +1,16 @@
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
+
 :root {
   color: #1e282a;
   background: #f4f1e9;
   color-scheme: light dark;
-  font-family: Inter, "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+  font-family: "Inter Variable", Inter, "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #1e282a;
