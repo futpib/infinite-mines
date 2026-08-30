@@ -1,5 +1,48 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { findCell, openDeterministicGame, worldPoint } from "./helpers";
+
+async function gameOverActionCenter(page: Page, selector: string): Promise<{ x: number; y: number }> {
+  return page.locator(selector).evaluate((button) => {
+    const screen = document.querySelector<HTMLElement>("#game-over-screen");
+    if (!screen) throw new Error("Missing game-over screen");
+    screen.style.visibility = "hidden";
+    screen.hidden = false;
+    const bounds = button.getBoundingClientRect();
+    screen.hidden = true;
+    screen.style.removeProperty("visibility");
+    return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+  });
+}
+
+async function alignDeathmatchMine(page: Page, target: { x: number; y: number }): Promise<{ x: number; y: number }> {
+  return page.evaluate((screenTarget) => {
+    const api = window.__infiniteMines;
+    api.newGame("deathmatch");
+    const { model, renderer } = api;
+    let mine: { x: number; y: number } | null = null;
+    for (let radius = 3; radius < 100 && !mine; radius += 1) {
+      for (let y = -radius; y <= radius && !mine; y += 1) {
+        for (let x = -radius; x <= radius; x += 1) {
+          if (model.getState(x, y) === 0 && model.mineAt(x, y)) {
+            mine = { x, y };
+            break;
+          }
+        }
+      }
+    }
+    if (!mine) throw new Error("No covered mine found");
+    const polygon = renderer.cellScreenPolygon(mine.x, mine.y);
+    const center = {
+      x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
+      y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
+    };
+    const board = document.querySelector<HTMLCanvasElement>("#board")?.getBoundingClientRect();
+    if (!board) throw new Error("Missing board");
+    renderer.panBy(screenTarget.x - board.left - center.x, screenTarget.y - board.top - center.y);
+    renderer.finishPan();
+    return mine;
+  }, target);
+}
 
 test("R08/R10 — guarded mode protects only concealed reveal actions", async ({ page }) => {
   await openDeterministicGame(page);
@@ -164,6 +207,59 @@ test("R08 — touch reveal, explicit Flag tool, and long-press marking bypass ke
       );
     }, longPoint);
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), longPressed)).toBe(10);
+  } finally {
+    await context.close();
+  }
+});
+
+test("R27/R44 — fatal mouse and touch input cannot choose game over, including hidden controls", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 }, hasTouch: true, isMobile: false });
+  const page = await context.newPage();
+  try {
+    await openDeterministicGame(page);
+    const cheatTarget = await gameOverActionCenter(page, "#cheat-death-button");
+    const restartTarget = await gameOverActionCenter(page, "#game-over-restart-button");
+
+    let mine = await alignDeathmatchMine(page, cheatTarget);
+    await page.keyboard.down("Control");
+    await page.mouse.click(cheatTarget.x, cheatTarget.y);
+    await page.keyboard.up("Control");
+    await expect(page.locator("#game-over-screen")).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), mine)).toBe(12);
+    await expect(page.getByRole("button", { name: /Cheat death/ })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#game-over-screen")).toBeHidden();
+
+    mine = await alignDeathmatchMine(page, cheatTarget);
+    await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), mine)).toBe(12);
+    await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeHidden();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(1);
+
+    mine = await alignDeathmatchMine(page, restartTarget);
+    await page.touchscreen.tap(restartTarget.x, restartTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), mine)).toBe(12);
+    await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeHidden();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(1);
+
+    mine = await alignDeathmatchMine(page, cheatTarget);
+    await page.getByRole("button", { name: "Hide controls" }).click();
+    await expect(page.locator("body")).toHaveClass(/ui-hidden/);
+    await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), mine)).toBe(12);
+    await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
+    await expect(page.locator("#game-over-screen")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Show controls" })).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(1);
   } finally {
     await context.close();
   }

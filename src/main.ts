@@ -44,6 +44,7 @@ const fullscreenButton = element<HTMLButtonElement>("#fullscreen-button");
 const uiToggleButton = element<HTMLButtonElement>("#ui-toggle-button");
 const gameOverScreen = element<HTMLElement>("#game-over-screen");
 const cheatDeathButton = element<HTMLButtonElement>("#cheat-death-button");
+const gameOverRestartButton = element<HTMLButtonElement>("#game-over-restart-button");
 const cellLocator = element<HTMLButtonElement>("#cell-locator");
 const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
@@ -160,6 +161,7 @@ let hoverVisualKey = "";
 let zoomHoverTimer = 0;
 let uiHidden = false;
 let gameplayInteractionCount = 0;
+let gameOverPointerAction: HTMLButtonElement | null = null;
 const AUTO_HIDE_GAMEPLAY_INTERACTIONS = 50;
 const locatorTextInterval = (): number => (renderer.cellSize < 4 ? 100 : 50);
 
@@ -210,6 +212,7 @@ function updateTopologyOptions(): void {
 }
 
 function updateStats(): void {
+  gameOverPointerAction = null;
   const previousHigh = readHighScore();
   if (model.score > previousHigh) storageSet(highScoreKey(model.mode), String(model.score));
   modeStat.textContent = model.mode.toUpperCase();
@@ -551,6 +554,17 @@ function cheatDeath(): void {
   refreshCellLocator(true);
   scheduleGameSave(0);
   showToast(`Cheat ${model.cheats.toLocaleString()} — back with one health`);
+}
+
+function runGameOverAction(event: MouseEvent, button: HTMLButtonElement, action: () => void): void {
+  const freshPointerPress = gameOverPointerAction === button;
+  gameOverPointerAction = null;
+  if (event.detail !== 0 && !freshPointerPress) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  action();
 }
 
 function newGame(mode: Mode = model.mode, topology: TopologyId = model.topologyId): void {
@@ -896,8 +910,14 @@ canvas.addEventListener(
 );
 
 element<HTMLButtonElement>("#restart-button").addEventListener("click", () => newGame());
-element<HTMLButtonElement>("#game-over-restart-button").addEventListener("click", () => newGame());
-cheatDeathButton.addEventListener("click", cheatDeath);
+gameOverScreen.addEventListener("pointerdown", (event) => {
+  gameOverPointerAction = (event.target as Element).closest<HTMLButtonElement>(".game-over-actions button");
+});
+gameOverScreen.addEventListener("pointercancel", () => {
+  gameOverPointerAction = null;
+});
+gameOverRestartButton.addEventListener("click", (event) => runGameOverAction(event, gameOverRestartButton, () => newGame()));
+cheatDeathButton.addEventListener("click", (event) => runGameOverAction(event, cheatDeathButton, cheatDeath));
 element<HTMLButtonElement>("#settings-button").addEventListener("click", () => settingsDialog.showModal());
 element<HTMLButtonElement>("#home-button").addEventListener("click", goHome);
 fullscreenButton.addEventListener("click", () => void toggleFullscreen());
