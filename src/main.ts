@@ -140,6 +140,7 @@ colorScheme.addEventListener("change", () => {
 });
 let markTool = false;
 let toastTimer = 0;
+let guardToastTimer = 0;
 let saveTimer = 0;
 let saveRevision = 0;
 let pendingSave: { revision: number; snapshot: PersistedGame } | null = null;
@@ -163,6 +164,7 @@ let uiHidden = false;
 let gameplayInteractionCount = 0;
 let gameOverPointerAction: HTMLButtonElement | null = null;
 const AUTO_HIDE_GAMEPLAY_INTERACTIONS = 50;
+const GUARD_TOAST_DELAY_MS = 500;
 const locatorTextInterval = (): number => (renderer.cellSize < 4 ? 100 : 50);
 
 const highScoreKey = (mode: Mode): string =>
@@ -228,7 +230,13 @@ function updateStats(): void {
   game.classList.toggle("game-over", !model.alive);
 }
 
+function cancelGuardToast(): void {
+  window.clearTimeout(guardToastTimer);
+  guardToastTimer = 0;
+}
+
 function showToast(message: string): void {
+  cancelGuardToast();
   window.clearTimeout(toastTimer);
   toast.textContent = message;
   toast.classList.add("visible");
@@ -236,9 +244,19 @@ function showToast(message: string): void {
 }
 
 function clearToast(): void {
+  cancelGuardToast();
   window.clearTimeout(toastTimer);
   toast.textContent = "";
   toast.classList.remove("visible");
+}
+
+function scheduleGuardToast(x: number, y: number): void {
+  cancelGuardToast();
+  guardToastTimer = window.setTimeout(() => {
+    guardToastTimer = 0;
+    if (controlsMode !== "guarded" || !requiresRevealGuard(model.getState(x, y))) return;
+    showToast(`Hold ${revealModifierName} and click, or double-click to reveal`);
+  }, GUARD_TOAST_DELAY_MS);
 }
 
 function updateFullscreenState(): void {
@@ -737,6 +755,7 @@ const finishPinchTouch = (event: PointerEvent): boolean => {
 
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 && event.button !== 2) return;
+  cancelGuardToast();
   window.clearTimeout(zoomHoverTimer);
   canvas.classList.remove("is-panning");
   pointerOnBoard = true;
@@ -848,7 +867,7 @@ const finishPointer = (event: PointerEvent): void => {
     const result = model.reveal(cell.x, cell.y);
     applyAction(result);
     if (result.changed > 0) completeGameplayInteraction();
-  } else showToast(`Hold ${revealModifierName} and click, or double-click to reveal`);
+  } else scheduleGuardToast(cell.x, cell.y);
   refreshCellLocator(true);
 };
 

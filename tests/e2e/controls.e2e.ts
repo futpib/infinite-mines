@@ -53,6 +53,9 @@ test("R08/R10 — guarded mode protects only concealed reveal actions", async ({
   const blockedPoint = await worldPoint(page, blocked);
   await page.mouse.click(blockedPoint.x, blockedPoint.y);
   expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), blocked)).toBe(0);
+  await expect(page.locator("#toast")).toBeEmpty();
+  await page.waitForTimeout(350);
+  await expect(page.locator("#toast")).toBeEmpty();
   await expect(page.locator("#toast")).toContainText("Hold Ctrl");
 
   await page.keyboard.down("Control");
@@ -65,12 +68,38 @@ test("R08/R10 — guarded mode protects only concealed reveal actions", async ({
   const interactionsBeforeDoubleClick = await page.evaluate(
     () => window.__infiniteMines.diagnostics().gameplayInteractionCount,
   );
+  await page.evaluate(() => {
+    const toast = document.querySelector<HTMLElement>("#toast");
+    if (!toast) throw new Error("Missing toast");
+    toast.textContent = "";
+    toast.classList.remove("visible");
+    const state = window as Window & {
+      __guardToastMessages?: string[];
+      __guardToastObserver?: MutationObserver;
+    };
+    state.__guardToastMessages = [];
+    state.__guardToastObserver = new MutationObserver(() => {
+      if (toast.textContent?.includes("Hold ")) state.__guardToastMessages?.push(toast.textContent);
+    });
+    state.__guardToastObserver.observe(toast, { childList: true, characterData: true, subtree: true });
+  });
   await page.mouse.dblclick(doubleClickedPoint.x, doubleClickedPoint.y);
+  await page.waitForTimeout(650);
   expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), doubleClicked)).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(
     interactionsBeforeDoubleClick + 1,
   );
   await expect(page.locator("#toast")).not.toContainText("Hold Ctrl");
+  expect(
+    await page.evaluate(() => {
+      const state = window as Window & {
+        __guardToastMessages?: string[];
+        __guardToastObserver?: MutationObserver;
+      };
+      state.__guardToastObserver?.disconnect();
+      return state.__guardToastMessages ?? [];
+    }),
+  ).toEqual([]);
 
   const opened = await findCell(page, "opened");
   const openedPoint = await worldPoint(page, opened);
