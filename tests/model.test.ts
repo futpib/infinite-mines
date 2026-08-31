@@ -200,6 +200,31 @@ describe("saved games", () => {
     expect(restored.cheats).toBe(0);
   });
 
+  it("migrates a stale numbered Thing from an old field to opened zero", () => {
+    const source = new GameModel({ mode: "impossible", seed: 712, autoStart: false, topology: "triangular" });
+    let artifact: { x: number; y: number } | null = null;
+    for (let y = -100; y <= 100 && !artifact; y += 1) {
+      for (let x = -100; x <= 100; x += 1) {
+        if (source.artifactAt(x, y)) {
+          artifact = { x, y };
+          break;
+        }
+      }
+    }
+    if (!artifact) throw new Error("No artifact found for stale-save fixture");
+    source.store.set(artifact.x, artifact.y, CellState.Opened4);
+    source.store.set(500, -500, CellState.Flagged);
+    source.things = 7;
+
+    const restored = new GameModel({ seed: 1, autoStart: false });
+    expect(restored.restoreSnapshot(source.createSnapshot())).toBe(true);
+    expect(restored.artifactAt(artifact.x, artifact.y)).toBe(true);
+    expect(restored.clueAt(artifact.x, artifact.y)).toBe(0);
+    expect(restored.getState(artifact.x, artifact.y)).toBe(CellState.Opened);
+    expect(restored.getState(500, -500)).toBe(CellState.Flagged);
+    expect(restored.things).toBe(7);
+  });
+
   it("rejects a corrupt snapshot without replacing the current field", () => {
     const source = new GameModel({ seed: 22 });
     const snapshot = source.createSnapshot();
@@ -245,20 +270,33 @@ describe("gameplay", () => {
     expect(game.reveal(0, 0).damage).toBeNull();
   });
 
-  it("places deterministic artifacts only on zero-clue, mine-free cells", () => {
-    const game = new GameModel({ mode: "impossible", seed: 712, autoStart: false });
-    const matching = new GameModel({ mode: "impossible", seed: 712, autoStart: false });
-    let artifacts = 0;
-    for (let y = -100; y <= 100; y += 1) {
-      for (let x = -100; x <= 100; x += 1) {
-        expect(game.artifactAt(x, y)).toBe(matching.artifactAt(x, y));
-        if (!game.artifactAt(x, y)) continue;
-        artifacts += 1;
-        expect(game.mineAt(x, y)).toBe(false);
-        expect(game.clueAt(x, y)).toBe(0);
+  it("places deterministic artifacts only on zero-clue, mine-free cells across every field type", () => {
+    for (const topology of TOPOLOGY_IDS) {
+      for (const mode of MODES) {
+        const game = new GameModel({ mode, seed: 712, autoStart: false, topology });
+        const matching = new GameModel({ mode, seed: 712, autoStart: false, topology });
+        let artifacts = 0;
+        for (let y = -72; y <= 72; y += 1) {
+          for (let x = -72; x <= 72; x += 1) {
+            expect(game.artifactAt(x, y)).toBe(matching.artifactAt(x, y));
+            if (!game.artifactAt(x, y)) continue;
+            artifacts += 1;
+            expect(game.mineAt(x, y), `${topology}/${mode} mine at ${x},${y}`).toBe(false);
+            expect(game.clueAt(x, y), `${topology}/${mode} clue at ${x},${y}`).toBe(0);
+          }
+        }
+        expect(artifacts, `${topology}/${mode} artifact coverage`).toBeGreaterThan(0);
+
+        game.reveal(-64, -65);
+        for (let y = -72; y <= -56; y += 1) {
+          for (let x = -72; x <= -56; x += 1) {
+            if (!game.artifactAt(x, y)) continue;
+            expect(game.mineAt(x, y), `${topology}/${mode} safe-start mine at ${x},${y}`).toBe(false);
+            expect(game.clueAt(x, y), `${topology}/${mode} safe-start clue at ${x},${y}`).toBe(0);
+          }
+        }
       }
     }
-    expect(artifacts).toBeGreaterThan(40);
   });
 
   it("deathmatch starts with one life", () => {
@@ -266,7 +304,7 @@ describe("gameplay", () => {
     expect(game.health).toBe(1);
   });
 
-  it("cheats death only after game over and resets on a new field", () => {
+  it("grants Fibonacci health on successive cheat deaths and resets on a new field", () => {
     const game = new GameModel({ mode: "deathmatch", seed: 5, autoStart: false });
     expect(game.cheatDeath()).toBe(false);
     game.reveal(0, 0);
@@ -275,10 +313,22 @@ describe("gameplay", () => {
     game.reveal(mineX, 100);
     expect(game.alive).toBe(false);
 
-    expect(game.cheatDeath()).toBe(true);
-    expect(game.health).toBe(1);
-    expect(game.cheats).toBe(1);
+    const grants = [1, 1, 2, 3, 5, 8, 13];
+    for (let index = 0; index < grants.length; index += 1) {
+      expect(game.nextCheatDeathHealth).toBe(grants[index]);
+      expect(game.cheatDeath()).toBe(true);
+      expect(game.health).toBe(grants[index]);
+      expect(game.cheats).toBe(index + 1);
+      if (index < grants.length - 1) game.health = 0;
+    }
     expect(game.cheatDeath()).toBe(false);
+
+    game.cheats = Number.MAX_SAFE_INTEGER;
+    game.health = 0;
+    expect(game.nextCheatDeathHealth).toBe(Number.MAX_SAFE_INTEGER);
+    expect(game.cheatDeath()).toBe(true);
+    expect(game.health).toBe(Number.MAX_SAFE_INTEGER);
+    expect(game.cheats).toBe(Number.MAX_SAFE_INTEGER);
 
     game.reset("deathmatch", 6, false);
     expect(game.cheats).toBe(0);

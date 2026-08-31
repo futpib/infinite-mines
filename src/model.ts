@@ -17,6 +17,20 @@ export const DIFFICULTIES: Record<Mode, Difficulty> = {
   deathmatch: { density: 0.33, startingHealth: 1, healthEvery: 1_000_000_000 },
 };
 
+export function fibonacciHealth(cheatNumber: number): number {
+  if (cheatNumber <= 0) return 0;
+  if (!Number.isSafeInteger(cheatNumber)) return Number.MAX_SAFE_INTEGER;
+  let previous = 1;
+  let current = 1;
+  for (let index = 2; index < cheatNumber; index += 1) {
+    if (Number.MAX_SAFE_INTEGER - current < previous) return Number.MAX_SAFE_INTEGER;
+    const next = previous + current;
+    previous = current;
+    current = next;
+  }
+  return current;
+}
+
 export enum CellState {
   Covered = 0,
   Opened = 1,
@@ -398,6 +412,10 @@ export class GameModel {
     return this.started ? { x: this.safeX, y: this.safeY } : null;
   }
 
+  get nextCheatDeathHealth(): number {
+    return fibonacciHealth(this.cheats + 1);
+  }
+
   createSnapshot(): GameSnapshotV2 {
     return {
       version: 2,
@@ -470,6 +488,13 @@ export class GameModel {
     this.safeCells.clear();
     if (this.started) this.buildSafeRegion(this.safeX, this.safeY);
     this.artifactCache.clear();
+    const staleArtifactClues: Array<[number, number]> = [];
+    this.store.forEachNonZero((x, y, state) => {
+      if (isOpened(state) && openedClue(state) !== 0 && this.artifactAt(x, y)) {
+        staleArtifactClues.push([x, y]);
+      }
+    });
+    for (const [x, y] of staleArtifactClues) this.store.set(x, y, CellState.Opened);
     return true;
   }
 
@@ -496,8 +521,8 @@ export class GameModel {
 
   cheatDeath(): boolean {
     if (this.alive) return false;
-    this.health = 1;
-    this.cheats += 1;
+    this.health = this.nextCheatDeathHealth;
+    this.cheats = Math.min(Number.MAX_SAFE_INTEGER, this.cheats + 1);
     return true;
   }
 
@@ -726,7 +751,7 @@ export class GameModel {
       this.extendBounds(x, y);
       changed += 1;
       scoreDelta += clue;
-      if (this.artifactAt(x, y)) thingsDelta += 1;
+      if (clue === 0 && this.artifactAt(x, y)) thingsDelta += 1;
       if (clue === 0) this.forEachNeighbor(x, y, enqueue);
     }
 

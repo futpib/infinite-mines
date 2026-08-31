@@ -3,9 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151b1e" />
+    <meta id="color-scheme" name="color-scheme" content="light dark" />
+    <meta id="theme-color-light" name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
+    <meta id="theme-color-dark" name="theme-color" media="(prefers-color-scheme: dark)" content="#151b1e" />
+    <script>
+      (() => {
+        let mode = "system";
+        try {
+          const saved = localStorage.getItem("infinite-mines-theme");
+          if (saved === "light" || saved === "dark") mode = saved;
+        } catch {}
+        const resolved = mode === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : mode;
+        document.documentElement.dataset.themeMode = mode;
+        document.documentElement.dataset.theme = resolved;
+        if (mode !== "system") {
+          document.getElementById("color-scheme").content = resolved;
+          document.getElementById("theme-color-light").media = resolved === "light" ? "all" : "not all";
+          document.getElementById("theme-color-dark").media = resolved === "dark" ? "all" : "not all";
+        }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
     <meta
       name="description"
@@ -132,7 +149,7 @@
           <p>Your field and score can still be saved—at a cost to your clean run.</p>
           <div class="game-over-actions">
             <button class="primary-action" id="cheat-death-button" type="button">
-              <b>Cheat death</b><small>Continue with 1 health</small>
+              <b>Cheat death</b><small id="cheat-death-health">Continue with 1 health</small>
             </button>
             <button class="secondary-action" id="game-over-restart-button" type="button">Start a new field</button>
           </div>
@@ -149,6 +166,20 @@
           </div>
           <button class="close-button" value="cancel" aria-label="Close">×</button>
         </div>
+        <section class="settings-section" aria-labelledby="theme-heading">
+          <p class="settings-label" id="theme-heading">THEME</p>
+          <div class="control-options theme-options" id="theme-options" aria-labelledby="theme-heading">
+            <button type="button" data-theme-mode="system" aria-pressed="true">
+              <b>System</b><small>Follow device color scheme</small>
+            </button>
+            <button type="button" data-theme-mode="light" aria-pressed="false">
+              <b>Light</b><small>Always use light colors</small>
+            </button>
+            <button type="button" data-theme-mode="dark" aria-pressed="false">
+              <b>Dark</b><small>Always use dark colors</small>
+            </button>
+          </div>
+        </section>
         <section class="settings-section" aria-labelledby="controls-heading">
           <p class="settings-label" id="controls-heading">REVEAL CONTROLS</p>
           <div class="control-options" id="control-options">

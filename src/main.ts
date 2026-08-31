@@ -35,6 +35,7 @@ const controlOptions = element<HTMLElement>("#control-options");
 const hoverOptions = element<HTMLElement>("#hover-options");
 const hintHoverOptions = element<HTMLElement>("#hint-hover-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
+const themeOptions = element<HTMLElement>("#theme-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
 const topologyPill = element<HTMLElement>("#topology-pill");
@@ -44,11 +45,15 @@ const fullscreenButton = element<HTMLButtonElement>("#fullscreen-button");
 const uiToggleButton = element<HTMLButtonElement>("#ui-toggle-button");
 const gameOverScreen = element<HTMLElement>("#game-over-screen");
 const cheatDeathButton = element<HTMLButtonElement>("#cheat-death-button");
+const cheatDeathHealth = element<HTMLElement>("#cheat-death-health");
 const gameOverRestartButton = element<HTMLButtonElement>("#game-over-restart-button");
 const cellLocator = element<HTMLButtonElement>("#cell-locator");
 const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
+const colorSchemeMeta = element<HTMLMetaElement>("#color-scheme");
+const lightThemeColorMeta = element<HTMLMetaElement>("#theme-color-light");
+const darkThemeColorMeta = element<HTMLMetaElement>("#theme-color-dark");
 const hoverMarkers = Array.from({ length: 19 }, () => {
   const marker = document.createElement("span");
   marker.className = "hover-cell";
@@ -87,6 +92,9 @@ let hintHoverMode: HintHoverMode = savedHintHoverMode === "hide" ? "hide" : "sho
 type AutoHideMode = "after-fifty" | "never";
 const savedAutoHideMode = storageGet("infinite-mines-auto-hide-controls");
 let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "after-fifty";
+type ThemeMode = "system" | "light" | "dark";
+const savedThemeMode = storageGet("infinite-mines-theme");
+let themeMode: ThemeMode = savedThemeMode === "light" || savedThemeMode === "dark" ? savedThemeMode : "system";
 const browserPlatform =
   (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
 const applePlatform = /mac|iphone|ipad|ipod/i.test(browserPlatform);
@@ -117,6 +125,7 @@ const settleFpsCounter = (): void => {
   fpsCounter.dataset.state = "idle";
   fpsValue.textContent = "IDLE";
 };
+const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 const renderer = new WebGLRenderer(canvas, model);
 renderer.setFrameObserver((diagnostics) => {
   const now = performance.now();
@@ -131,12 +140,8 @@ renderer.setFrameObserver((diagnostics) => {
   if (fpsIdleTimer === 0) fpsIdleTimer = window.setTimeout(settleFpsCounter, FPS_IDLE_AFTER_MS);
 });
 if (restoredGame) renderer.restoreView(persistedGame.view);
-const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 colorScheme.addEventListener("change", () => {
-  requestAnimationFrame(() => {
-    renderer.refreshTheme();
-    if (overviewDialog.open) overviewCaption.textContent = renderer.drawOverview(overviewCanvas);
-  });
+  if (themeMode === "system") updateThemeMode();
 });
 let markTool = false;
 let toastTimer = 0;
@@ -203,6 +208,24 @@ function updateAutoHideMode(): void {
   }
 }
 
+function updateThemeMode(refreshRenderer = true): void {
+  const resolvedTheme = themeMode === "system" ? (colorScheme.matches ? "dark" : "light") : themeMode;
+  document.documentElement.dataset.themeMode = themeMode;
+  document.documentElement.dataset.theme = resolvedTheme;
+  colorSchemeMeta.content = themeMode === "system" ? "light dark" : resolvedTheme;
+  lightThemeColorMeta.media = themeMode === "system" ? "(prefers-color-scheme: light)" : resolvedTheme === "light" ? "all" : "not all";
+  darkThemeColorMeta.media = themeMode === "system" ? "(prefers-color-scheme: dark)" : resolvedTheme === "dark" ? "all" : "not all";
+  for (const button of themeOptions.querySelectorAll<HTMLButtonElement>("button[data-theme-mode]")) {
+    button.ariaPressed = String(button.dataset.themeMode === themeMode);
+  }
+  if (!refreshRenderer) return;
+  requestAnimationFrame(() => {
+    renderer.refreshTheme();
+    refreshCellLocator(true);
+    if (overviewDialog.open) overviewCaption.textContent = renderer.drawOverview(overviewCanvas);
+  });
+}
+
 function updateTopologyOptions(): void {
   topologyPill.textContent = TOPOLOGIES[model.topologyId].label.toUpperCase();
   for (const button of topologyOptions.querySelectorAll<HTMLButtonElement>("button[data-topology]")) {
@@ -227,6 +250,7 @@ function updateStats(): void {
   cheatsStatCard.hidden = model.cheats === 0;
   stats.classList.toggle("has-cheats", model.cheats > 0);
   gameOverScreen.hidden = model.alive;
+  cheatDeathHealth.textContent = `Continue with ${model.nextCheatDeathHealth.toLocaleString()} health`;
   game.classList.toggle("game-over", !model.alive);
 }
 
@@ -307,7 +331,7 @@ function describeVisibleCell(x: number, y: number): string {
   if (state === CellState.Question) return "question";
   if (state === CellState.Exploded) return "exploded";
   if (isOpened(state)) {
-    if (model.artifactAt(x, y)) return "opened artifact";
+    if (state === CellState.Opened && model.artifactAt(x, y)) return "opened artifact";
     const clue = openedClue(state);
     return clue === 0 ? "opened clear" : `opened clue ${clue}`;
   }
@@ -571,7 +595,7 @@ function cheatDeath(): void {
   renderer.requestRender();
   refreshCellLocator(true);
   scheduleGameSave(0);
-  showToast(`Cheat ${model.cheats.toLocaleString()} — back with one health`);
+  showToast(`Cheat ${model.cheats.toLocaleString()} — back with ${model.health.toLocaleString()} health`);
 }
 
 function runGameOverAction(event: MouseEvent, button: HTMLButtonElement, action: () => void): void {
@@ -1001,6 +1025,14 @@ autoHideOptions.addEventListener("click", (event) => {
   updateAutoHideMode();
 });
 
+themeOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-theme-mode]");
+  if (!button) return;
+  themeMode = button.dataset.themeMode === "light" || button.dataset.themeMode === "dark" ? button.dataset.themeMode : "system";
+  storageSet("infinite-mines-theme", themeMode);
+  updateThemeMode();
+});
+
 mobileTool.addEventListener("click", () => {
   markTool = !markTool;
   mobileTool.ariaPressed = String(markTool);
@@ -1078,6 +1110,8 @@ function getDiagnostics() {
     hoverMode,
     hintHoverMode,
     autoHideMode,
+    themeMode,
+    theme: document.documentElement.dataset.theme,
     gameplayInteractionCount,
     fullscreen: document.fullscreenElement !== null,
     uiHidden,
@@ -1097,3 +1131,5 @@ window.__infiniteMines = {
   newGame,
   flushSave: () => flushGameSave(true),
 };
+
+updateThemeMode(false);

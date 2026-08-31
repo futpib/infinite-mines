@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findCell, openDeterministicGame, worldPoint } from "./helpers";
+import { findCell, hexToRgb, openDeterministicGame, worldPoint } from "./helpers";
 
 test("R09 — refresh restores the exact field, progress, marks, and viewport from a compact snapshot", async ({ page }) => {
   await openDeterministicGame(page);
@@ -116,6 +116,66 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
     { ...progress, flag },
   );
   expect(after).toEqual(before);
+});
+
+test("R35 — an old saved number at a current Thing migrates to rendered clue zero", async ({ page }) => {
+  await openDeterministicGame(page);
+  const stale = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    let artifact: { x: number; y: number } | null = null;
+    for (let y = -100; y <= 100 && !artifact; y += 1) {
+      for (let x = -100; x <= 100; x += 1) {
+        if (api.model.artifactAt(x, y)) {
+          artifact = { x, y };
+          break;
+        }
+      }
+    }
+    if (!artifact) throw new Error("No artifact found for old-save fixture");
+    api.model.store.set(artifact.x, artifact.y, 5);
+    await api.flushSave();
+    return artifact;
+  });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
+  const migrated = await page.evaluate(async (artifact) => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    renderer.restoreView({
+      version: 1,
+      panX: -artifact.x * 25,
+      panY: -artifact.y * 25,
+      zoom: 1,
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const canvas = document.querySelector<HTMLCanvasElement>("#board");
+    if (!canvas) throw new Error("Missing board");
+    const bounds = canvas.getBoundingClientRect();
+    const dpr = canvas.width / bounds.width;
+    const pixel = new Uint8Array(4);
+    renderer.gl.finish();
+    renderer.gl.readPixels(
+      Math.floor((bounds.width / 2) * dpr),
+      canvas.height - 1 - Math.floor((bounds.height / 2) * dpr),
+      1,
+      1,
+      renderer.gl.RGBA,
+      renderer.gl.UNSIGNED_BYTE,
+      pixel,
+    );
+    return {
+      state: api.model.getState(artifact.x, artifact.y),
+      clue: api.model.clueAt(artifact.x, artifact.y),
+      artifact: api.model.artifactAt(artifact.x, artifact.y),
+      pixel: Array.from(pixel.slice(0, 3)),
+      expected: getComputedStyle(document.documentElement).getPropertyValue("--board-artifact").trim(),
+    };
+  }, stale);
+  expect(migrated.state).toBe(1);
+  expect(migrated.clue).toBe(0);
+  expect(migrated.artifact).toBe(true);
+  expect(migrated.pixel).toEqual(hexToRgb(migrated.expected));
 });
 
 test("R40 — every topology and difficulty restores its own field, progress, and viewport", async ({ page }) => {

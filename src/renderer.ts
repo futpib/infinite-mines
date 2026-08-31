@@ -1194,7 +1194,7 @@ export class WebGLRenderer {
       const originX = (cssWidth - worldWidth * scale) / 2 - world.minX * scale;
       const originY = (cssHeight - worldHeight * scale) / 2 - world.minY * scale;
       this.model.store.forEachNonZero((x, y, state) => {
-        if (isOpened(state)) context.fillStyle = this.model.artifactAt(x, y) ? this.theme.artifact : this.theme.overviewOpened;
+        if (isOpened(state)) context.fillStyle = state === CellState.Opened && this.model.artifactAt(x, y) ? this.theme.artifact : this.theme.overviewOpened;
         else if (state === CellState.Exploded) context.fillStyle = this.theme.exploded;
         else if (state === CellState.Flagged) context.fillStyle = this.theme.flag;
         else return;
@@ -1230,7 +1230,7 @@ export class WebGLRenderer {
     const pixelSize = Math.max(1, scale + 0.15);
 
     this.model.store.forEachNonZero((x, y, state) => {
-      if (isOpened(state)) context.fillStyle = this.model.artifactAt(x, y) ? this.theme.artifact : this.theme.overviewOpened;
+      if (isOpened(state)) context.fillStyle = state === CellState.Opened && this.model.artifactAt(x, y) ? this.theme.artifact : this.theme.overviewOpened;
       else if (state === CellState.Exploded) context.fillStyle = this.theme.exploded;
       else if (state === CellState.Flagged) context.fillStyle = this.theme.flag;
       else return;
@@ -1362,7 +1362,7 @@ export class WebGLRenderer {
       instances[index++] = geometry.axisV.x;
       instances[index++] = geometry.axisV.y;
       instances[index++] = this.spriteFor(state);
-      instances[index++] = isOpened(state) && this.model.artifactAt(x, y) ? 1 : 0;
+      instances[index++] = state === CellState.Opened && this.model.artifactAt(x, y) ? 1 : 0;
       instances[index++] = shape;
       instances[index++] = edges;
     });
@@ -1479,7 +1479,7 @@ export class WebGLRenderer {
     const statePixels = new Uint8Array(textureWidth * textureHeight);
     this.model.store.forEachNonZeroInBounds(minWorldX, minWorldY, maxWorldX, maxWorldY, (x, y, state) => {
       const sprite = this.squareSpriteFor(state);
-      const artifact = isOpened(state) && this.model.artifactAt(x, y) ? 16 : 0;
+      const artifact = state === CellState.Opened && this.model.artifactAt(x, y) ? 16 : 0;
       statePixels[(y - textureOriginY) * textureWidth + x - textureOriginX] = sprite + 1 + artifact;
     });
 
@@ -1528,7 +1528,7 @@ export class WebGLRenderer {
         cells[index++] = localX;
         cells[index++] = localY;
         cells[index++] = this.squareSpriteFor(state);
-        cells[index++] = isOpened(state) && this.model.artifactAt(originX + localX, originY + localY) ? 1 : 0;
+        cells[index++] = state === CellState.Opened && this.model.artifactAt(originX + localX, originY + localY) ? 1 : 0;
       }
     }
 

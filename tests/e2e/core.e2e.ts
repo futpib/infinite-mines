@@ -100,7 +100,7 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
     let artifact: { x: number; y: number } | null = null;
     for (let y = 50; y < 200 && !artifact; y += 1) {
       for (let x = 50; x < 200; x += 1) {
-        if (model.artifactAt(x, y) && model.clueAt(x, y) === 0 && model.getState(x, y) === 0) {
+        if (model.artifactAt(x, y) && model.getState(x, y) === 0) {
           artifact = { x, y };
           break;
         }
@@ -407,6 +407,7 @@ test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run c
   await expect(page.locator("#health-stat")).toHaveText("♡ × 0");
   await expect(page.locator("#game-over-screen")).toBeVisible();
   await expect(page.getByRole("button", { name: /Cheat death/ })).toBeFocused();
+  await expect(page.locator("#cheat-death-health")).toHaveText("Continue with 1 health");
   await page.getByRole("button", { name: /Cheat death/ }).click();
   await expect(page.locator("#game")).not.toHaveClass(/game-over/);
   await expect(page.locator("#game-over-screen")).toBeHidden();
@@ -435,7 +436,9 @@ test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run c
     throw new Error("No second mine found");
   });
   await expect(page.locator("#game-over-screen")).toBeVisible();
+  await expect(page.locator("#cheat-death-health")).toHaveText("Continue with 1 health");
   await page.getByRole("button", { name: /Cheat death/ }).click();
+  await expect(page.locator("#health-stat")).toHaveText("♥");
   await expect(page.locator("#cheats-stat")).toHaveText("2");
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("saved");
 
@@ -444,6 +447,25 @@ test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run c
   await expect(page.locator("#cheats-stat-card")).toBeVisible();
   await expect(page.locator("#cheats-stat")).toHaveText("2");
   expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(2);
+
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    const model = api.model;
+    for (let y = 300; y < 400; y += 1) {
+      for (let x = 300; x < 400; x += 1) {
+        if (model.mineAt(x, y) && model.getState(x, y) === 0) {
+          api.reveal(x, y);
+          return;
+        }
+      }
+    }
+    throw new Error("No third mine found");
+  });
+  await expect(page.locator("#game-over-screen")).toBeVisible();
+  await expect(page.locator("#cheat-death-health")).toHaveText("Continue with 2 health");
+  await page.getByRole("button", { name: /Cheat death/ }).click();
+  await expect(page.locator("#health-stat")).toHaveText("♥♥");
+  await expect(page.locator("#cheats-stat")).toHaveText("3");
 
   await page.getByRole("button", { name: "New game" }).click();
   await expect(page.locator("#cheats-stat-card")).toBeHidden();

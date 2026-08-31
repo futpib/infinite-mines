@@ -9,7 +9,7 @@
 :root {
   color: #1e282a;
   background: #f4f1e9;
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Inter Variable", Inter, "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -58,10 +58,10 @@
   --topbar-height: 64px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+:root[data-theme="dark"] {
     color: #edf4f2;
     background: #0d1214;
+    color-scheme: dark;
     --ink: #edf4f2;
     --muted: #9ba9a7;
     --board-bg: #0d1214;
@@ -104,7 +104,6 @@
     --board-number-6: #62d9df;
     --board-number-7: #e3e9e8;
     --board-number-8: #ffffff;
-  }
 }
 
 * { box-sizing: border-box; }
@@ -785,8 +784,11 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   gap: 9px;
 }
 
-.topology-options { grid-template-columns: repeat(3, 1fr); }
-.topology-options button { min-width: 0; padding-right: 35px; }
+.topology-options,
+.theme-options { grid-template-columns: repeat(3, 1fr); }
+
+.topology-options button,
+.theme-options button { min-width: 0; padding-right: 35px; }
 
 .control-options button {
   position: relative;
@@ -932,11 +934,16 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .stat strong,
   .stat-wide strong { overflow: hidden; margin-top: 3px; font-size: 10px; text-overflow: ellipsis; }
   .hint { display: none; }
-  .topology-options { grid-template-columns: repeat(3, 1fr); }
-  .topology-options button { min-height: 84px; padding: 12px 8px; }
-  .topology-options button::after { top: 7px; right: 7px; width: 15px; height: 15px; font-size: 9px; }
-  .topology-options b { padding-right: 12px; font-size: 11px; }
-  .topology-options small { font-size: 8px; }
+  .topology-options,
+  .theme-options { grid-template-columns: repeat(3, 1fr); }
+  .topology-options button,
+  .theme-options button { min-height: 84px; padding: 12px 8px; }
+  .topology-options button::after,
+  .theme-options button::after { top: 7px; right: 7px; width: 15px; height: 15px; font-size: 9px; }
+  .topology-options b,
+  .theme-options b { padding-right: 12px; font-size: 11px; }
+  .topology-options small,
+  .theme-options small { font-size: 8px; }
   .cell-locator {
     bottom: 14px;
     left: 12px;
