@@ -397,6 +397,12 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(page.locator("#game")).toHaveAttribute("data-ui", "hidden");
   await expect(page.locator(".topbar")).toBeHidden();
   await expect(page.locator(".stats")).toBeHidden();
+  const hiddenHealth = page.locator("#hidden-health");
+  await expect(hiddenHealth).toBeVisible();
+  await expect(hiddenHealth).toHaveText("♥ 3");
+  await expect(hiddenHealth).toHaveAttribute("aria-label", "3 health");
+  await expect(hiddenHealth).toHaveCSS("opacity", "0.58");
+  await expect(hiddenHealth).toHaveCSS("pointer-events", "none");
   await expect(page.locator("#hint")).toBeHidden();
   await expect(page.locator("#cell-locator")).toBeHidden();
   await expect(page.locator("#hover-overlay")).toBeVisible();
@@ -406,7 +412,7 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
         .filter((child) => getComputedStyle(child).display !== "none")
         .map((child) => child.id || child.className),
     ),
-  ).toEqual(["board", "hover-overlay", "controls"]);
+  ).toEqual(["board", "hover-overlay", "controls", "hidden-health"]);
   expect(
     await page.locator(".controls").evaluate((container) =>
       [...container.children]
@@ -425,6 +431,21 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   expect(await cellAtFixedScreenPoint()).toEqual(initialFixedCell);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(initial.view);
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
+
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    for (let y = 100; y < 200; y += 1) {
+      for (let x = 100; x < 200; x += 1) {
+        if (api.model.mineAt(x, y)) {
+          api.reveal(x, y);
+          return;
+        }
+      }
+    }
+    throw new Error("No mine found");
+  });
+  await expect(hiddenHealth).toHaveText("♥ 2");
+  await expect(hiddenHealth).toHaveAttribute("aria-label", "2 health");
 
   await page.mouse.move(fixedScreenPoint.x, fixedScreenPoint.y);
   await page.mouse.wheel(0, -180);
@@ -449,6 +470,8 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   await expect(page.locator("#game")).toHaveAttribute("data-ui", "visible");
   await expect(page.locator(".topbar")).toBeVisible();
   await expect(page.locator(".stats")).toBeVisible();
+  await expect(hiddenHealth).toBeHidden();
+  await expect(page.locator("#health-stat")).toHaveText("♥♥");
   await expect(hide).toBeVisible();
   await expect(hide).toHaveAttribute("aria-pressed", "false");
   expect(await page.locator("#board").boundingBox()).toEqual(initialBoard);

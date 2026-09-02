@@ -579,7 +579,7 @@ a:focus-visible {
 
 body.ui-hidden > .topbar,
 body.ui-hidden > dialog,
-.ui-hidden .game > :not(#board):not(#hover-overlay):not(.controls):not(#game-over-screen),
+.ui-hidden .game > :not(#board):not(#hover-overlay):not(.controls):not(#hidden-health):not(#game-over-screen),
 .ui-hidden .controls button:not(#ui-toggle-button) { display: none; }
 
 .ui-hidden .controls {
@@ -593,6 +593,32 @@ body.ui-hidden > dialog,
 
 .ui-hidden .controls:hover,
 .ui-hidden .controls:focus-within { opacity: 1; }
+
+.hidden-health { display: none; }
+
+.ui-hidden .hidden-health {
+  position: absolute;
+  z-index: 3;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  display: block;
+  min-width: 38px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 999px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--surface) 74%, transparent);
+  box-shadow: var(--shadow-small);
+  opacity: 0.58;
+  pointer-events: none;
+  contain: layout paint style;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
 
 .toast {
   position: absolute;

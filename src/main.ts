@@ -18,6 +18,7 @@ const highStat = element<HTMLElement>("#high-stat");
 const scoreStat = element<HTMLElement>("#score-stat");
 const thingsStat = element<HTMLElement>("#things-stat");
 const healthStat = element<HTMLElement>("#health-stat");
+const hiddenHealth = element<HTMLOutputElement>("#hidden-health");
 const stats = element<HTMLElement>(".stats");
 const cheatsStatCard = element<HTMLElement>("#cheats-stat-card");
 const cheatsStat = element<HTMLElement>("#cheats-stat");
@@ -246,6 +247,8 @@ function updateStats(): void {
   scoreStat.textContent = model.score.toLocaleString();
   thingsStat.textContent = model.things.toLocaleString();
   healthStat.textContent = model.health < 1 ? `♡ × ${model.health}` : model.health > 5 ? `♥ × ${model.health}` : "♥".repeat(model.health);
+  hiddenHealth.textContent = `${model.health < 1 ? "♡" : "♥"} ${model.health.toLocaleString()}`;
+  hiddenHealth.ariaLabel = `${model.health.toLocaleString()} health`;
   cheatsStat.textContent = model.cheats.toLocaleString();
   cheatsStatCard.hidden = model.cheats === 0;
   stats.classList.toggle("has-cheats", model.cheats > 0);
