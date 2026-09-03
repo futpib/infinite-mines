@@ -714,6 +714,7 @@ body.ui-hidden > dialog,
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
+.game-over-actions button[hidden] { display: none; }
 .game-over-actions button:active { transform: scale(0.98); }
 
 .primary-action {

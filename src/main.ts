@@ -64,6 +64,7 @@ const helpGuardedDescription = element<HTMLElement>("#help-guarded-description")
 const fullscreenButton = element<HTMLButtonElement>("#fullscreen-button");
 const uiToggleButton = element<HTMLButtonElement>("#ui-toggle-button");
 const gameOverScreen = element<HTMLElement>("#game-over-screen");
+const gameOverCopy = element<HTMLElement>("#game-over-copy");
 const cheatDeathButton = element<HTMLButtonElement>("#cheat-death-button");
 const cheatDeathHealth = element<HTMLElement>("#cheat-death-health");
 const gameOverRestartButton = element<HTMLButtonElement>("#game-over-restart-button");
@@ -298,6 +299,13 @@ function updateStats(): void {
   cheatsStatCard.hidden = model.cheats === 0;
   stats.classList.toggle("has-cheats", model.cheats > 0);
   gameOverScreen.hidden = model.alive;
+  const cheatDeathAllowed = model.mode !== "deathmatch";
+  cheatDeathButton.hidden = !cheatDeathAllowed;
+  gameOverRestartButton.classList.toggle("primary-action", !cheatDeathAllowed);
+  gameOverRestartButton.classList.toggle("secondary-action", cheatDeathAllowed);
+  gameOverCopy.textContent = cheatDeathAllowed
+    ? "Your field and score can still be saved—at a cost to your clean run."
+    : "Deathmatch is final. Start a new field to play again.";
   cheatDeathHealth.textContent = `Continue with ${model.nextCheatDeathHealth.toLocaleString()} health`;
   game.classList.toggle("game-over", !model.alive);
 }
@@ -627,15 +635,29 @@ function scheduleGameSave(delay = 280): void {
 
 function applyAction(result: ActionResult): void {
   if (result.changed === 0) {
-    if (!model.alive) showToast("No health left — cheat death or start fresh");
+    if (!model.alive) {
+      showToast(
+        model.mode === "deathmatch" ? "Deathmatch is over — start fresh" : "No health left — cheat death or start fresh",
+      );
+    }
     return;
   }
-  if (result.exploded) showToast(model.alive ? "Mine hit — keep moving" : "Field lost — choose what happens next");
+  if (result.exploded) {
+    showToast(
+      model.alive
+        ? "Mine hit — keep moving"
+        : model.mode === "deathmatch"
+          ? "Deathmatch over — start a new field"
+          : "Field lost — choose what happens next",
+    );
+  }
   updateStats();
   renderer.requestRender(result.damage ?? undefined);
   refreshCellLocator(true);
   scheduleGameSave();
-  if (!model.alive) requestAnimationFrame(() => cheatDeathButton.focus());
+  if (!model.alive) {
+    requestAnimationFrame(() => (model.canCheatDeath ? cheatDeathButton : gameOverRestartButton).focus());
+  }
 }
 
 function cheatDeath(): void {

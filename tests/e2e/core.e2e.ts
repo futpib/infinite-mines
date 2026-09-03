@@ -431,14 +431,15 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
   expect(completed.packedBytes).toBe(completed.storedCells * 9);
 });
 
-test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run counter", async ({ page }) => {
+test("R02/R27 — eligible fields can cheat death with a persisted, conditional run counter", async ({ page }) => {
   await openDeterministicGame(page);
   await expect(page.locator("#game-over-screen")).toBeHidden();
   await expect(page.locator("#cheats-stat-card")).toBeHidden();
   const result = await page.evaluate(() => {
     const api = window.__infiniteMines;
-    api.newGame("deathmatch");
+    api.newGame("impossible");
     const model = api.model;
+    model.health = 1;
     for (let y = 100; y < 200; y += 1) {
       for (let x = 100; x < 200; x += 1) {
         if (model.mineAt(x, y)) {
@@ -528,6 +529,45 @@ test("R02/R27 — Deathmatch can cheat death with a persisted, conditional run c
   await page.getByRole("button", { name: "New game" }).click();
   await expect(page.locator("#cheats-stat-card")).toBeHidden();
   expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
+});
+
+test("R46 — Deathmatch ends with one focused restart action and rejects revival", async ({ page }) => {
+  await openDeterministicGame(page);
+  const lost = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.newGame("deathmatch");
+    const model = api.model;
+    for (let y = 100; y < 200; y += 1) {
+      for (let x = 100; x < 200; x += 1) {
+        if (!model.mineAt(x, y)) continue;
+        api.reveal(x, y);
+        return { health: model.health, cheats: model.cheats, alive: model.alive };
+      }
+    }
+    throw new Error("No Deathmatch mine found");
+  });
+
+  expect(lost).toEqual({ health: 0, cheats: 0, alive: false });
+  await expect(page.locator("#game-over-screen")).toBeVisible();
+  await expect(page.locator("#game-over-copy")).toHaveText("Deathmatch is final. Start a new field to play again.");
+  await expect(page.locator("#cheat-death-button")).toBeHidden();
+  await expect(page.locator(".game-over-actions button:visible")).toHaveCount(1);
+  await expect(page.locator("#game-over-restart-button")).toHaveClass(/primary-action/);
+  await expect(page.locator("#game-over-restart-button")).toBeFocused();
+
+  const rejected = await page.evaluate(() => {
+    const model = window.__infiniteMines.model;
+    const result = model.cheatDeath();
+    return { result, health: model.health, cheats: model.cheats, alive: model.alive };
+  });
+  expect(rejected).toEqual({ result: false, health: 0, cheats: 0, alive: false });
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect(page.locator("#game-over-screen")).toBeVisible();
+  await expect(page.locator("#cheat-death-button")).toBeHidden();
+  await expect(page.locator("#game-over-restart-button")).toHaveClass(/primary-action/);
+  expect(await page.evaluate(() => window.__infiniteMines.model.cheatDeath())).toBe(false);
 });
 
 test("R17 — health starts and advances at the original mode thresholds", async ({ page }) => {

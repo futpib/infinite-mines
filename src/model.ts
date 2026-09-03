@@ -479,6 +479,10 @@ export class GameModel {
     return fibonacciHealth(this.cheats + 1);
   }
 
+  get canCheatDeath(): boolean {
+    return this.mode !== "deathmatch" && !this.alive;
+  }
+
   createSnapshot(): GameSnapshotV3 {
     return {
       version: 3,
@@ -591,7 +595,7 @@ export class GameModel {
   }
 
   cheatDeath(): boolean {
-    if (this.alive) return false;
+    if (!this.canCheatDeath) return false;
     this.health = this.nextCheatDeathHealth;
     this.cheats = Math.min(Number.MAX_SAFE_INTEGER, this.cheats + 1);
     return true;

@@ -14,11 +14,12 @@ async function gameOverActionCenter(page: Page, selector: string): Promise<{ x: 
   });
 }
 
-async function alignDeathmatchMine(page: Page, target: { x: number; y: number }): Promise<{ x: number; y: number }> {
+async function alignFatalMine(page: Page, target: { x: number; y: number }): Promise<{ x: number; y: number }> {
   return page.evaluate((screenTarget) => {
     const api = window.__infiniteMines;
-    api.newGame("deathmatch");
+    api.newGame("impossible");
     const { model, renderer } = api;
+    model.health = 1;
     let mine: { x: number; y: number } | null = null;
     for (let radius = 3; radius < 100 && !mine; radius += 1) {
       for (let y = -radius; y <= radius && !mine; y += 1) {
@@ -249,7 +250,7 @@ test("R27/R44 — fatal mouse and touch input cannot choose game over, including
     const cheatTarget = await gameOverActionCenter(page, "#cheat-death-button");
     const restartTarget = await gameOverActionCenter(page, "#game-over-restart-button");
 
-    let mine = await alignDeathmatchMine(page, cheatTarget);
+    let mine = await alignFatalMine(page, cheatTarget);
     await page.keyboard.down("Control");
     await page.mouse.click(cheatTarget.x, cheatTarget.y);
     await page.keyboard.up("Control");
@@ -260,7 +261,7 @@ test("R27/R44 — fatal mouse and touch input cannot choose game over, including
     await page.keyboard.press("Enter");
     await expect(page.locator("#game-over-screen")).toBeHidden();
 
-    mine = await alignDeathmatchMine(page, cheatTarget);
+    mine = await alignFatalMine(page, cheatTarget);
     await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);
     await expect(page.locator("#game-over-screen")).toBeVisible();
     expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
@@ -269,7 +270,7 @@ test("R27/R44 — fatal mouse and touch input cannot choose game over, including
     await expect(page.locator("#game-over-screen")).toBeHidden();
     expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(1);
 
-    mine = await alignDeathmatchMine(page, restartTarget);
+    mine = await alignFatalMine(page, restartTarget);
     await page.touchscreen.tap(restartTarget.x, restartTarget.y);
     await expect(page.locator("#game-over-screen")).toBeVisible();
     expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(0);
@@ -278,7 +279,7 @@ test("R27/R44 — fatal mouse and touch input cannot choose game over, including
     await expect(page.locator("#game-over-screen")).toBeHidden();
     expect(await page.evaluate(() => window.__infiniteMines.model.cheats)).toBe(1);
 
-    mine = await alignDeathmatchMine(page, cheatTarget);
+    mine = await alignFatalMine(page, cheatTarget);
     await page.getByRole("button", { name: "Hide controls" }).click();
     await expect(page.locator("body")).toHaveClass(/ui-hidden/);
     await page.touchscreen.tap(cheatTarget.x, cheatTarget.y);

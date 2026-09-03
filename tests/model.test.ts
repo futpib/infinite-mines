@@ -359,15 +359,21 @@ describe("gameplay", () => {
     }
   });
 
-  it("deathmatch starts with one life", () => {
+  it("deathmatch starts with one final life and rejects cheat death without mutation", () => {
     const game = new GameModel({ mode: "deathmatch", seed: 5 });
     expect(game.health).toBe(1);
+    game.health = 0;
+    expect(game.canCheatDeath).toBe(false);
+    expect(game.cheatDeath()).toBe(false);
+    expect(game.health).toBe(0);
+    expect(game.cheats).toBe(0);
   });
 
   it("grants Fibonacci health on successive cheat deaths and resets on a new field", () => {
-    const game = new GameModel({ mode: "deathmatch", seed: 5, autoStart: false });
+    const game = new GameModel({ mode: "impossible", seed: 5, autoStart: false });
     expect(game.cheatDeath()).toBe(false);
     game.reveal(0, 0);
+    game.health = 1;
     let mineX = 100;
     while (!game.mineAt(mineX, 100)) mineX += 1;
     game.reveal(mineX, 100);
@@ -390,9 +396,9 @@ describe("gameplay", () => {
     expect(game.health).toBe(Number.MAX_SAFE_INTEGER);
     expect(game.cheats).toBe(Number.MAX_SAFE_INTEGER);
 
-    game.reset("deathmatch", 6, false);
+    game.reset("impossible", 6, false);
     expect(game.cheats).toBe(0);
-    expect(game.health).toBe(1);
+    expect(game.health).toBe(3);
   });
 
   it("chords an opened number when its neighboring mines are flagged", () => {
