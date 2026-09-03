@@ -1,7 +1,9 @@
 import { TOPOLOGIES, isTopologyId, type Topology, type TopologyId } from "./topology";
 
-export const MODES = ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const;
+export const PRESET_MODES = ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const;
+export const MODES = [...PRESET_MODES, "custom"] as const;
 export type Mode = (typeof MODES)[number];
+export type PresetMode = (typeof PRESET_MODES)[number];
 
 export interface Difficulty {
   density: number;
@@ -9,12 +11,53 @@ export interface Difficulty {
   healthEvery: number;
 }
 
+export const LEGACY_DENSITIES: Record<PresetMode, number> = {
+  beginner: 0.18,
+  master: 0.22,
+  ultimate: 0.27,
+  impossible: 0.33,
+  deathmatch: 0.33,
+};
+
+// 1000mines excludes an expected 161 of every 3,456 cells through Thing footprints.
+export const ORIGINAL_AVAILABLE_CELL_FRACTION = 3295 / 3456;
+export const CUSTOM_DENSITY_MIN = 0.12;
+export const CUSTOM_DENSITY_MAX = 0.5;
+export const CUSTOM_DENSITY_DEFAULT = 0.25;
+
+export const isValidDensity = (density: unknown): density is number =>
+  typeof density === "number" &&
+  Number.isFinite(density) &&
+  density >= CUSTOM_DENSITY_MIN &&
+  density <= CUSTOM_DENSITY_MAX;
+
 export const DIFFICULTIES: Record<Mode, Difficulty> = {
-  beginner: { density: 0.18, startingHealth: 3, healthEvery: 25_000 },
-  master: { density: 0.22, startingHealth: 3, healthEvery: 5_000 },
-  ultimate: { density: 0.27, startingHealth: 3, healthEvery: 1_000 },
-  impossible: { density: 0.33, startingHealth: 3, healthEvery: 1_000 },
-  deathmatch: { density: 0.33, startingHealth: 1, healthEvery: 1_000_000_000 },
+  beginner: {
+    density: LEGACY_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    startingHealth: 3,
+    healthEvery: 25_000,
+  },
+  master: {
+    density: LEGACY_DENSITIES.master * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    startingHealth: 3,
+    healthEvery: 5_000,
+  },
+  ultimate: {
+    density: LEGACY_DENSITIES.ultimate * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    startingHealth: 3,
+    healthEvery: 1_000,
+  },
+  impossible: {
+    density: LEGACY_DENSITIES.impossible * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    startingHealth: 3,
+    healthEvery: 1_000,
+  },
+  deathmatch: {
+    density: LEGACY_DENSITIES.deathmatch * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    startingHealth: 1,
+    healthEvery: 1_000_000_000,
+  },
+  custom: { density: CUSTOM_DENSITY_DEFAULT, startingHealth: 3, healthEvery: 25_000 },
 };
 
 export function fibonacciHealth(cheatNumber: number): number {
@@ -141,7 +184,24 @@ export interface GameSnapshotV2 {
   cells: ArrayBuffer;
 }
 
-export type GameSnapshot = GameSnapshotV1 | GameSnapshotV2;
+export interface GameSnapshotV3 {
+  version: 3;
+  topology: TopologyId;
+  mode: Mode;
+  density: number;
+  seed: number;
+  score: number;
+  things: number;
+  health: number;
+  cheats?: number;
+  started: boolean;
+  safeX: number;
+  safeY: number;
+  bounds: ExploredBounds | null;
+  cells: ArrayBuffer;
+}
+
+export type GameSnapshot = GameSnapshotV1 | GameSnapshotV2 | GameSnapshotV3;
 
 interface StateChunk {
   cells: Uint8Array;
@@ -368,6 +428,7 @@ export class CellStore {
 
 export interface GameOptions {
   mode?: Mode;
+  density?: number;
   seed?: number;
   autoStart?: boolean;
   topology?: TopologyId;
@@ -376,6 +437,7 @@ export interface GameOptions {
 export class GameModel {
   readonly store = new CellStore();
   mode: Mode;
+  density: number;
   seed: number;
   topologyId: TopologyId;
   score = 0;
@@ -391,9 +453,10 @@ export class GameModel {
 
   constructor(options: GameOptions = {}) {
     this.mode = options.mode ?? "beginner";
+    this.density = DIFFICULTIES[this.mode].density;
     this.seed = options.seed ?? 1;
     this.topologyId = options.topology ?? "square";
-    this.reset(this.mode, this.seed, options.autoStart ?? true, this.topologyId);
+    this.reset(this.mode, this.seed, options.autoStart ?? true, this.topologyId, options.density);
   }
 
   get alive(): boolean {
@@ -401,7 +464,7 @@ export class GameModel {
   }
 
   get difficulty(): Difficulty {
-    return DIFFICULTIES[this.mode];
+    return { ...DIFFICULTIES[this.mode], density: this.density };
   }
 
   get topology(): Topology {
@@ -416,11 +479,12 @@ export class GameModel {
     return fibonacciHealth(this.cheats + 1);
   }
 
-  createSnapshot(): GameSnapshotV2 {
+  createSnapshot(): GameSnapshotV3 {
     return {
-      version: 2,
+      version: 3,
       topology: this.topologyId,
       mode: this.mode,
+      density: this.density,
       seed: this.seed,
       score: this.score,
       things: this.things,
@@ -437,7 +501,8 @@ export class GameModel {
   restoreSnapshot(value: unknown): boolean {
     if (!value || typeof value !== "object") return false;
     const snapshot = value as Partial<GameSnapshot>;
-    const restoredTopology: TopologyId = snapshot.version === 2 && isTopologyId(snapshot.topology) ? snapshot.topology : "square";
+    const restoredTopology: TopologyId =
+      (snapshot.version === 2 || snapshot.version === 3) && isTopologyId(snapshot.topology) ? snapshot.topology : "square";
     const validUnsignedInteger = (candidate: unknown): candidate is number =>
       Number.isSafeInteger(candidate) && (candidate as number) >= 0;
     const validCoordinate = (candidate: unknown): candidate is number =>
@@ -456,9 +521,11 @@ export class GameModel {
     };
 
     if (
-      (snapshot.version !== 1 && snapshot.version !== 2) ||
-      (snapshot.version === 2 && !isTopologyId(snapshot.topology)) ||
+      (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3) ||
+      ((snapshot.version === 2 || snapshot.version === 3) && !isTopologyId(snapshot.topology)) ||
       !MODES.includes(snapshot.mode as Mode) ||
+      (snapshot.version !== 3 && snapshot.mode === "custom") ||
+      (snapshot.version === 3 && !isValidDensity(snapshot.density)) ||
       !validUnsignedInteger(snapshot.seed) ||
       snapshot.seed > 0xffff_ffff ||
       !validUnsignedInteger(snapshot.score) ||
@@ -475,6 +542,7 @@ export class GameModel {
     }
 
     this.mode = snapshot.mode as Mode;
+    this.density = snapshot.version === 3 ? (snapshot.density as number) : LEGACY_DENSITIES[snapshot.mode as PresetMode];
     this.seed = snapshot.seed;
     this.topologyId = restoredTopology;
     this.score = snapshot.score;
@@ -503,8 +571,11 @@ export class GameModel {
     seed: number = this.seed,
     autoStart = true,
     topology: TopologyId = this.topologyId,
+    density: number = DIFFICULTIES[mode].density,
   ): ActionResult {
+    if (!isValidDensity(density)) throw new RangeError(`Density must be between 12% and 50%: ${density}`);
     this.mode = mode;
+    this.density = density;
     this.seed = seed >>> 0;
     this.topologyId = topology;
     this.score = 0;
@@ -552,7 +623,7 @@ export class GameModel {
 
   private rawMineAt(x: number, y: number): boolean {
     const topologySalt = this.topologyId === "square" ? 0 : this.topologyId === "triangular" ? 0x34c1a5d7 : 0x69b284eb;
-    return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.difficulty.density;
+    return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.density;
   }
 
   private artifactForZone(zoneX: number, zoneY: number): Readonly<{ x: number; y: number }> | null {

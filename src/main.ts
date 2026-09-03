@@ -1,6 +1,20 @@
 import "./styles.css";
 import { requiresRevealGuard } from "./controls";
-import { ActionResult, CellState, GameModel, Mode, MODES, isOpened, openedClue } from "./model";
+import {
+  ActionResult,
+  CUSTOM_DENSITY_DEFAULT,
+  DIFFICULTIES,
+  LEGACY_DENSITIES,
+  PRESET_MODES,
+  CellState,
+  GameModel,
+  Mode,
+  MODES,
+  isOpened,
+  isValidDensity,
+  openedClue,
+  type PresetMode,
+} from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
 import { WebGLRenderer } from "./renderer";
 import { TOPOLOGIES, isTopologyId, type TopologyId } from "./topology";
@@ -14,6 +28,7 @@ const element = <T extends Element>(selector: string): T => {
 const canvas = element<HTMLCanvasElement>("#board");
 const game = element<HTMLElement>("#game");
 const modeStat = element<HTMLElement>("#mode-stat");
+const densityStat = element<HTMLElement>("#density-stat");
 const highStat = element<HTMLElement>("#high-stat");
 const scoreStat = element<HTMLElement>("#score-stat");
 const thingsStat = element<HTMLElement>("#things-stat");
@@ -39,6 +54,10 @@ const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const themeOptions = element<HTMLElement>("#theme-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
+const currentDensity = element<HTMLElement>("#current-density");
+const customDensityOption = element<HTMLElement>("#custom-density-option");
+const customDensityInput = element<HTMLInputElement>("#custom-density-input");
+const customDensityApply = element<HTMLButtonElement>("#custom-density-apply");
 const topologyPill = element<HTMLElement>("#topology-pill");
 const guardedDescription = element<HTMLElement>("#guarded-description");
 const helpGuardedDescription = element<HTMLElement>("#help-guarded-description");
@@ -79,6 +98,8 @@ const storageSet = (key: string, value: string): void => {
 
 const savedMode = storageGet("infinite-mines-mode");
 const initialMode: Mode = MODES.includes(savedMode as Mode) ? (savedMode as Mode) : "beginner";
+const storedCustomDensity = Number(storageGet("infinite-mines-custom-density"));
+let customDensity = isValidDensity(storedCustomDensity) ? storedCustomDensity : CUSTOM_DENSITY_DEFAULT;
 const savedTopology = storageGet("infinite-mines-topology");
 const initialTopology: TopologyId = isTopologyId(savedTopology) ? savedTopology : "square";
 type ControlsMode = "guarded" | "classic";
@@ -104,12 +125,23 @@ const revealModifierName = applePlatform ? "Command (⌘)" : "Ctrl";
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0];
 const fallbackSeed = randomSeed();
 const persistedGame = await loadActiveGame();
-const model = new GameModel({ mode: initialMode, seed: fallbackSeed, autoStart: false, topology: initialTopology });
+const model = new GameModel({
+  mode: initialMode,
+  density: initialMode === "custom" ? customDensity : undefined,
+  seed: fallbackSeed,
+  autoStart: false,
+  topology: initialTopology,
+});
 const restoredGame = persistedGame !== null && model.restoreSnapshot(persistedGame.model);
-if (!restoredGame) model.reset(initialMode, fallbackSeed, true, initialTopology);
-else {
+if (!restoredGame) {
+  model.reset(initialMode, fallbackSeed, true, initialTopology, initialMode === "custom" ? customDensity : undefined);
+} else {
   storageSet("infinite-mines-mode", model.mode);
   storageSet("infinite-mines-topology", model.topologyId);
+  if (model.mode === "custom") {
+    customDensity = model.density;
+    storageSet("infinite-mines-custom-density", String(customDensity));
+  }
 }
 const FPS_IDLE_AFTER_MS = 400;
 const FPS_UI_INTERVAL_MS = 250;
@@ -173,8 +205,14 @@ const AUTO_HIDE_GAMEPLAY_INTERACTIONS = 50;
 const GUARD_TOAST_DELAY_MS = 500;
 const locatorTextInterval = (): number => (renderer.cellSize < 4 ? 100 : 50);
 
-const highScoreKey = (mode: Mode): string =>
-  model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
+const sameDensity = (first: number, second: number): boolean => Math.abs(first - second) < 1e-12;
+const formatDensity = (density: number): string =>
+  `${(density * 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`;
+const highScoreKey = (mode: Mode): string => {
+  const base = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
+  const isLegacyPreset = mode !== "custom" && sameDensity(model.density, LEGACY_DENSITIES[mode]);
+  return isLegacyPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
+};
 const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) ?? 0);
 
 function updateControlsMode(): void {
@@ -235,6 +273,12 @@ function updateTopologyOptions(): void {
   for (const button of difficultyList.querySelectorAll<HTMLButtonElement>("button[data-mode]")) {
     button.ariaPressed = String(button.dataset.mode === model.mode);
   }
+  const densityText = formatDensity(model.density);
+  const legacyPreset = model.mode !== "custom" && !sameDensity(model.density, DIFFICULTIES[model.mode].density);
+  currentDensity.textContent = `${densityText} CURRENT${legacyPreset ? " · SAVED FIELD" : ""}`;
+  customDensityOption.dataset.selected = String(model.mode === "custom");
+  customDensityApply.ariaPressed = String(model.mode === "custom");
+  if (model.mode === "custom") customDensityInput.value = (model.density * 100).toFixed(2).replace(/\.00$/, "");
 }
 
 function updateStats(): void {
@@ -242,6 +286,7 @@ function updateStats(): void {
   const previousHigh = readHighScore();
   if (model.score > previousHigh) storageSet(highScoreKey(model.mode), String(model.score));
   modeStat.textContent = model.mode.toUpperCase();
+  densityStat.textContent = formatDensity(model.density);
   updateTopologyOptions();
   highStat.textContent = Math.max(previousHigh, model.score).toLocaleString();
   scoreStat.textContent = model.score.toLocaleString();
@@ -485,6 +530,7 @@ function createCellReference(): string {
   return [
     `Infinite Mines cell (${locatedCell.x}, ${locatedCell.y})`,
     `mode=${model.mode}`,
+    `density=${formatDensity(model.density)}`,
     `topology=${model.topologyId}`,
     `seed=${model.seed}`,
     `safe=${safe}`,
@@ -537,7 +583,7 @@ function flushGameSave(force = false): Promise<void> {
     pendingSave = {
       revision: saveRevision,
       snapshot: {
-        version: 2,
+        version: 3,
         savedAt: Date.now(),
         model: model.createSnapshot(),
         view: renderer.createViewSnapshot(),
@@ -612,25 +658,53 @@ function runGameOverAction(event: MouseEvent, button: HTMLButtonElement, action:
   action();
 }
 
-function newGame(mode: Mode = model.mode, topology: TopologyId = model.topologyId): void {
-  model.reset(mode, randomSeed(), true, topology);
+function newGame(
+  mode: Mode = model.mode,
+  topology: TopologyId = model.topologyId,
+  density: number =
+    mode === "custom" ? (model.mode === "custom" ? model.density : customDensity) : DIFFICULTIES[mode].density,
+): void {
+  model.reset(mode, randomSeed(), true, topology, density);
   storageSet("infinite-mines-mode", mode);
   storageSet("infinite-mines-topology", topology);
+  if (mode === "custom") {
+    customDensity = density;
+    storageSet("infinite-mines-custom-density", String(customDensity));
+  }
   renderer.home();
   updateStats();
   refreshCellLocator(true);
   scheduleGameSave(0);
-  showToast(`${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field generated`);
+  showToast(
+    `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(density)} field generated`,
+  );
 }
 
-async function switchField(mode: Mode, topology: TopologyId): Promise<void> {
+async function switchField(mode: Mode, topology: TopologyId, density?: number): Promise<void> {
   if (fieldSwitch) await fieldSwitch;
-  if (mode === model.mode && topology === model.topologyId) return;
+  const requestedCustomDensity = mode === "custom" ? density : undefined;
+  if (
+    mode === model.mode &&
+    topology === model.topologyId &&
+    (requestedCustomDensity === undefined || sameDensity(requestedCustomDensity, model.density))
+  ) {
+    return;
+  }
+  const fallbackCustomDensity =
+    mode === "custom" ? requestedCustomDensity ?? (model.mode === "custom" ? model.density : customDensity) : undefined;
   const operation = (async () => {
     await flushGameSave(true);
     const saved = await loadGameSlot(topology, mode);
+    const savedDensity =
+      saved?.model.version === 3
+        ? saved.model.density
+        : saved && saved.model.mode !== "custom"
+          ? LEGACY_DENSITIES[saved.model.mode as PresetMode]
+          : null;
     const restored =
       saved !== null &&
+      (requestedCustomDensity === undefined ||
+        (savedDensity !== null && sameDensity(savedDensity, requestedCustomDensity))) &&
       model.restoreSnapshot(saved.model) &&
       model.mode === mode &&
       model.topologyId === topology;
@@ -642,16 +716,20 @@ async function switchField(mode: Mode, topology: TopologyId): Promise<void> {
       lastSavedAt = saved.savedAt;
       persistenceStatus = activated ? "restored" : "unavailable";
     } else {
-      model.reset(mode, randomSeed(), true, topology);
+      model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity);
       renderer.home();
       await flushGameSave(true);
+    }
+    if (mode === "custom") {
+      customDensity = model.density;
+      storageSet("infinite-mines-custom-density", String(customDensity));
     }
     updateStats();
     refreshCellLocator(true);
     showToast(
       restored
-        ? `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field restored`
-        : `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} field generated`,
+        ? `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(model.density)} field restored`
+        : `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(model.density)} field generated`,
     );
   })();
   fieldSwitch = operation;
@@ -987,6 +1065,27 @@ difficultyList.addEventListener("click", (event) => {
   void switchField(mode, model.topologyId);
 });
 
+const applyCustomDensity = (): void => {
+  const requestedDensity = Number(customDensityInput.value) / 100;
+  if (!isValidDensity(requestedDensity)) {
+    customDensityInput.setAttribute("aria-invalid", "true");
+    showToast("Custom density must be between 12% and 50%");
+    return;
+  }
+  customDensityInput.removeAttribute("aria-invalid");
+  customDensity = requestedDensity;
+  storageSet("infinite-mines-custom-density", String(customDensity));
+  settingsDialog.close();
+  void switchField("custom", model.topologyId, customDensity);
+};
+
+customDensityApply.addEventListener("click", applyCustomDensity);
+customDensityInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  applyCustomDensity();
+});
+
 topologyOptions.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-topology]");
   if (!button || !isTopologyId(button.dataset.topology)) return;
@@ -1056,7 +1155,7 @@ document.addEventListener("keydown", (event) => {
     mobileTool.click();
   } else if (/^[1-5]$/.test(key)) {
     resetAutoHideCounter();
-    void switchField(MODES[Number(key) - 1], model.topologyId);
+    void switchField(PRESET_MODES[Number(key) - 1], model.topologyId);
   }
 });
 
@@ -1094,7 +1193,7 @@ declare global {
       diagnostics: () => ReturnType<typeof getDiagnostics>;
       reveal: (x: number, y: number) => void;
       cheatDeath: () => void;
-      newGame: (mode?: Mode, topology?: TopologyId) => void;
+      newGame: (mode?: Mode, topology?: TopologyId, density?: number) => void;
       flushSave: () => Promise<void>;
     };
   }
@@ -1106,6 +1205,7 @@ function getDiagnostics() {
     score: model.score,
     things: model.things,
     health: model.health,
+    density: model.density,
     cheats: model.cheats,
     openedCells: model.store.openedCells,
     topology: model.topologyId,

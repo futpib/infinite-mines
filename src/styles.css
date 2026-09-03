@@ -465,7 +465,15 @@ a:focus-visible {
   letter-spacing: -0.03em;
 }
 
+.mode-density-values {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .stat-wide strong { color: var(--accent-strong); font-size: 15px; letter-spacing: 0.04em; }
+.stat-wide #density-stat { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .stat .hearts { color: var(--danger); letter-spacing: 0.09em; }
 
 .hint {
@@ -870,7 +878,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   margin-top: 0;
 }
 
-.difficulty-list button {
+.difficulty-list > button {
   display: grid;
   grid-template-columns: 12px 1fr;
   gap: 2px 11px;
@@ -885,21 +893,99 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
-.difficulty-list button:hover {
+.difficulty-list > button:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
   transform: translateY(-1px);
 }
 
-.difficulty-list button:last-child { grid-column: span 2; }
-.difficulty-list b { font-size: 13px; }
-.difficulty-list small { grid-column: 2; color: var(--muted); font-size: 10px; }
+.difficulty-list > button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.difficulty-list > button[aria-pressed="true"] small { color: var(--accent-strong); }
+
+.difficulty-list > button:nth-of-type(5) { grid-column: span 2; }
+.difficulty-list > button b { font-size: 13px; }
+.difficulty-list > button small { grid-column: 2; color: var(--muted); font-size: 10px; }
+
+.custom-density-option {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 2px 11px;
+  align-items: center;
+  min-height: 72px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.custom-density-option[data-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.custom-density-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.custom-density-copy label { font-size: 13px; font-weight: 700; }
+.custom-density-copy small { color: var(--muted); font-size: 10px; }
+
+.custom-density-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.custom-density-entry input {
+  width: 70px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.custom-density-entry input:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.custom-density-entry button {
+  height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--brand-ink);
+  background: var(--accent);
+  cursor: pointer;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.custom-density-entry button:hover { filter: brightness(1.06); }
 
 .density-dot { width: 8px; height: 8px; border-radius: 50%; background: #58bdb6; }
 .density-2 { background: #268f88; }
 .density-3 { background: #e4ad43; }
 .density-4 { background: #ee774f; }
 .density-5 { background: #c63d38; box-shadow: 0 0 0 3px color-mix(in srgb, #c63d38 18%, transparent); }
+.density-custom { background: linear-gradient(135deg, var(--accent) 0 50%, var(--danger) 50% 100%); }
 
 .dialog-note { margin: 19px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .overview-dialog { width: min(760px, calc(100vw - 28px)); }
@@ -959,6 +1045,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .stat span { overflow: hidden; font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
   .stat strong,
   .stat-wide strong { overflow: hidden; margin-top: 3px; font-size: 10px; text-overflow: ellipsis; }
+  .stat-wide #density-stat { font-size: 9px; }
   .hint { display: none; }
   .topology-options,
   .theme-options { grid-template-columns: repeat(3, 1fr); }
@@ -984,6 +1071,8 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .help-grid { grid-template-columns: 1fr; }
   .dialog-card { padding: 20px; }
   .game-over-card { padding: 24px 20px; }
+  .custom-density-option { grid-template-columns: 12px minmax(0, 1fr); }
+  .custom-density-entry { grid-column: 2; margin-top: 6px; }
 }
 
 @media (any-pointer: coarse) {

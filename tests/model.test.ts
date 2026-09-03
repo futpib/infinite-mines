@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { CellState, CellStore, DIFFICULTIES, GameModel, MODES, floorDiv, hash32, isOpened, openedClue } from "../src/model";
+import {
+  CUSTOM_DENSITY_MIN,
+  LEGACY_DENSITIES,
+  ORIGINAL_AVAILABLE_CELL_FRACTION,
+  CellState,
+  CellStore,
+  DIFFICULTIES,
+  GameModel,
+  MODES,
+  floorDiv,
+  hash32,
+  isOpened,
+  openedClue,
+} from "../src/model";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
 describe("deterministic infinite field", () => {
@@ -32,6 +45,35 @@ describe("deterministic infinite field", () => {
       }
       const observed = mines / (side * side);
       expect(Math.abs(observed - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
+    }
+
+    const custom = new GameModel({ mode: "custom", density: 0.1234, seed: 91, autoStart: false });
+    let customMines = 0;
+    const side = 400;
+    for (let y = 1000; y < 1000 + side; y += 1) {
+      for (let x = 1000; x < 1000 + side; x += 1) customMines += Number(custom.mineAt(x, y));
+    }
+    expect(Math.abs(customMines / (side * side) - 0.1234)).toBeLessThan(0.008);
+  });
+
+  it("matches the original realized densities after its Thing-footprint exclusion", () => {
+    expect(ORIGINAL_AVAILABLE_CELL_FRACTION).toBe(3295 / 3456);
+    for (const mode of ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const) {
+      expect(DIFFICULTIES[mode].density).toBe(LEGACY_DENSITIES[mode] * (3295 / 3456));
+    }
+  });
+
+  it("rejects custom densities outside the supported 12% to 50% range", () => {
+    expect(() => new GameModel({ mode: "custom", density: 0.119, autoStart: false })).toThrow(RangeError);
+    expect(() => new GameModel({ mode: "custom", density: 0.501, autoStart: false })).toThrow(RangeError);
+  });
+
+  it("keeps minimum-density opening floods bounded across representative fields", { timeout: 10_000 }, () => {
+    for (const topology of TOPOLOGY_IDS) {
+      for (let seed = 0; seed < 32; seed += 1) {
+        const game = new GameModel({ mode: "custom", density: CUSTOM_DENSITY_MIN, seed, topology });
+        expect(game.store.openedCells, `${topology} seed ${seed}`).toBeLessThan(100_000);
+      }
     }
   });
 });
@@ -86,21 +128,35 @@ describe("topology-driven fields", () => {
     }
   });
 
-  it("persists topology in v2 and migrates v1 fields as Square", () => {
+  it("persists topology and density in v3 and migrates old fields without changing their mine layout", () => {
     const source = new GameModel({ seed: 99, topology: "rhombille" });
     const snapshot = source.createSnapshot();
-    expect(snapshot.version).toBe(2);
+    expect(snapshot.version).toBe(3);
     expect(snapshot.topology).toBe("rhombille");
+    expect(snapshot.density).toBe(DIFFICULTIES.beginner.density);
     const restored = new GameModel({ seed: 1, autoStart: false });
     expect(restored.restoreSnapshot(snapshot)).toBe(true);
     expect(restored.topologyId).toBe("rhombille");
+    expect(restored.density).toBe(DIFFICULTIES.beginner.density);
 
-    const squareSnapshot = new GameModel({ seed: 99, topology: "square" }).createSnapshot();
+    const oldV2 = { ...snapshot, version: 2 } as Record<string, unknown>;
+    delete oldV2.density;
+    const preserved = new GameModel({ seed: 1, autoStart: false });
+    expect(preserved.restoreSnapshot(oldV2)).toBe(true);
+    expect(preserved.density).toBe(LEGACY_DENSITIES.beginner);
+
+    const squareSnapshot = new GameModel({
+      seed: 99,
+      topology: "square",
+      density: LEGACY_DENSITIES.beginner,
+    }).createSnapshot();
     const legacy = { ...squareSnapshot, version: 1 } as Record<string, unknown>;
     delete legacy.topology;
+    delete legacy.density;
     const migrated = new GameModel({ seed: 1, autoStart: false, topology: "triangular" });
     expect(migrated.restoreSnapshot(legacy)).toBe(true);
     expect(migrated.topologyId).toBe("square");
+    expect(migrated.density).toBe(LEGACY_DENSITIES.beginner);
   });
 });
 
@@ -177,6 +233,7 @@ describe("saved games", () => {
     const restored = new GameModel({ seed: 1, autoStart: false });
     expect(restored.restoreSnapshot(snapshot)).toBe(true);
     expect(restored.mode).toBe(source.mode);
+    expect(restored.density).toBe(source.density);
     expect(restored.seed).toBe(source.seed);
     expect(restored.score).toBe(source.score);
     expect(restored.things).toBe(source.things);
@@ -234,6 +291,9 @@ describe("saved games", () => {
     const previousSeed = target.seed;
     const previousCells = target.store.nonZeroCells;
 
+    expect(target.restoreSnapshot({ ...snapshot, density: 0.9 })).toBe(false);
+    expect(target.seed).toBe(previousSeed);
+    expect(target.store.nonZeroCells).toBe(previousCells);
     expect(target.restoreSnapshot({ ...snapshot, cells: corruptCells })).toBe(false);
     expect(target.seed).toBe(previousSeed);
     expect(target.store.nonZeroCells).toBe(previousCells);
@@ -270,7 +330,7 @@ describe("gameplay", () => {
     expect(game.reveal(0, 0).damage).toBeNull();
   });
 
-  it("places deterministic artifacts only on zero-clue, mine-free cells across every field type", () => {
+  it("places deterministic artifacts only on zero-clue, mine-free cells across every field type", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
         const game = new GameModel({ mode, seed: 712, autoStart: false, topology });

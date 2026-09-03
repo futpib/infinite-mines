@@ -48,6 +48,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         seed: api.model.seed,
         topology: api.model.topologyId,
         mode: api.model.mode,
+        density: api.model.density,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -87,7 +88,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         };
       }),
   );
-  expect(databaseRecord.version).toBe(2);
+  expect(databaseRecord.version).toBe(3);
   expect(databaseRecord.active).toBe("field:square:beginner");
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
@@ -101,6 +102,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         seed: api.model.seed,
         topology: api.model.topologyId,
         mode: api.model.mode,
+        density: api.model.density,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -116,6 +118,42 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
     { ...progress, flag },
   );
   expect(after).toEqual(before);
+});
+
+test("R45 — legacy fields retain their original density until an explicit restart", async ({ page }) => {
+  await openDeterministicGame(page);
+  await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    api.model.reset("beginner", 0x18_00_00_01, true, "square", 0.18);
+    const current = api.model.createSnapshot();
+    const legacyModel = { ...current, version: 2 } as Record<string, unknown>;
+    delete legacyModel.density;
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("infinite-mines", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction("sessions", "readwrite");
+      const store = transaction.objectStore("sessions");
+      store.put({ version: 2, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() }, "field:square:beginner");
+      store.put({ version: 1, topology: "square", mode: "beginner" }, "active-slot");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBe(0.18);
+  await expect(page.locator("#density-stat")).toHaveText("18%");
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator("#current-density")).toHaveText("18% CURRENT · SAVED FIELD");
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.locator("#restart-button").click();
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
+  await expect(page.locator("#density-stat")).toHaveText("17.16%");
 });
 
 test("R35 — an old saved number at a current Thing migrates to rendered clue zero", async ({ page }) => {
@@ -186,6 +224,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
       return {
         topology: api.model.topologyId,
         mode: api.model.mode,
+        density: api.model.density,
         seed: api.model.seed,
         score: api.model.score,
         stored: api.model.store.nonZeroCells,

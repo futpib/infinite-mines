@@ -155,6 +155,7 @@ test("R37 — v1 saved fields migrate to Square and v2 topology damage matches a
   await openDeterministicGame(page, 0x51a7_10a0);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
+    api.model.reset("beginner", 0x51a7_10a0, true, "square", 0.18);
     const model = api.model.createSnapshot();
     const legacyModel = { ...model, version: 1 } as Record<string, unknown>;
     delete legacyModel.topology;

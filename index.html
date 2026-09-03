@@ -103,8 +103,11 @@
 
       <aside class="stats" aria-label="Game status">
         <div class="stat stat-wide">
-          <span>MODE</span>
-          <strong id="mode-stat">BEGINNER</strong>
+          <span>MODE · MINE DENSITY</span>
+          <div class="mode-density-values">
+            <strong id="mode-stat">BEGINNER</strong>
+            <strong id="density-stat">17.16%</strong>
+          </div>
         </div>
         <div class="stat">
           <span>HIGH SCORE</span>
@@ -239,28 +242,49 @@
               <b>Triangular</b><small>12 touching neighbors</small>
             </button>
           </div>
-          <p class="dialog-note">Each topology and difficulty keeps its own field. A new pair starts with a random seed.</p>
+          <p class="dialog-note">Each topology and density choice keeps its own field. A new pair starts with a random seed.</p>
         </section>
         <section class="settings-section" aria-labelledby="density-heading">
-          <p class="settings-label" id="density-heading">MINE DENSITY</p>
+          <p class="settings-label" id="density-heading">MINE DENSITY · <span id="current-density">17.16% CURRENT</span></p>
           <div class="difficulty-list" id="difficulty-list">
             <button type="button" data-mode="beginner">
-              <span class="density-dot density-1"></span><b>Beginner</b><small>18% mines · 3 lives</small>
+              <span class="density-dot density-1"></span><b>Beginner</b><small>17.16% mines · 3 lives</small>
             </button>
             <button type="button" data-mode="master">
-              <span class="density-dot density-2"></span><b>Master</b><small>22% mines · 3 lives</small>
+              <span class="density-dot density-2"></span><b>Master</b><small>20.98% mines · 3 lives</small>
             </button>
             <button type="button" data-mode="ultimate">
-              <span class="density-dot density-3"></span><b>Ultimate</b><small>27% mines · 3 lives</small>
+              <span class="density-dot density-3"></span><b>Ultimate</b><small>25.74% mines · 3 lives</small>
             </button>
             <button type="button" data-mode="impossible">
-              <span class="density-dot density-4"></span><b>Impossible</b><small>33% mines · 3 lives</small>
+              <span class="density-dot density-4"></span><b>Impossible</b><small>31.46% mines · 3 lives</small>
             </button>
             <button type="button" data-mode="deathmatch">
-              <span class="density-dot density-5"></span><b>Deathmatch</b><small>33% mines · 1 life</small>
+              <span class="density-dot density-5"></span><b>Deathmatch</b><small>31.46% mines · 1 life</small>
             </button>
+            <div class="custom-density-option" id="custom-density-option" data-selected="false">
+              <span class="density-dot density-custom"></span>
+              <div class="custom-density-copy">
+                <label for="custom-density-input">Custom</label>
+                <small id="custom-density-help">12–50% mines · 3 lives</small>
+              </div>
+              <div class="custom-density-entry">
+                <input
+                  id="custom-density-input"
+                  type="number"
+                  min="12"
+                  max="50"
+                  step="0.01"
+                  value="25"
+                  inputmode="decimal"
+                  aria-describedby="custom-density-help"
+                />
+                <span aria-hidden="true">%</span>
+                <button id="custom-density-apply" type="button" aria-pressed="false">USE</button>
+              </div>
+            </div>
           </div>
-          <p class="dialog-note">Changing density starts a fresh, randomly seeded field.</p>
+          <p class="dialog-note">Preset percentages match 1000mines’ realized mine density. Changing a custom percentage replaces that topology’s custom field.</p>
         </section>
       </form>
     </dialog>

@@ -88,8 +88,8 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
   expect(await page.evaluate(() => window.__infiniteMines.renderer.cellSize)).toBe(25);
 
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#difficulty-list button")).toHaveCount(5);
-  await expect(page.getByRole("button", { name: /Beginner/ })).toContainText("18% mines");
+  await expect(page.locator("#difficulty-list button")).toHaveCount(6);
+  await expect(page.getByRole("button", { name: /Beginner/ })).toContainText("17.16% mines");
   await expect(page.getByRole("button", { name: /Deathmatch/ })).toContainText("1 life");
   await page.getByRole("button", { name: "Close" }).click();
 
@@ -152,6 +152,64 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
   await page.getByRole("button", { name: "Overview map" }).click();
   await expect(page.locator("#overview-dialog")).toBeVisible();
   await expect(page.locator("#overview-caption")).toContainText("revealed");
+});
+
+test("R45 — effective presets and a persisted custom density report the active field exactly", async ({ page }) => {
+  await openDeterministicGame(page);
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
+  await expect(page.locator("#density-stat")).toHaveText("17.16%");
+
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator("#current-density")).toHaveText("17.16% CURRENT");
+  await expect(page.getByRole("button", { name: /Master/ })).toContainText("20.98% mines");
+  await expect(page.getByRole("button", { name: /Impossible/ })).toContainText("31.46% mines");
+  const customInput = page.locator("#custom-density-input");
+  await customInput.fill("12.34");
+  await page.getByRole("button", { name: "USE", exact: true }).click();
+
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("custom");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.1234, 12);
+  await expect(page.locator("#mode-stat")).toHaveText("CUSTOM");
+  await expect(page.locator("#density-stat")).toHaveText("12.34%");
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-custom-density"))).toBe("0.1234");
+  const customSeed = await page.evaluate(() => window.__infiniteMines.model.seed);
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(customSeed);
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.1234, 12);
+  await expect(page.locator("#density-stat")).toHaveText("12.34%");
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator("#custom-density-option")).toHaveAttribute("data-selected", "true");
+  await expect(page.getByRole("button", { name: "USE", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(customInput).toHaveValue("12.34");
+  const customGeneration = await page.evaluate(() => window.__infiniteMines.model.store.generation);
+
+  await customInput.fill("0.5");
+  await page.getByRole("button", { name: "USE", exact: true }).click();
+  await expect(customInput).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#settings-dialog")).toHaveAttribute("open", "");
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.1234, 12);
+
+  await customInput.fill("13.37");
+  await page.getByRole("button", { name: "USE", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.1337, 12);
+  expect(await page.evaluate(() => window.__infiniteMines.model.store.generation)).toBeGreaterThan(customGeneration);
+  await expect(page.locator("#density-stat")).toHaveText("13.37%");
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  const savedCustomDensity = await page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open("infinite-mines", 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const request = open.result.transaction("sessions").objectStore("sessions").get("field:square:custom");
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => resolve(request.result.model.density);
+        };
+      }),
+  );
+  expect(savedCustomDensity).toBeCloseTo(0.1337, 12);
 });
 
 test("R02/R30 — chording works and automatic flagging stays silent", async ({ page }) => {
@@ -235,7 +293,7 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
     ({ opened2, flagged }) => {
       const api = window.__infiniteMines;
       const center = { x: -6, y: -1 };
-      api.model.reset("impossible", 84, false, "triangular");
+      api.model.reset("impossible", 84, false, "triangular", 0.33);
       api.model.store.set(center.x, center.y, opened2);
       const safeNeighbors: Array<{ x: number; y: number }> = [];
       api.model.topology.forEachNeighbor(center.x, center.y, (x, y) => {
@@ -278,7 +336,7 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
         { x: -6, y: -2 },
         { x: -5, y: -1 },
       ];
-      api.model.reset("impossible", 84, false, "triangular");
+      api.model.reset("impossible", 84, false, "triangular", 0.33);
       api.model.store.set(center.x, center.y, opened4);
       api.model.store.set(nearbyTwo.x, nearbyTwo.y, opened2);
       for (const cell of wrongFlags) api.model.store.set(cell.x, cell.y, flagged);
