@@ -49,6 +49,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         topology: api.model.topologyId,
         mode: api.model.mode,
         density: api.model.density,
+        generation: api.model.fieldGeneration,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -65,7 +66,14 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
   );
   const databaseRecord = await page.evaluate(
     () =>
-      new Promise<{ version: number; cellBytes: number; records: number; active: string }>((resolve, reject) => {
+      new Promise<{
+        version: number;
+        modelVersion: number;
+        generation: string;
+        cellBytes: number;
+        records: number;
+        active: string;
+      }>((resolve, reject) => {
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
@@ -80,6 +88,8 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
             get.onsuccess = () =>
               resolve({
                 version: get.result.version,
+                modelVersion: get.result.model.version,
+                generation: get.result.model.generation,
                 cellBytes: get.result.model.cells.byteLength,
                 records: get.result.model.cells.byteLength / 9,
                 active: key,
@@ -88,7 +98,9 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         };
       }),
   );
-  expect(databaseRecord.version).toBe(3);
+  expect(databaseRecord.version).toBe(4);
+  expect(databaseRecord.modelVersion).toBe(4);
+  expect(databaseRecord.generation).toBe("original-things");
   expect(databaseRecord.active).toBe("field:square:beginner");
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
@@ -103,6 +115,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         topology: api.model.topologyId,
         mode: api.model.mode,
         density: api.model.density,
+        generation: api.model.fieldGeneration,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -120,14 +133,18 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
   expect(after).toEqual(before);
 });
 
-test("R45 — legacy fields retain their original density until an explicit restart", async ({ page }) => {
+test("R45 — pre-footprint fields retain their exact rules until an explicit restart", async ({ page }) => {
   await openDeterministicGame(page);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
-    api.model.reset("beginner", 0x18_00_00_01, true, "square", 0.18);
+    api.model.reset("beginner", 0x18_00_00_01, false, "square", 0.18);
     const current = api.model.createSnapshot();
-    const legacyModel = { ...current, version: 2 } as Record<string, unknown>;
-    delete legacyModel.density;
+    const legacyModel = {
+      ...current,
+      version: 3,
+      density: 0.18 * (3295 / 3456),
+    } as Record<string, unknown>;
+    delete legacyModel.generation;
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("infinite-mines", 1);
       request.onsuccess = () => resolve(request.result);
@@ -136,7 +153,7 @@ test("R45 — legacy fields retain their original density until an explicit rest
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction("sessions", "readwrite");
       const store = transaction.objectStore("sessions");
-      store.put({ version: 2, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() }, "field:square:beginner");
+      store.put({ version: 3, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() }, "field:square:beginner");
       store.put({ version: 1, topology: "square", mode: "beginner" }, "active-slot");
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
@@ -145,15 +162,28 @@ test("R45 — legacy fields retain their original density until an explicit rest
 
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
-  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBe(0.18);
-  await expect(page.locator("#density-stat")).toHaveText("18%");
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("legacy-flat");
+  expect(await page.evaluate(() => window.__infiniteMines.model.thingFootprintAt(0, 0))).toBe(false);
+  await expect(page.locator("#density-stat")).toHaveText("17.16%");
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#current-density")).toHaveText("18% CURRENT · SAVED FIELD");
+  await expect(page.locator("#current-density")).toHaveText("17.16% CURRENT · SAVED FIELD");
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.locator("#restart-button").click();
-  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
-  await expect(page.locator("#density-stat")).toHaveText("17.16%");
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBe(0.18);
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("original-things");
+  expect(
+    await page.evaluate(() => {
+      const model = window.__infiniteMines.model;
+      let reserved = 0;
+      for (let y = 0; y < 24; y += 1) {
+        for (let x = 0; x < 24; x += 1) reserved += Number(model.thingFootprintAt(x, y));
+      }
+      return reserved;
+    }),
+  ).toBeGreaterThanOrEqual(25);
+  await expect(page.locator("#density-stat")).toHaveText("18%");
 });
 
 test("R35 — an old saved number at a current Thing migrates to rendered clue zero", async ({ page }) => {

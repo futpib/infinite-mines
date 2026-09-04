@@ -4,7 +4,7 @@ import {
   ActionResult,
   CUSTOM_DENSITY_DEFAULT,
   DIFFICULTIES,
-  LEGACY_DENSITIES,
+  PRESET_DENSITIES,
   PRESET_MODES,
   CellState,
   GameModel,
@@ -211,8 +211,8 @@ const formatDensity = (density: number): string =>
   `${(density * 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`;
 const highScoreKey = (mode: Mode): string => {
   const base = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
-  const isLegacyPreset = mode !== "custom" && sameDensity(model.density, LEGACY_DENSITIES[mode]);
-  return isLegacyPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
+  const isNominalPreset = mode !== "custom" && sameDensity(model.density, PRESET_DENSITIES[mode]);
+  return isNominalPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
 };
 const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) ?? 0);
 
@@ -275,8 +275,8 @@ function updateTopologyOptions(): void {
     button.ariaPressed = String(button.dataset.mode === model.mode);
   }
   const densityText = formatDensity(model.density);
-  const legacyPreset = model.mode !== "custom" && !sameDensity(model.density, DIFFICULTIES[model.mode].density);
-  currentDensity.textContent = `${densityText} CURRENT${legacyPreset ? " · SAVED FIELD" : ""}`;
+  const legacyField = model.fieldGeneration !== "original-things";
+  currentDensity.textContent = `${densityText} CURRENT${legacyField ? " · SAVED FIELD" : ""}`;
   customDensityOption.dataset.selected = String(model.mode === "custom");
   customDensityApply.ariaPressed = String(model.mode === "custom");
   if (model.mode === "custom") customDensityInput.value = (model.density * 100).toFixed(2).replace(/\.00$/, "");
@@ -539,6 +539,7 @@ function createCellReference(): string {
     `Infinite Mines cell (${locatedCell.x}, ${locatedCell.y})`,
     `mode=${model.mode}`,
     `density=${formatDensity(model.density)}`,
+    `generation=${model.fieldGeneration}`,
     `topology=${model.topologyId}`,
     `seed=${model.seed}`,
     `safe=${safe}`,
@@ -591,7 +592,7 @@ function flushGameSave(force = false): Promise<void> {
     pendingSave = {
       revision: saveRevision,
       snapshot: {
-        version: 3,
+        version: 4,
         savedAt: Date.now(),
         model: model.createSnapshot(),
         view: renderer.createViewSnapshot(),
@@ -718,10 +719,10 @@ async function switchField(mode: Mode, topology: TopologyId, density?: number): 
     await flushGameSave(true);
     const saved = await loadGameSlot(topology, mode);
     const savedDensity =
-      saved?.model.version === 3
+      saved?.model.version === 3 || saved?.model.version === 4
         ? saved.model.density
         : saved && saved.model.mode !== "custom"
-          ? LEGACY_DENSITIES[saved.model.mode as PresetMode]
+          ? PRESET_DENSITIES[saved.model.mode as PresetMode]
           : null;
     const restored =
       saved !== null &&
@@ -1228,6 +1229,7 @@ function getDiagnostics() {
     things: model.things,
     health: model.health,
     density: model.density,
+    fieldGeneration: model.fieldGeneration,
     cheats: model.cheats,
     openedCells: model.store.openedCells,
     topology: model.topologyId,

@@ -32,6 +32,7 @@ test("R16 — cell coordinates produce a safe, reproducible clipboard reference"
     return {
       mode: model.mode,
       density: `${(model.density * 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`,
+      generation: model.fieldGeneration,
       seed: model.seed,
       safe: origin ? `(${origin.x}, ${origin.y})` : "unset",
       scale: window.__infiniteMines.renderer.cellSize.toFixed(2),
@@ -43,7 +44,7 @@ test("R16 — cell coordinates produce a safe, reproducible clipboard reference"
     state: (element as HTMLElement).dataset.state,
   }));
   expect(reference).toBe(
-    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | density=${expected.density} | topology=square | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | theme=light`,
+    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | density=${expected.density} | generation=${expected.generation} | topology=square | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | theme=light`,
   );
   expect(reference).not.toMatch(/mine=(?:true|false)/);
   expect(reference).not.toContain("concealed mine");

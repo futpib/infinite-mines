@@ -1,4 +1,11 @@
-import { MODES, type GameSnapshotV1, type GameSnapshotV2, type GameSnapshotV3, type Mode } from "./model";
+import {
+  MODES,
+  type GameSnapshotV1,
+  type GameSnapshotV2,
+  type GameSnapshotV3,
+  type GameSnapshotV4,
+  type Mode,
+} from "./model";
 import { isTopologyId, type TopologyId } from "./topology";
 
 export interface ViewSnapshotV1 {
@@ -29,7 +36,14 @@ export interface PersistedGameV3 {
   view: ViewSnapshotV1;
 }
 
-export type PersistedGame = PersistedGameV1 | PersistedGameV2 | PersistedGameV3;
+export interface PersistedGameV4 {
+  version: 4;
+  savedAt: number;
+  model: GameSnapshotV4;
+  view: ViewSnapshotV1;
+}
+
+export type PersistedGame = PersistedGameV1 | PersistedGameV2 | PersistedGameV3 | PersistedGameV4;
 
 export interface ActiveGameSlotV1 {
   version: 1;
@@ -80,7 +94,7 @@ const readStoredValue = async (database: IDBDatabase, key: string): Promise<unkn
 const isPersistedGame = (value: unknown): value is PersistedGame => {
   if (!value || typeof value !== "object") return false;
   const version = (value as { version?: unknown }).version;
-  return version === 1 || version === 2 || version === 3;
+  return version === 1 || version === 2 || version === 3 || version === 4;
 };
 
 const isActiveSlot = (value: unknown): value is ActiveGameSlotV1 => {
@@ -91,7 +105,8 @@ const isActiveSlot = (value: unknown): value is ActiveGameSlotV1 => {
 
 const slotForGame = (snapshot: PersistedGame): ActiveGameSlotV1 | null => {
   const topology =
-    (snapshot.model.version === 2 || snapshot.model.version === 3) && isTopologyId(snapshot.model.topology)
+    (snapshot.model.version === 2 || snapshot.model.version === 3 || snapshot.model.version === 4) &&
+    isTopologyId(snapshot.model.topology)
       ? snapshot.model.topology
       : "square";
   if (!MODES.includes(snapshot.model.mode)) return null;

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
-  LEGACY_DENSITIES,
   ORIGINAL_AVAILABLE_CELL_FRACTION,
+  PRESET_DENSITIES,
+  THING_LARGE_RESERVED_SIDE,
+  THING_SMALL_PROBABILITY,
+  THING_SMALL_RESERVED_SIDE,
+  THING_ZONE_SIZE,
   CellState,
   CellStore,
   DIFFICULTIES,
@@ -12,6 +16,7 @@ import {
   hash32,
   isOpened,
   openedClue,
+  thingReservedSideForRoll,
 } from "../src/model";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
@@ -35,16 +40,21 @@ describe("deterministic infinite field", () => {
     }
   });
 
-  it("tracks the requested density over a large sample", () => {
+  it("tracks the requested per-cell chance and original effective density over a large sample", () => {
     for (const mode of MODES) {
       const game = new GameModel({ mode, seed: 91, autoStart: false });
       let mines = 0;
+      let eligible = 0;
       const side = 400;
       for (let y = 1000; y < 1000 + side; y += 1) {
-        for (let x = 1000; x < 1000 + side; x += 1) mines += Number(game.mineAt(x, y));
+        for (let x = 1000; x < 1000 + side; x += 1) {
+          mines += Number(game.mineAt(x, y));
+          eligible += Number(!game.thingFootprintAt(x, y));
+        }
       }
       const observed = mines / (side * side);
-      expect(Math.abs(observed - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
+      expect(Math.abs(observed - DIFFICULTIES[mode].density * ORIGINAL_AVAILABLE_CELL_FRACTION)).toBeLessThan(0.008);
+      expect(Math.abs(mines / eligible - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
     }
 
     const custom = new GameModel({ mode: "custom", density: 0.1234, seed: 91, autoStart: false });
@@ -53,13 +63,62 @@ describe("deterministic infinite field", () => {
     for (let y = 1000; y < 1000 + side; y += 1) {
       for (let x = 1000; x < 1000 + side; x += 1) customMines += Number(custom.mineAt(x, y));
     }
-    expect(Math.abs(customMines / (side * side) - 0.1234)).toBeLessThan(0.008);
+    expect(Math.abs(customMines / (side * side) - 0.1234 * ORIGINAL_AVAILABLE_CELL_FRACTION)).toBeLessThan(0.008);
   });
 
-  it("matches the original realized densities after its Thing-footprint exclusion", () => {
+  it("uses the original nominal presets and exact Thing size distribution", () => {
     expect(ORIGINAL_AVAILABLE_CELL_FRACTION).toBe(3295 / 3456);
     for (const mode of ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const) {
-      expect(DIFFICULTIES[mode].density).toBe(LEGACY_DENSITIES[mode] * (3295 / 3456));
+      expect(DIFFICULTIES[mode].density).toBe(PRESET_DENSITIES[mode]);
+    }
+    expect(THING_ZONE_SIZE).toBe(24);
+    expect(THING_SMALL_PROBABILITY).toBe(5 / 6);
+    expect(thingReservedSideForRoll(0)).toBe(THING_SMALL_RESERVED_SIDE);
+    expect(thingReservedSideForRoll(THING_SMALL_PROBABILITY - Number.EPSILON)).toBe(THING_SMALL_RESERVED_SIDE);
+    expect(thingReservedSideForRoll(THING_SMALL_PROBABILITY)).toBe(THING_LARGE_RESERVED_SIDE);
+    expect(thingReservedSideForRoll(1 - Number.EPSILON)).toBe(THING_LARGE_RESERVED_SIDE);
+  });
+
+  it("realizes the original five-in-six small Thing probability across deterministic zones", () => {
+    const game = new GameModel({ seed: 0x5eed_1234, autoStart: false });
+    let small = 0;
+    const zones = 600;
+    for (let zoneX = -zones / 2; zoneX < zones / 2; zoneX += 1) {
+      let reserved = 0;
+      for (let localY = 0; localY < THING_ZONE_SIZE; localY += 1) {
+        for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
+          reserved += Number(game.thingFootprintAt(zoneX * THING_ZONE_SIZE + localX, localY));
+        }
+      }
+      expect([THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2]).toContain(reserved);
+      if (reserved === THING_SMALL_RESERVED_SIDE ** 2) small += 1;
+    }
+    expect(small / zones).toBeCloseTo(THING_SMALL_PROBABILITY, 1);
+  });
+
+  it("uses the original padded square footprint and anchor placement on Square", () => {
+    const game = new GameModel({ seed: 0xa471_f4c7, autoStart: false, topology: "square" });
+    for (let zoneX = -16; zoneX < 16; zoneX += 1) {
+      const reserved: Array<{ x: number; y: number }> = [];
+      const artifacts: Array<{ x: number; y: number }> = [];
+      for (let y = 0; y < THING_ZONE_SIZE; y += 1) {
+        for (let x = 0; x < THING_ZONE_SIZE; x += 1) {
+          const worldX = zoneX * THING_ZONE_SIZE + x;
+          if (game.thingFootprintAt(worldX, y)) reserved.push({ x, y });
+          if (game.artifactAt(worldX, y)) artifacts.push({ x, y });
+        }
+      }
+      const minX = Math.min(...reserved.map((cell) => cell.x));
+      const maxX = Math.max(...reserved.map((cell) => cell.x));
+      const minY = Math.min(...reserved.map((cell) => cell.y));
+      const maxY = Math.max(...reserved.map((cell) => cell.y));
+      const side = Math.sqrt(reserved.length);
+      expect([THING_SMALL_RESERVED_SIDE, THING_LARGE_RESERVED_SIDE]).toContain(side);
+      expect(maxX - minX + 1).toBe(side);
+      expect(maxY - minY + 1).toBe(side);
+      expect(maxX).toBeLessThan(THING_ZONE_SIZE - 1);
+      expect(maxY).toBeLessThan(THING_ZONE_SIZE - 1);
+      expect(artifacts).toEqual([{ x: minX + 1, y: minY + 1 }]);
     }
   });
 
@@ -128,35 +187,55 @@ describe("topology-driven fields", () => {
     }
   });
 
-  it("persists topology and density in v3 and migrates old fields without changing their mine layout", () => {
-    const source = new GameModel({ seed: 99, topology: "rhombille" });
+  it("persists generation in v4 and restores older fields under their original rules", () => {
+    const source = new GameModel({ seed: 99, topology: "rhombille", autoStart: false });
     const snapshot = source.createSnapshot();
-    expect(snapshot.version).toBe(3);
+    expect(snapshot.version).toBe(4);
+    expect(snapshot.generation).toBe("original-things");
     expect(snapshot.topology).toBe("rhombille");
     expect(snapshot.density).toBe(DIFFICULTIES.beginner.density);
     const restored = new GameModel({ seed: 1, autoStart: false });
     expect(restored.restoreSnapshot(snapshot)).toBe(true);
     expect(restored.topologyId).toBe("rhombille");
     expect(restored.density).toBe(DIFFICULTIES.beginner.density);
+    expect(restored.fieldGeneration).toBe("original-things");
+
+    const oldV3 = {
+      ...snapshot,
+      version: 3,
+      density: PRESET_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    } as Record<string, unknown>;
+    delete oldV3.generation;
+    const preserved = new GameModel({ seed: 1, autoStart: false });
+    expect(preserved.restoreSnapshot(oldV3)).toBe(true);
+    expect(preserved.density).toBe(PRESET_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION);
+    expect(preserved.fieldGeneration).toBe("legacy-flat");
+    expect(preserved.thingFootprintAt(0, 0)).toBe(false);
+    expect(preserved.createSnapshot()).toMatchObject({ version: 4, generation: "legacy-flat" });
 
     const oldV2 = { ...snapshot, version: 2 } as Record<string, unknown>;
     delete oldV2.density;
-    const preserved = new GameModel({ seed: 1, autoStart: false });
-    expect(preserved.restoreSnapshot(oldV2)).toBe(true);
-    expect(preserved.density).toBe(LEGACY_DENSITIES.beginner);
+    delete oldV2.generation;
+    const nominalLegacy = new GameModel({ seed: 1, autoStart: false });
+    expect(nominalLegacy.restoreSnapshot(oldV2)).toBe(true);
+    expect(nominalLegacy.density).toBe(PRESET_DENSITIES.beginner);
+    expect(nominalLegacy.fieldGeneration).toBe("legacy-flat");
 
     const squareSnapshot = new GameModel({
       seed: 99,
       topology: "square",
-      density: LEGACY_DENSITIES.beginner,
+      density: PRESET_DENSITIES.beginner,
+      autoStart: false,
     }).createSnapshot();
     const legacy = { ...squareSnapshot, version: 1 } as Record<string, unknown>;
     delete legacy.topology;
     delete legacy.density;
+    delete legacy.generation;
     const migrated = new GameModel({ seed: 1, autoStart: false, topology: "triangular" });
     expect(migrated.restoreSnapshot(legacy)).toBe(true);
     expect(migrated.topologyId).toBe("square");
-    expect(migrated.density).toBe(LEGACY_DENSITIES.beginner);
+    expect(migrated.density).toBe(PRESET_DENSITIES.beginner);
+    expect(migrated.fieldGeneration).toBe("legacy-flat");
   });
 });
 
@@ -294,6 +373,9 @@ describe("saved games", () => {
     expect(target.restoreSnapshot({ ...snapshot, density: 0.9 })).toBe(false);
     expect(target.seed).toBe(previousSeed);
     expect(target.store.nonZeroCells).toBe(previousCells);
+    expect(target.restoreSnapshot({ ...snapshot, generation: "future" })).toBe(false);
+    expect(target.seed).toBe(previousSeed);
+    expect(target.store.nonZeroCells).toBe(previousCells);
     expect(target.restoreSnapshot({ ...snapshot, cells: corruptCells })).toBe(false);
     expect(target.seed).toBe(previousSeed);
     expect(target.store.nonZeroCells).toBe(previousCells);
@@ -330,22 +412,43 @@ describe("gameplay", () => {
     expect(game.reveal(0, 0).damage).toBeNull();
   });
 
-  it("places deterministic artifacts only on zero-clue, mine-free cells across every field type", { timeout: 10_000 }, () => {
+  it("reserves exact deterministic Thing footprints and keeps their simple artifacts at clue zero", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
         const game = new GameModel({ mode, seed: 712, autoStart: false, topology });
         const matching = new GameModel({ mode, seed: 712, autoStart: false, topology });
-        let artifacts = 0;
-        for (let y = -72; y <= 72; y += 1) {
-          for (let x = -72; x <= 72; x += 1) {
-            expect(game.artifactAt(x, y)).toBe(matching.artifactAt(x, y));
-            if (!game.artifactAt(x, y)) continue;
-            artifacts += 1;
-            expect(game.mineAt(x, y), `${topology}/${mode} mine at ${x},${y}`).toBe(false);
-            expect(game.clueAt(x, y), `${topology}/${mode} clue at ${x},${y}`).toBe(0);
+        let mismatches = 0;
+        let reservedMines = 0;
+        let nonzeroArtifacts = 0;
+        for (let zoneY = -1; zoneY <= 1; zoneY += 1) {
+          for (let zoneX = -1; zoneX <= 1; zoneX += 1) {
+            let artifacts = 0;
+            let reserved = 0;
+            for (let localY = 0; localY < THING_ZONE_SIZE; localY += 1) {
+              for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
+                const x = zoneX * THING_ZONE_SIZE + localX;
+                const y = zoneY * THING_ZONE_SIZE + localY;
+                if (game.artifactAt(x, y) !== matching.artifactAt(x, y)) mismatches += 1;
+                if (game.thingFootprintAt(x, y) !== matching.thingFootprintAt(x, y)) mismatches += 1;
+                if (game.thingFootprintAt(x, y)) {
+                  reserved += 1;
+                  if (game.mineAt(x, y)) reservedMines += 1;
+                }
+                if (!game.artifactAt(x, y)) continue;
+                artifacts += 1;
+                if (game.clueAt(x, y) !== 0) nonzeroArtifacts += 1;
+              }
+            }
+            expect(artifacts, `${topology}/${mode} Thing count in ${zoneX},${zoneY}`).toBe(1);
+            expect(
+              [THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2],
+              `${topology}/${mode} reservation in ${zoneX},${zoneY}`,
+            ).toContain(reserved);
           }
         }
-        expect(artifacts, `${topology}/${mode} artifact coverage`).toBeGreaterThan(0);
+        expect(mismatches, `${topology}/${mode} determinism`).toBe(0);
+        expect(reservedMines, `${topology}/${mode} reserved mines`).toBe(0);
+        expect(nonzeroArtifacts, `${topology}/${mode} numbered Things`).toBe(0);
 
         game.reveal(-64, -65);
         for (let y = -72; y <= -56; y += 1) {

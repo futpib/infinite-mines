@@ -89,7 +89,7 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
 
   await page.getByRole("button", { name: "Game settings" }).click();
   await expect(page.locator("#difficulty-list button")).toHaveCount(6);
-  await expect(page.getByRole("button", { name: /Beginner/ })).toContainText("17.16% mines");
+  await expect(page.getByRole("button", { name: /Beginner/ })).toContainText("18% chance");
   await expect(page.getByRole("button", { name: /Deathmatch/ })).toContainText("1 life");
   await page.getByRole("button", { name: "Close" }).click();
 
@@ -154,15 +154,15 @@ test("R02 — the original Infinite gameplay loop is present end to end", async 
   await expect(page.locator("#overview-caption")).toContainText("revealed");
 });
 
-test("R45 — effective presets and a persisted custom density report the active field exactly", async ({ page }) => {
+test("R45 — original per-cell presets and a persisted custom density report the active field exactly", async ({ page }) => {
   await openDeterministicGame(page);
-  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
-  await expect(page.locator("#density-stat")).toHaveText("17.16%");
+  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBe(0.18);
+  await expect(page.locator("#density-stat")).toHaveText("18%");
 
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#current-density")).toHaveText("17.16% CURRENT");
-  await expect(page.getByRole("button", { name: /Master/ })).toContainText("20.98% mines");
-  await expect(page.getByRole("button", { name: /Impossible/ })).toContainText("31.46% mines");
+  await expect(page.locator("#current-density")).toHaveText("18% CURRENT");
+  await expect(page.getByRole("button", { name: /Master/ })).toContainText("22% chance");
+  await expect(page.getByRole("button", { name: /Impossible/ })).toContainText("33% chance");
   const customInput = page.locator("#custom-density-input");
   await customInput.fill("12.34");
   await page.getByRole("button", { name: "USE", exact: true }).click();

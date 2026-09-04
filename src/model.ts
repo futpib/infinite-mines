@@ -11,7 +11,7 @@ export interface Difficulty {
   healthEvery: number;
 }
 
-export const LEGACY_DENSITIES: Record<PresetMode, number> = {
+export const PRESET_DENSITIES: Record<PresetMode, number> = {
   beginner: 0.18,
   master: 0.22,
   ultimate: 0.27,
@@ -19,7 +19,8 @@ export const LEGACY_DENSITIES: Record<PresetMode, number> = {
   deathmatch: 0.33,
 };
 
-// 1000mines excludes an expected 161 of every 3,456 cells through Thing footprints.
+// 1000mines reserves 25 cells with probability 5/6 and 36 with probability
+// 1/6 in every 24 by 24 Thing zone: E[reserved] = 161/6 cells.
 export const ORIGINAL_AVAILABLE_CELL_FRACTION = 3295 / 3456;
 export const CUSTOM_DENSITY_MIN = 0.12;
 export const CUSTOM_DENSITY_MAX = 0.5;
@@ -33,27 +34,27 @@ export const isValidDensity = (density: unknown): density is number =>
 
 export const DIFFICULTIES: Record<Mode, Difficulty> = {
   beginner: {
-    density: LEGACY_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    density: PRESET_DENSITIES.beginner,
     startingHealth: 3,
     healthEvery: 25_000,
   },
   master: {
-    density: LEGACY_DENSITIES.master * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    density: PRESET_DENSITIES.master,
     startingHealth: 3,
     healthEvery: 5_000,
   },
   ultimate: {
-    density: LEGACY_DENSITIES.ultimate * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    density: PRESET_DENSITIES.ultimate,
     startingHealth: 3,
     healthEvery: 1_000,
   },
   impossible: {
-    density: LEGACY_DENSITIES.impossible * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    density: PRESET_DENSITIES.impossible,
     startingHealth: 3,
     healthEvery: 1_000,
   },
   deathmatch: {
-    density: LEGACY_DENSITIES.deathmatch * ORIGINAL_AVAILABLE_CELL_FRACTION,
+    density: PRESET_DENSITIES.deathmatch,
     startingHealth: 1,
     healthEvery: 1_000_000_000,
   },
@@ -201,7 +202,28 @@ export interface GameSnapshotV3 {
   cells: ArrayBuffer;
 }
 
-export type GameSnapshot = GameSnapshotV1 | GameSnapshotV2 | GameSnapshotV3;
+export const FIELD_GENERATIONS = ["legacy-flat", "original-things"] as const;
+export type FieldGeneration = (typeof FIELD_GENERATIONS)[number];
+
+export interface GameSnapshotV4 {
+  version: 4;
+  generation: FieldGeneration;
+  topology: TopologyId;
+  mode: Mode;
+  density: number;
+  seed: number;
+  score: number;
+  things: number;
+  health: number;
+  cheats?: number;
+  started: boolean;
+  safeX: number;
+  safeY: number;
+  bounds: ExploredBounds | null;
+  cells: ArrayBuffer;
+}
+
+export type GameSnapshot = GameSnapshotV1 | GameSnapshotV2 | GameSnapshotV3 | GameSnapshotV4;
 
 interface StateChunk {
   cells: Uint8Array;
@@ -219,11 +241,24 @@ const CELL_RECORD_BYTES = 9;
 const INT32_MIN = -0x8000_0000;
 const INT32_MAX = 0x7fff_ffff;
 export const STATE_TILE_SIZE = 8;
-const ARTIFACT_ZONE = 24;
-const ARTIFACT_INTERIOR = 18;
-const ARTIFACT_CANDIDATE_LIMIT = 128;
-const MAX_ARTIFACT_CACHE_ZONES = 4096;
+export const THING_ZONE_SIZE = 24;
+export const THING_SMALL_RESERVED_SIDE = 5;
+export const THING_LARGE_RESERVED_SIDE = 6;
+export const THING_SMALL_PROBABILITY = 5 / 6;
+export const thingReservedSideForRoll = (
+  roll: number,
+): typeof THING_SMALL_RESERVED_SIDE | typeof THING_LARGE_RESERVED_SIDE =>
+  roll < THING_SMALL_PROBABILITY ? THING_SMALL_RESERVED_SIDE : THING_LARGE_RESERVED_SIDE;
+const LEGACY_ARTIFACT_INTERIOR = 18;
+const LEGACY_ARTIFACT_CANDIDATE_LIMIT = 128;
+const MAX_THING_CACHE_ZONES = 4096;
 const UINT32_RANGE = 0x1_0000_0000;
+
+interface ThingLayout {
+  readonly x: number;
+  readonly y: number;
+  readonly reserved: Uint32Array | null;
+}
 
 const EMPTY_RESULT = (): ActionResult => ({
   changed: 0,
@@ -438,6 +473,7 @@ export class GameModel {
   readonly store = new CellStore();
   mode: Mode;
   density: number;
+  fieldGeneration: FieldGeneration = "original-things";
   seed: number;
   topologyId: TopologyId;
   score = 0;
@@ -449,7 +485,7 @@ export class GameModel {
   private safeX = 0;
   private safeY = 0;
   private readonly safeCells = new Set<string>();
-  private readonly artifactCache = new Map<string, Readonly<{ x: number; y: number }> | null>();
+  private readonly thingCache = new Map<string, ThingLayout | null>();
 
   constructor(options: GameOptions = {}) {
     this.mode = options.mode ?? "beginner";
@@ -483,9 +519,10 @@ export class GameModel {
     return this.mode !== "deathmatch" && !this.alive;
   }
 
-  createSnapshot(): GameSnapshotV3 {
+  createSnapshot(): GameSnapshotV4 {
     return {
-      version: 3,
+      version: 4,
+      generation: this.fieldGeneration,
       topology: this.topologyId,
       mode: this.mode,
       density: this.density,
@@ -506,7 +543,9 @@ export class GameModel {
     if (!value || typeof value !== "object") return false;
     const snapshot = value as Partial<GameSnapshot>;
     const restoredTopology: TopologyId =
-      (snapshot.version === 2 || snapshot.version === 3) && isTopologyId(snapshot.topology) ? snapshot.topology : "square";
+      (snapshot.version === 2 || snapshot.version === 3 || snapshot.version === 4) && isTopologyId(snapshot.topology)
+        ? snapshot.topology
+        : "square";
     const validUnsignedInteger = (candidate: unknown): candidate is number =>
       Number.isSafeInteger(candidate) && (candidate as number) >= 0;
     const validCoordinate = (candidate: unknown): candidate is number =>
@@ -525,11 +564,13 @@ export class GameModel {
     };
 
     if (
-      (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3) ||
-      ((snapshot.version === 2 || snapshot.version === 3) && !isTopologyId(snapshot.topology)) ||
+      (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3 && snapshot.version !== 4) ||
+      ((snapshot.version === 2 || snapshot.version === 3 || snapshot.version === 4) &&
+        !isTopologyId(snapshot.topology)) ||
       !MODES.includes(snapshot.mode as Mode) ||
-      (snapshot.version !== 3 && snapshot.mode === "custom") ||
-      (snapshot.version === 3 && !isValidDensity(snapshot.density)) ||
+      ((snapshot.version === 1 || snapshot.version === 2) && snapshot.mode === "custom") ||
+      ((snapshot.version === 3 || snapshot.version === 4) && !isValidDensity(snapshot.density)) ||
+      (snapshot.version === 4 && !FIELD_GENERATIONS.includes(snapshot.generation as FieldGeneration)) ||
       !validUnsignedInteger(snapshot.seed) ||
       snapshot.seed > 0xffff_ffff ||
       !validUnsignedInteger(snapshot.score) ||
@@ -546,7 +587,11 @@ export class GameModel {
     }
 
     this.mode = snapshot.mode as Mode;
-    this.density = snapshot.version === 3 ? (snapshot.density as number) : LEGACY_DENSITIES[snapshot.mode as PresetMode];
+    this.density =
+      snapshot.version === 3 || snapshot.version === 4
+        ? (snapshot.density as number)
+        : PRESET_DENSITIES[snapshot.mode as PresetMode];
+    this.fieldGeneration = snapshot.version === 4 ? (snapshot.generation as FieldGeneration) : "legacy-flat";
     this.seed = snapshot.seed;
     this.topologyId = restoredTopology;
     this.score = snapshot.score;
@@ -559,7 +604,7 @@ export class GameModel {
     this.bounds = snapshot.bounds ? { ...snapshot.bounds } : null;
     this.safeCells.clear();
     if (this.started) this.buildSafeRegion(this.safeX, this.safeY);
-    this.artifactCache.clear();
+    this.thingCache.clear();
     const staleArtifactClues: Array<[number, number]> = [];
     this.store.forEachNonZero((x, y, state) => {
       if (isOpened(state) && openedClue(state) !== 0 && this.artifactAt(x, y)) {
@@ -580,6 +625,7 @@ export class GameModel {
     if (!isValidDensity(density)) throw new RangeError(`Density must be between 12% and 50%: ${density}`);
     this.mode = mode;
     this.density = density;
+    this.fieldGeneration = "original-things";
     this.seed = seed >>> 0;
     this.topologyId = topology;
     this.score = 0;
@@ -589,7 +635,7 @@ export class GameModel {
     this.started = false;
     this.bounds = null;
     this.safeCells.clear();
-    this.artifactCache.clear();
+    this.thingCache.clear();
     this.store.clear();
     return autoStart ? this.reveal(0, 0) : EMPTY_RESULT();
   }
@@ -614,15 +660,40 @@ export class GameModel {
 
   mineAt(x: number, y: number): boolean {
     if (this.started && this.safeCells.has(`${x},${y}`)) return false;
-    if (this.artifactAt(x, y)) return false;
+    const zoneX = floorDiv(x, THING_ZONE_SIZE);
+    const zoneY = floorDiv(y, THING_ZONE_SIZE);
+    const thing = this.artifactForZone(zoneX, zoneY);
+    if (this.thingLayoutReservesCell(thing, zoneX, zoneY, x, y)) return false;
+    if (thing !== null && x === thing.x && y === thing.y) return false;
     return this.rawMineAt(x, y);
   }
 
   artifactAt(x: number, y: number): boolean {
-    const zoneX = floorDiv(x, ARTIFACT_ZONE);
-    const zoneY = floorDiv(y, ARTIFACT_ZONE);
+    const zoneX = floorDiv(x, THING_ZONE_SIZE);
+    const zoneY = floorDiv(y, THING_ZONE_SIZE);
     const artifact = this.artifactForZone(zoneX, zoneY);
     return artifact !== null && x === artifact.x && y === artifact.y;
+  }
+
+  thingFootprintAt(x: number, y: number): boolean {
+    if (this.fieldGeneration !== "original-things") return false;
+    const zoneX = floorDiv(x, THING_ZONE_SIZE);
+    const zoneY = floorDiv(y, THING_ZONE_SIZE);
+    return this.thingLayoutReservesCell(this.artifactForZone(zoneX, zoneY), zoneX, zoneY, x, y);
+  }
+
+  private thingLayoutReservesCell(
+    thing: ThingLayout | null,
+    zoneX: number,
+    zoneY: number,
+    x: number,
+    y: number,
+  ): boolean {
+    if (!thing?.reserved) return false;
+    const localX = x - zoneX * THING_ZONE_SIZE;
+    const localY = y - zoneY * THING_ZONE_SIZE;
+    const index = localY * THING_ZONE_SIZE + localX;
+    return (thing.reserved[index >>> 5] & (1 << (index & 31))) !== 0;
   }
 
   private rawMineAt(x: number, y: number): boolean {
@@ -630,36 +701,145 @@ export class GameModel {
     return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.density;
   }
 
-  private artifactForZone(zoneX: number, zoneY: number): Readonly<{ x: number; y: number }> | null {
+  private artifactForZone(zoneX: number, zoneY: number): ThingLayout | null {
     const key = `${zoneX},${zoneY}`;
-    if (this.artifactCache.has(key)) {
-      return this.artifactCache.get(key) ?? null;
+    if (this.thingCache.has(key)) {
+      return this.thingCache.get(key) ?? null;
     }
 
-    const candidateCount = ARTIFACT_INTERIOR * ARTIFACT_INTERIOR;
+    const artifact =
+      this.fieldGeneration === "original-things"
+        ? this.originalThingForZone(zoneX, zoneY)
+        : this.legacyArtifactForZone(zoneX, zoneY);
+    this.thingCache.set(key, artifact);
+    while (this.thingCache.size > MAX_THING_CACHE_ZONES) {
+      const oldest = this.thingCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.thingCache.delete(oldest);
+    }
+    return artifact;
+  }
+
+  private legacyArtifactForZone(zoneX: number, zoneY: number): ThingLayout | null {
+    const candidateCount = LEGACY_ARTIFACT_INTERIOR * LEGACY_ARTIFACT_INTERIOR;
     const start = hash32(zoneX, zoneY, this.seed, 0x1b56c4e9) % candidateCount;
-    let artifact: Readonly<{ x: number; y: number }> | null = null;
-    for (let attempt = 0; attempt < ARTIFACT_CANDIDATE_LIMIT; attempt += 1) {
+    for (let attempt = 0; attempt < LEGACY_ARTIFACT_CANDIDATE_LIMIT; attempt += 1) {
       const candidate = (start + attempt) % candidateCount;
-      const candidateX = zoneX * ARTIFACT_ZONE + 3 + (candidate % ARTIFACT_INTERIOR);
-      const candidateY = zoneY * ARTIFACT_ZONE + 3 + Math.floor(candidate / ARTIFACT_INTERIOR);
+      const candidateX = zoneX * THING_ZONE_SIZE + 3 + (candidate % LEGACY_ARTIFACT_INTERIOR);
+      const candidateY = zoneY * THING_ZONE_SIZE + 3 + Math.floor(candidate / LEGACY_ARTIFACT_INTERIOR);
       if (this.rawMineAt(candidateX, candidateY)) continue;
       let zero = true;
       this.topology.forEachNeighbor(candidateX, candidateY, (neighborX, neighborY) => {
         if (zero && this.rawMineAt(neighborX, neighborY)) zero = false;
       });
-      if (zero) {
-        artifact = { x: candidateX, y: candidateY };
+      if (zero) return { x: candidateX, y: candidateY, reserved: null };
+    }
+    return null;
+  }
+
+  private originalThingForZone(zoneX: number, zoneY: number): ThingLayout {
+    const sizeRoll = hash32(zoneX, zoneY, this.seed, 0x71a55e31) / UINT32_RANGE;
+    const reservedSide = thingReservedSideForRoll(sizeRoll);
+    const spriteSide = reservedSide - 2;
+    const positionCount = THING_ZONE_SIZE - spriteSide - 2;
+    const anchorLocalX = 1 + Math.floor((hash32(zoneX, zoneY, this.seed, 0x2f4b8d19) / UINT32_RANGE) * positionCount);
+    const anchorLocalY = 1 + Math.floor((hash32(zoneX, zoneY, this.seed, 0x5c92d047) / UINT32_RANGE) * positionCount);
+    const minLocalX = anchorLocalX - 1;
+    const minLocalY = anchorLocalY - 1;
+    const reservedCells = reservedSide * reservedSide;
+    const mask = new Uint32Array((THING_ZONE_SIZE * THING_ZONE_SIZE) >>> 5);
+    const members = new Set<number>();
+    const addLocal = (localX: number, localY: number): void => {
+      members.add(localY * THING_ZONE_SIZE + localX);
+    };
+    for (let localY = minLocalY; localY < minLocalY + reservedSide; localY += 1) {
+      for (let localX = minLocalX; localX < minLocalX + reservedSide; localX += 1) addLocal(localX, localY);
+    }
+
+    let artifactLocalX = anchorLocalX;
+    let artifactLocalY = anchorLocalY;
+    if (this.topologyId !== "square") {
+      const centerX = minLocalX + Math.floor(reservedSide / 2);
+      const centerY = minLocalY + Math.floor(reservedSide / 2);
+      const candidates = [...members].sort((left, right) => {
+        const leftX = left % THING_ZONE_SIZE;
+        const leftY = Math.floor(left / THING_ZONE_SIZE);
+        const rightX = right % THING_ZONE_SIZE;
+        const rightY = Math.floor(right / THING_ZONE_SIZE);
+        const leftDistance = (leftX - centerX) ** 2 + (leftY - centerY) ** 2;
+        const rightDistance = (rightX - centerX) ** 2 + (rightY - centerY) ** 2;
+        return leftDistance - rightDistance || left - right;
+      });
+      for (const candidate of candidates) {
+        const localX = candidate % THING_ZONE_SIZE;
+        const localY = Math.floor(candidate / THING_ZONE_SIZE);
+        let contained = true;
+        this.topology.forEachNeighbor(
+          zoneX * THING_ZONE_SIZE + localX,
+          zoneY * THING_ZONE_SIZE + localY,
+          (neighborX, neighborY) => {
+            const neighborLocalX = neighborX - zoneX * THING_ZONE_SIZE;
+            const neighborLocalY = neighborY - zoneY * THING_ZONE_SIZE;
+            if (
+              neighborLocalX < 0 ||
+              neighborLocalX >= THING_ZONE_SIZE ||
+              neighborLocalY < 0 ||
+              neighborLocalY >= THING_ZONE_SIZE
+            ) {
+              contained = false;
+            }
+          },
+        );
+        if (!contained) continue;
+        artifactLocalX = localX;
+        artifactLocalY = localY;
         break;
       }
     }
-    this.artifactCache.set(key, artifact);
-    while (this.artifactCache.size > MAX_ARTIFACT_CACHE_ZONES) {
-      const oldest = this.artifactCache.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.artifactCache.delete(oldest);
+
+    const protectedCells = new Set<number>();
+    const artifactIndex = artifactLocalY * THING_ZONE_SIZE + artifactLocalX;
+    protectedCells.add(artifactIndex);
+    this.topology.forEachNeighbor(
+      zoneX * THING_ZONE_SIZE + artifactLocalX,
+      zoneY * THING_ZONE_SIZE + artifactLocalY,
+      (neighborX, neighborY) => {
+        const localX = neighborX - zoneX * THING_ZONE_SIZE;
+        const localY = neighborY - zoneY * THING_ZONE_SIZE;
+        if (localX < 0 || localX >= THING_ZONE_SIZE || localY < 0 || localY >= THING_ZONE_SIZE) {
+          throw new Error("Thing anchor cannot protect neighbors outside its zone");
+        }
+        const index = localY * THING_ZONE_SIZE + localX;
+        protectedCells.add(index);
+        members.add(index);
+      },
+    );
+
+    if (members.size > reservedCells) {
+      const removable = [...members]
+        .filter((index) => !protectedCells.has(index))
+        .sort((left, right) => {
+          const leftX = left % THING_ZONE_SIZE;
+          const leftY = Math.floor(left / THING_ZONE_SIZE);
+          const rightX = right % THING_ZONE_SIZE;
+          const rightY = Math.floor(right / THING_ZONE_SIZE);
+          const leftDistance = (leftX - artifactLocalX) ** 2 + (leftY - artifactLocalY) ** 2;
+          const rightDistance = (rightX - artifactLocalX) ** 2 + (rightY - artifactLocalY) ** 2;
+          return rightDistance - leftDistance || right - left;
+        });
+      while (members.size > reservedCells) {
+        const index = removable.shift();
+        if (index === undefined) throw new Error("Thing footprint cannot retain its protected center");
+        members.delete(index);
+      }
     }
-    return artifact;
+
+    for (const index of members) mask[index >>> 5] |= 1 << (index & 31);
+    return {
+      x: zoneX * THING_ZONE_SIZE + artifactLocalX,
+      y: zoneY * THING_ZONE_SIZE + artifactLocalY,
+      reserved: mask,
+    };
   }
 
   clueAt(x: number, y: number): number {
