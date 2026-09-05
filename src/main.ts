@@ -72,6 +72,11 @@ const cellLocator = element<HTMLButtonElement>("#cell-locator");
 const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
+const touchPreview = element<HTMLElement>("#touch-preview");
+const touchPreviewCoordinate = element<HTMLElement>("#touch-preview-coordinate");
+const touchPreviewTile = element<HTMLElement>("#touch-preview-tile");
+const touchPreviewGlyph = element<HTMLElement>("#touch-preview-glyph");
+const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
 const colorSchemeMeta = element<HTMLMetaElement>("#color-scheme");
 const lightThemeColorMeta = element<HTMLMetaElement>("#theme-color-light");
 const darkThemeColorMeta = element<HTMLMetaElement>("#theme-color-dark");
@@ -177,7 +182,7 @@ if (restoredGame) renderer.restoreView(persistedGame.view);
 colorScheme.addEventListener("change", () => {
   if (themeMode === "system") updateThemeMode();
 });
-let markTool = false;
+let touchRevealTool = false;
 let toastTimer = 0;
 let guardToastTimer = 0;
 let saveTimer = 0;
@@ -219,11 +224,23 @@ const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) 
 function updateControlsMode(): void {
   revealKey.textContent = controlsMode === "guarded" ? `${revealModifierLabel} / DOUBLE-CLICK` : "CLICK";
   guardedDescription.textContent = `${revealModifierName} + click or double-click reveals`;
-  helpGuardedDescription.textContent = `Guarded controls reveal concealed tiles with ${revealModifierName} + click or double-click; revealed clues click normally. Classic removes the guard.`;
+  helpGuardedDescription.textContent = `Guarded desktop controls reveal concealed tiles with ${revealModifierName} + click or double-click. On touch, hold then release; opened clues click or tap normally. Classic removes the desktop guard.`;
   game.dataset.controls = controlsMode;
   for (const button of controlOptions.querySelectorAll<HTMLButtonElement>("button[data-controls]")) {
     button.ariaPressed = String(button.dataset.controls === controlsMode);
   }
+}
+
+function updateMobileTool(): void {
+  mobileTool.ariaPressed = String(touchRevealTool);
+  mobileTool.dataset.action = touchRevealTool ? "reveal" : "mark";
+  mobileTool.innerHTML = touchRevealTool
+    ? '<span aria-hidden="true">◇</span> REVEAL'
+    : '<span aria-hidden="true">⚑</span> FLAG';
+  mobileTool.ariaLabel = touchRevealTool
+    ? "Touch action: reveal. Activate to restore guarded flagging"
+    : "Touch action: flag. Activate to enable tap-to-reveal";
+  mobileTool.title = mobileTool.ariaLabel;
 }
 
 function updateHoverMode(): void {
@@ -521,6 +538,102 @@ function locateCellAt(screenX: number, screenY: number, forceText = false, showH
   refreshCellLocator(forceText, showHover);
 }
 
+type TouchPreviewAction = "flag" | "question" | "clear" | "reveal" | "chord" | "locked";
+const touchPreviewActionLabels: Record<Exclude<TouchPreviewAction, "reveal">, string> = {
+  flag: "TAP TO FLAG",
+  question: "TAP TO QUESTION",
+  clear: "TAP TO CLEAR",
+  chord: "TAP TO CHORD",
+  locked: "FLAGGED · TAP TO CHANGE",
+};
+
+function hideTouchPreview(): void {
+  touchPreview.hidden = true;
+  touchPreview.dataset.armed = "false";
+}
+
+function positionTouchPreview(screenX: number, screenY: number): void {
+  const margin = 12;
+  const fingerClearance = 42;
+  touchPreview.hidden = false;
+  const bounds = touchPreview.getBoundingClientRect();
+  const minimumTop = uiHidden ? margin : Math.min(boardHeight - margin, 64 + margin);
+  const aboveTop = screenY - fingerClearance - bounds.height;
+  const placement = aboveTop >= minimumTop ? "above" : "below";
+  const maximumLeft = Math.max(margin, boardWidth - bounds.width - margin);
+  const left = Math.min(maximumLeft, Math.max(margin, screenX - bounds.width / 2));
+  const unclampedTop = placement === "above" ? aboveTop : screenY + fingerClearance;
+  const maximumTop = Math.max(minimumTop, boardHeight - bounds.height - margin);
+  const top = Math.min(maximumTop, Math.max(minimumTop, unclampedTop));
+  const tailX = Math.min(bounds.width - 18, Math.max(18, screenX - left));
+  touchPreview.dataset.placement = placement;
+  touchPreview.style.setProperty("--touch-preview-tail-x", `${tailX}px`);
+  touchPreview.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+}
+
+function touchPreviewVisual(x: number, y: number): { state: string; glyph: string; color: string } {
+  const state = model.getState(x, y);
+  if (state === CellState.Flagged) return { state: "flagged", glyph: "⚑", color: "" };
+  if (state === CellState.Question) return { state: "question", glyph: "?", color: "" };
+  if (state === CellState.Exploded) return { state: "exploded", glyph: "✹", color: "" };
+  if (isOpened(state)) {
+    if (state === CellState.Opened && model.artifactAt(x, y)) return { state: "artifact", glyph: "◆", color: "" };
+    const clue = openedClue(state);
+    return {
+      state: "opened",
+      glyph: clue === 0 ? "" : String(clue),
+      color: clue === 0 ? "" : `var(--board-number-${Math.min(clue, 8)})`,
+    };
+  }
+  return { state: "covered", glyph: "", color: "" };
+}
+
+function updateTouchPreviewAction(action: TouchPreviewAction, armed = false): void {
+  touchPreview.dataset.action = action;
+  touchPreview.dataset.armed = String(armed);
+  touchPreviewAction.textContent =
+    action === "reveal" ? (armed ? "RELEASE TO REVEAL" : "TAP TO REVEAL") : touchPreviewActionLabels[action];
+}
+
+function showTouchPreview(
+  x: number,
+  y: number,
+  screenX: number,
+  screenY: number,
+  action: TouchPreviewAction,
+): void {
+  const visual = touchPreviewVisual(x, y);
+  touchPreview.dataset.x = String(x);
+  touchPreview.dataset.y = String(y);
+  touchPreview.dataset.topology = model.topologyId;
+  touchPreviewCoordinate.textContent = `${x}, ${y}`;
+  touchPreviewTile.dataset.state = visual.state;
+  touchPreviewGlyph.textContent = visual.glyph;
+  touchPreviewGlyph.style.color = visual.color;
+  const polygon = renderer.cellScreenPolygon(x, y);
+  if (model.topologyId === "square") {
+    touchPreviewTile.classList.remove("is-polygon");
+    touchPreviewTile.style.clipPath = "";
+    touchPreviewTile.style.width = "68px";
+    touchPreviewTile.style.height = "68px";
+  } else {
+    const left = Math.min(...polygon.map((point) => point.x));
+    const top = Math.min(...polygon.map((point) => point.y));
+    const width = Math.max(1e-6, Math.max(...polygon.map((point) => point.x)) - left);
+    const height = Math.max(1e-6, Math.max(...polygon.map((point) => point.y)) - top);
+    const previewWidth = width >= height ? 68 : (68 * width) / height;
+    const previewHeight = height >= width ? 68 : (68 * height) / width;
+    touchPreviewTile.classList.add("is-polygon");
+    touchPreviewTile.style.width = `${previewWidth}px`;
+    touchPreviewTile.style.height = `${previewHeight}px`;
+    touchPreviewTile.style.clipPath = `polygon(${polygon
+      .map((point) => `${(((point.x - left) / width) * 100).toFixed(3)}% ${(((point.y - top) / height) * 100).toFixed(3)}%`)
+      .join(",")})`;
+  }
+  updateTouchPreviewAction(action);
+  positionTouchPreview(screenX, screenY);
+}
+
 function scheduleCellLocator(screenX: number, screenY: number): void {
   pendingLocatorScreen = { x: screenX, y: screenY };
   if (locatorFrame !== 0) return;
@@ -661,6 +774,11 @@ function applyAction(result: ActionResult): void {
   }
 }
 
+function revealFromTouch(x: number, y: number): ActionResult {
+  if (model.getState(x, y) === CellState.Question) model.cycleMark(x, y);
+  return model.reveal(x, y);
+}
+
 function cheatDeath(): void {
   if (!model.cheatDeath()) return;
   updateStats();
@@ -783,6 +901,7 @@ renderer.resize();
 locateCellAt(canvas.clientWidth / 2, canvas.clientHeight / 2, true);
 updateStats();
 updateControlsMode();
+updateMobileTool();
 updateHoverMode();
 updateHintHoverMode();
 updateAutoHideMode();
@@ -797,12 +916,14 @@ interface PointerGesture {
   startClientY: number;
   lastClientX: number;
   lastClientY: number;
-  startLocalX: number;
-  startLocalY: number;
   moved: boolean;
   longPressed: boolean;
+  longPressAction: "reveal" | "locked" | null;
   mark: boolean;
   reveal: boolean;
+  touch: boolean;
+  cellX: number;
+  cellY: number;
   timer: number;
 }
 
@@ -845,6 +966,7 @@ const beginPinch = (): void => {
   };
   canvas.classList.add("is-panning");
   updateHoverPreview([]);
+  hideTouchPreview();
 };
 
 const updatePinch = (): void => {
@@ -877,6 +999,7 @@ const finishPinchTouch = (event: PointerEvent): boolean => {
   const point = localPoint(event);
   locateCellAt(point.x, point.y, true, false);
   updateHoverPreview([]);
+  hideTouchPreview();
   scheduleGameSave();
   return true;
 };
@@ -902,32 +1025,52 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
   }
+  const cell = renderer.screenToCell(point.x, point.y);
+  const state = model.getState(cell.x, cell.y);
   const revealModifier = event.ctrlKey || event.metaKey;
   const directPointer = event.pointerType !== "mouse";
-  const mark = !revealModifier && (event.button === 2 || event.shiftKey || markTool);
-  const reveal = directPointer || revealModifier || controlsMode === "classic";
+  const touch = event.pointerType === "touch";
+  const concealed = state === CellState.Covered || state === CellState.Flagged || state === CellState.Question;
+  const guardedTouchMark = touch && !touchRevealTool && concealed;
+  const mark = !revealModifier && (event.button === 2 || event.shiftKey || guardedTouchMark);
+  const reveal = touch ? touchRevealTool || isOpened(state) : directPointer || revealModifier || controlsMode === "classic";
   gesture = {
     id: event.pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     lastClientX: event.clientX,
     lastClientY: event.clientY,
-    startLocalX: point.x,
-    startLocalY: point.y,
     moved: false,
     longPressed: false,
+    longPressAction: null,
     mark,
     reveal,
+    touch,
+    cellX: cell.x,
+    cellY: cell.y,
     timer: 0,
   };
-  if (event.pointerType === "touch" && !mark) {
+  if (touch) {
+    const previewAction: TouchPreviewAction =
+      state === CellState.Flagged
+        ? touchRevealTool
+          ? "locked"
+          : "question"
+        : touchRevealTool
+          ? "reveal"
+          : isOpened(state)
+            ? "chord"
+            : state === CellState.Question
+              ? "clear"
+              : "flag";
+    showTouchPreview(cell.x, cell.y, point.x, point.y, previewAction);
+  }
+  if (touch && !touchRevealTool && concealed) {
     gesture.timer = window.setTimeout(() => {
       if (!gesture || gesture.moved) return;
       gesture.longPressed = true;
-      const cell = renderer.screenToCell(gesture.startLocalX, gesture.startLocalY);
-      const result = model.cycleMark(cell.x, cell.y);
-      applyAction(result);
-      if (result.changed > 0) completeGameplayInteraction();
+      gesture.longPressAction = state === CellState.Flagged ? "locked" : "reveal";
+      updateTouchPreviewAction(gesture.longPressAction, true);
       navigator.vibrate?.(18);
     }, 430);
   }
@@ -953,6 +1096,7 @@ canvas.addEventListener("pointermove", (event) => {
     return;
   }
   if (gesture.id !== event.pointerId) return;
+  if (event.pointerType === "touch" && !touchPreview.hidden) positionTouchPreview(point.x, point.y);
   const deltaFromStartX = event.clientX - gesture.startClientX;
   const deltaFromStartY = event.clientY - gesture.startClientY;
   if (!gesture.moved && deltaFromStartX ** 2 + deltaFromStartY ** 2 > DRAG_THRESHOLD_PX ** 2) {
@@ -960,6 +1104,7 @@ canvas.addEventListener("pointermove", (event) => {
     window.clearTimeout(gesture.timer);
     canvas.classList.add("is-panning");
     updateHoverPreview([]);
+    hideTouchPreview();
     renderer.panBy(deltaFromStartX, deltaFromStartY);
   } else if (gesture.moved) {
     renderer.panBy(event.clientX - gesture.lastClientX, event.clientY - gesture.lastClientY);
@@ -974,6 +1119,7 @@ const finishPointer = (event: PointerEvent): void => {
   const completed = gesture;
   gesture = null;
   canvas.classList.remove("is-panning");
+  hideTouchPreview();
   if (completed.moved) {
     renderer.finishPan();
     const point = localPoint(event);
@@ -982,17 +1128,22 @@ const finishPointer = (event: PointerEvent): void => {
     return;
   }
   if (completed.longPressed) {
+    if (completed.longPressAction === "reveal") {
+      const result = revealFromTouch(completed.cellX, completed.cellY);
+      applyAction(result);
+      if (result.changed > 0) completeGameplayInteraction();
+    }
     refreshCellLocator(true);
     return;
   }
-  const cell = renderer.screenToCell(completed.startLocalX, completed.startLocalY);
-  const state = model.getState(cell.x, cell.y);
+  const cell = { x: completed.cellX, y: completed.cellY };
+  const state = model.getState(completed.cellX, completed.cellY);
   if (completed.mark) {
     const result = model.cycleMark(cell.x, cell.y);
     applyAction(result);
     if (result.changed > 0) completeGameplayInteraction();
   } else if (completed.reveal || !requiresRevealGuard(state)) {
-    const result = model.reveal(cell.x, cell.y);
+    const result = completed.touch ? revealFromTouch(cell.x, cell.y) : model.reveal(cell.x, cell.y);
     applyAction(result);
     if (result.changed > 0) completeGameplayInteraction();
   } else scheduleGuardToast(cell.x, cell.y);
@@ -1005,7 +1156,7 @@ canvas.addEventListener("pointerup", (event) => {
   finishPointer(event);
 });
 canvas.addEventListener("dblclick", (event) => {
-  if (controlsMode !== "guarded" || event.button !== 0 || event.shiftKey || markTool) return;
+  if (controlsMode !== "guarded" || event.button !== 0 || event.shiftKey) return;
   const cell = renderer.screenToCell(event.offsetX, event.offsetY);
   if (!requiresRevealGuard(model.getState(cell.x, cell.y))) return;
   clearToast();
@@ -1036,6 +1187,7 @@ canvas.addEventListener("pointercancel", (event) => {
   }
   gesture = null;
   canvas.classList.remove("is-panning");
+  hideTouchPreview();
   refreshCellLocator(true);
 });
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -1159,9 +1311,8 @@ themeOptions.addEventListener("click", (event) => {
 });
 
 mobileTool.addEventListener("click", () => {
-  markTool = !markTool;
-  mobileTool.ariaPressed = String(markTool);
-  mobileTool.innerHTML = markTool ? '<span aria-hidden="true">⚑</span> FLAG' : '<span aria-hidden="true">◇</span> REVEAL';
+  touchRevealTool = !touchRevealTool;
+  updateMobileTool();
 });
 
 document.addEventListener("keydown", (event) => {
@@ -1239,6 +1390,16 @@ function getDiagnostics() {
     autoHideMode,
     themeMode,
     theme: document.documentElement.dataset.theme,
+    touchTool: touchRevealTool ? "reveal" : "mark",
+    touchPreview: touchPreview.hidden
+      ? null
+      : {
+          x: Number(touchPreview.dataset.x),
+          y: Number(touchPreview.dataset.y),
+          action: touchPreview.dataset.action,
+          armed: touchPreview.dataset.armed === "true",
+          placement: touchPreview.dataset.placement,
+        },
     gameplayInteractionCount,
     fullscreen: document.fullscreenElement !== null,
     uiHidden,

@@ -48,6 +48,13 @@
       <h1 class="sr-only">Infinite Minesweeper</h1>
       <canvas id="board" aria-label="Infinite Minesweeper board"></canvas>
       <div class="hover-overlay" id="hover-overlay" aria-hidden="true"></div>
+      <div class="touch-preview" id="touch-preview" aria-hidden="true" hidden>
+        <div class="touch-preview-card">
+          <span class="touch-preview-coordinate" id="touch-preview-coordinate">0, 0</span>
+          <span class="touch-preview-tile" id="touch-preview-tile"><span id="touch-preview-glyph"></span></span>
+          <strong class="touch-preview-action" id="touch-preview-action">TAP TO FLAG</strong>
+        </div>
+      </div>
 
       <nav class="controls" aria-label="Game controls">
         <button id="restart-button" type="button" aria-label="New game" title="New game (R)">
@@ -142,8 +149,14 @@
         <strong id="cell-coordinate">0, 0</strong>
         <small id="cell-state">OPENED CLEAR · COPY</small>
       </button>
-      <button class="mobile-tool" id="mobile-tool" type="button" aria-pressed="false">
-        <span aria-hidden="true">◇</span> REVEAL
+      <button
+        class="mobile-tool"
+        id="mobile-tool"
+        type="button"
+        aria-label="Touch action: flag. Activate to enable tap-to-reveal"
+        aria-pressed="false"
+      >
+        <span aria-hidden="true">⚑</span> FLAG
       </button>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
       <section class="game-over-screen" id="game-over-screen" aria-labelledby="game-over-title" hidden>
@@ -313,8 +326,8 @@
           <button class="close-button" id="help-close" type="button" aria-label="Close">×</button>
         </div>
         <div class="help-grid">
-          <div><b>Reveal</b><p id="help-guarded-description">Guarded controls reveal concealed tiles with Ctrl + click or double-click; revealed clues click normally. Classic removes the guard.</p></div>
-          <div><b>Mark</b><p>Right-click, Shift-click, or long-press to cycle flag, question, clear.</p></div>
+          <div><b>Reveal</b><p id="help-guarded-description">Guarded desktop controls reveal concealed tiles with Ctrl + click or double-click. On touch, hold then release; opened clues tap normally.</p></div>
+          <div><b>Mark</b><p>Right-click or Shift-click on desktop. A short touch cycles flag, question, clear; the visible Reveal tool is an explicit tap-to-reveal override.</p></div>
           <div><b>Chord</b><p>Click an open number when its mines are flagged to clear the rest.</p></div>
           <div><b>Survive</b><p>A blast costs one life. Score milestones earn lives back.</p></div>
           <div><b>Explore</b><p>Drag the field in any direction. It is generated only as you need it.</p></div>

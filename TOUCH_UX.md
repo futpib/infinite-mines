@@ -1,8 +1,8 @@
 # Touch interaction convention
 
-Status: accepted product direction; runtime implementation and executable acceptance coverage are pending.
+Status: implemented and enforced by R47 in the executable acceptance contract.
 
-This convention governs direct touch interaction with board tiles. It records the intended behavior separately from the current build, which still reveals a covered tile on a short tap, marks it on a long press, and does not show a finger-offset preview.
+This convention governs direct touch interaction with board tiles.
 
 ## Risk follows effort
 
@@ -44,9 +44,9 @@ Small movement inside the existing dead zone must not make the preview disagree 
 
 Fatal touch input must still stop at the game-over decision surface. Neither the release nor a synthesized compatibility click may choose Cheat death or Start a new field.
 
-## Implementation acceptance
+## Executable acceptance
 
-When this direction is implemented, update `REQUIREMENTS.md` and add trusted production-browser coverage that proves:
+`REQUIREMENTS.md` R47 and trusted production-browser coverage prove:
 
 1. A default short tap marks a covered safe tile and a covered mine without revealing either.
 2. A long press changes nothing at the threshold, visibly arms reveal, and reveals only on a valid release.

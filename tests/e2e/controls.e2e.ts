@@ -184,60 +184,106 @@ test("R08 — Classic controls restore click-to-reveal and persist", async ({ pa
   expect(await page.evaluate(() => localStorage.getItem("infinite-mines-controls"))).toBe("classic");
 });
 
-test("R08 — touch reveal, explicit Flag tool, and long-press marking bypass keyboard modifiers", async ({ browser }) => {
+test("R47 — guarded touch marks on tap and reveals only after a held release", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
+  const session = await context.newCDPSession(page);
+  let touchId = 90;
+  const touchStart = async (point: { x: number; y: number }) => {
+    touchId += 1;
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ id: touchId, x: point.x, y: point.y, radiusX: 2, radiusY: 2, force: 1 }],
+    });
+  };
+  const touchEnd = async () => {
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
   try {
     await openDeterministicGame(page);
     await expect(page.locator("#mobile-tool")).toBeVisible();
+    await expect(page.locator("#mobile-tool")).toContainText("FLAG");
+    await expect(page.locator("#mobile-tool")).toHaveAttribute("aria-pressed", "false");
     await expect(page.locator("#hint")).toBeHidden();
 
-    const revealCell = await findCell(page, "covered-safe");
-    const revealPoint = await worldPoint(page, revealCell);
-    await page.touchscreen.tap(revealPoint.x, revealPoint.y);
-    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), revealCell)).toBeGreaterThan(0);
-
-    await page.locator("#mobile-tool").click();
-    await expect(page.locator("#mobile-tool")).toContainText("FLAG");
-    const toolMarked = await findCell(page, "covered");
-    const toolPoint = await worldPoint(page, toolMarked);
-    await page.touchscreen.tap(toolPoint.x, toolPoint.y);
-    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), toolMarked)).toBe(10);
-
-    await page.locator("#mobile-tool").click();
-    const longPressed = await findCell(page, "covered");
-    const longPoint = await worldPoint(page, longPressed);
-    await page.evaluate(({ x, y }) => {
-      const canvas = document.querySelector<HTMLCanvasElement>("#board");
-      if (!canvas) throw new Error("Missing board");
-      canvas.setPointerCapture = () => undefined;
-      canvas.dispatchEvent(
-        new PointerEvent("pointerdown", {
-          bubbles: true,
-          button: 0,
-          buttons: 1,
-          clientX: x,
-          clientY: y,
-          pointerId: 91,
-          pointerType: "touch",
-        }),
-      );
-    }, longPoint);
+    const heldCell = await findCell(page, "covered-safe");
+    const heldPoint = await worldPoint(page, heldCell);
+    await touchStart(heldPoint);
+    await expect(page.locator("#touch-preview")).toBeVisible();
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
+      ...heldCell,
+      action: "flag",
+      armed: false,
+    });
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBe(0);
     await page.waitForTimeout(470);
-    await page.evaluate(({ x, y }) => {
-      document.querySelector("#board")?.dispatchEvent(
-        new PointerEvent("pointerup", {
-          bubbles: true,
-          button: 0,
-          clientX: x,
-          clientY: y,
-          pointerId: 91,
-          pointerType: "touch",
-        }),
-      );
-    }, longPoint);
-    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), longPressed)).toBe(10);
+    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
+      ...heldCell,
+      action: "reveal",
+      armed: true,
+    });
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBe(0);
+    await touchEnd();
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBeGreaterThan(0);
+
+    const markedMine = await page.evaluate(() => {
+      const model = window.__infiniteMines.model;
+      for (let radius = 1; radius < 100; radius += 1) {
+        for (let y = -radius; y <= radius; y += 1) {
+          for (let x = -radius; x <= radius; x += 1) {
+            if (model.getState(x, y) === 0 && model.mineAt(x, y)) return { x, y };
+          }
+        }
+      }
+      throw new Error("No covered mine found");
+    });
+    const markedPoint = await worldPoint(page, markedMine);
+    const healthBeforeMark = await page.evaluate(() => window.__infiniteMines.model.health);
+    const framesBeforePreview = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await touchStart(markedPoint);
+    await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
+    await expect(page.locator("#touch-preview-glyph")).toBeEmpty();
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(framesBeforePreview);
+    await touchEnd();
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(10);
+    expect(await page.evaluate(() => window.__infiniteMines.model.health)).toBe(healthBeforeMark);
+
+    await touchStart(markedPoint);
+    await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO QUESTION");
+    await page.waitForTimeout(470);
+    await expect(page.locator("#touch-preview-action")).toHaveText("FLAGGED · TAP TO CHANGE");
+    await touchEnd();
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(10);
+
+    await page.touchscreen.tap(markedPoint.x, markedPoint.y);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(11);
+    await touchStart(markedPoint);
+    await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO CLEAR");
+    await page.waitForTimeout(470);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(11);
+    await touchEnd();
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(12);
+    expect(await page.evaluate(() => window.__infiniteMines.model.health)).toBe(healthBeforeMark - 1);
+
+    const explicitLocked = await findCell(page, "covered");
+    const explicitLockedPoint = await worldPoint(page, explicitLocked);
+    await page.touchscreen.tap(explicitLockedPoint.x, explicitLockedPoint.y);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), explicitLocked)).toBe(10);
+    await page.locator("#mobile-tool").click();
+    await expect(page.locator("#mobile-tool")).toContainText("REVEAL");
+    await expect(page.locator("#mobile-tool")).toHaveAttribute("aria-pressed", "true");
+    await touchStart(explicitLockedPoint);
+    await expect(page.locator("#touch-preview-action")).toHaveText("FLAGGED · TAP TO CHANGE");
+    await touchEnd();
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), explicitLocked)).toBe(10);
+    const explicitReveal = await findCell(page, "covered-safe");
+    const explicitPoint = await worldPoint(page, explicitReveal);
+    await page.touchscreen.tap(explicitPoint.x, explicitPoint.y);
+    expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), explicitReveal)).toBeGreaterThan(0);
   } finally {
+    await session.detach();
     await context.close();
   }
 });
@@ -247,6 +293,8 @@ test("R27/R44 — fatal mouse and touch input cannot choose game over, including
   const page = await context.newPage();
   try {
     await openDeterministicGame(page);
+    await page.locator("#mobile-tool").click();
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchTool)).toBe("reveal");
     const cheatTarget = await gameOverActionCenter(page, "#cheat-death-button");
     const restartTarget = await gameOverActionCenter(page, "#game-over-restart-button");
 
