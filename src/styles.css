@@ -332,12 +332,12 @@ a:focus-visible {
 .hover-overlay[data-lod="pixel"] .hover-cell.is-visible.is-hint:not(.is-affected) { opacity: 0.1; }
 
 .touch-preview {
-  --touch-preview-tail-x: 56px;
+  --touch-preview-tail-x: 40px;
   position: absolute;
   z-index: 6;
   top: 0;
   left: 0;
-  width: 112px;
+  width: max-content;
   transform: translate3d(-200px, -200px, 0);
   pointer-events: none;
   contain: layout style;
@@ -349,15 +349,13 @@ a:focus-visible {
 .touch-preview-card {
   position: relative;
   z-index: 1;
-  display: grid;
-  justify-items: center;
-  gap: 8px;
-  padding: 10px 10px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 22px;
+  width: max-content;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
   color: var(--ink);
-  background: color-mix(in srgb, var(--surface-raised) 96%, transparent);
-  box-shadow: 0 22px 52px rgba(24, 32, 33, 0.2), 0 5px 14px rgba(24, 32, 33, 0.12);
+  background: transparent;
+  box-shadow: 0 18px 32px rgba(24, 32, 33, 0.18), 0 4px 9px rgba(24, 32, 33, 0.14);
 }
 
 .touch-preview::after {
@@ -368,7 +366,7 @@ a:focus-visible {
   height: 14px;
   border-right: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line-strong);
-  background: var(--surface-raised);
+  background: var(--board-bg);
   content: "";
 }
 
@@ -382,21 +380,12 @@ a:focus-visible {
   transform: rotate(225deg);
 }
 
-.touch-preview-coordinate {
-  color: var(--muted);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.08em;
-  line-height: 1;
-}
-
 .touch-preview-tile {
   display: grid;
   place-items: center;
-  width: 68px;
-  height: 68px;
+  box-sizing: border-box;
+  width: 80px;
+  height: 80px;
   overflow: hidden;
   border: 1px solid var(--board-cell-border);
   border-radius: 10px;
@@ -419,15 +408,22 @@ a:focus-visible {
 .touch-preview-tile[data-state="artifact"] { color: var(--board-artifact); background: var(--board-cell); }
 
 .touch-preview-action {
-  min-height: 19px;
-  padding: 5px 8px;
-  border-radius: 999px;
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  min-height: 21px;
+  padding: 0;
+  border-radius: 0 0 10px 10px;
+  place-items: center;
   color: var(--accent-strong);
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent-soft) 94%, transparent);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 8px;
+  font-size: 7px;
   font-weight: 780;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
   line-height: 1;
   text-align: center;
 }
@@ -443,8 +439,9 @@ a:focus-visible {
 }
 
 .touch-preview[data-armed="true"] .touch-preview-card {
-  border-color: color-mix(in srgb, var(--danger) 68%, var(--line-strong));
-  box-shadow: 0 24px 56px color-mix(in srgb, var(--danger) 18%, transparent), 0 5px 14px rgba(24, 32, 33, 0.13);
+  outline: 2px solid color-mix(in srgb, var(--danger) 68%, var(--line-strong));
+  outline-offset: 2px;
+  box-shadow: 0 18px 34px color-mix(in srgb, var(--danger) 20%, transparent), 0 4px 9px rgba(24, 32, 33, 0.14);
 }
 
 .controls {

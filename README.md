@@ -21,7 +21,7 @@ npm run preview
 
 `npm test` runs the engine tests, production build, and the Playwright acceptance contract. See [REQUIREMENTS.md](./REQUIREMENTS.md) for the thread-to-test matrix. Install the bundled browser once with `npx playwright install chromium`.
 
-The guarded touch gesture and finger-offset tile-preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract.
+The guarded touch gesture and finger-offset, tile-only preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract.
 
 For the exact environment used by GitHub Actions, run:
 

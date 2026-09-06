@@ -73,7 +73,6 @@ const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
 const touchPreview = element<HTMLElement>("#touch-preview");
-const touchPreviewCoordinate = element<HTMLElement>("#touch-preview-coordinate");
 const touchPreviewTile = element<HTMLElement>("#touch-preview-tile");
 const touchPreviewGlyph = element<HTMLElement>("#touch-preview-glyph");
 const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
@@ -606,7 +605,6 @@ function showTouchPreview(
   touchPreview.dataset.x = String(x);
   touchPreview.dataset.y = String(y);
   touchPreview.dataset.topology = model.topologyId;
-  touchPreviewCoordinate.textContent = `${x}, ${y}`;
   touchPreviewTile.dataset.state = visual.state;
   touchPreviewGlyph.textContent = visual.glyph;
   touchPreviewGlyph.style.color = visual.color;
@@ -614,15 +612,15 @@ function showTouchPreview(
   if (model.topologyId === "square") {
     touchPreviewTile.classList.remove("is-polygon");
     touchPreviewTile.style.clipPath = "";
-    touchPreviewTile.style.width = "68px";
-    touchPreviewTile.style.height = "68px";
+    touchPreviewTile.style.width = "80px";
+    touchPreviewTile.style.height = "80px";
   } else {
     const left = Math.min(...polygon.map((point) => point.x));
     const top = Math.min(...polygon.map((point) => point.y));
     const width = Math.max(1e-6, Math.max(...polygon.map((point) => point.x)) - left);
     const height = Math.max(1e-6, Math.max(...polygon.map((point) => point.y)) - top);
-    const previewWidth = width >= height ? 68 : (68 * width) / height;
-    const previewHeight = height >= width ? 68 : (68 * height) / width;
+    const previewWidth = width >= height ? 80 : (80 * width) / height;
+    const previewHeight = height >= width ? 80 : (80 * height) / width;
     touchPreviewTile.classList.add("is-polygon");
     touchPreviewTile.style.width = `${previewWidth}px`;
     touchPreviewTile.style.height = `${previewHeight}px`;

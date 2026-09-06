@@ -27,6 +27,7 @@ The first single-finger contact immediately shows a magnified preview of the exa
 
 The preview must:
 
+- use the magnified tile itself as the callout, with no coordinate label or padding around it;
 - reproduce only the tile's public appearance; it must never expose a covered mine or any other hidden state;
 - identify the exact tile and action that would commit on release;
 - remain in sync with the commit target if the interaction allows the candidate to move;
@@ -52,6 +53,6 @@ Fatal touch input must still stop at the game-over decision surface. Neither the
 2. A long press changes nothing at the threshold, visibly arms reveal, and reveals only on a valid release.
 3. Flags cannot be revealed directly; questions follow the deliberate-reveal rule.
 4. Pan, pinch, pointer cancellation, and release before the threshold cannot accidentally reveal.
-5. The preview appears on contact, is offset from the finger, stays inside the viewport, matches the committed tile, leaks no hidden state, and clears on every completion path.
+5. The tile-only preview appears on contact without coordinates or surrounding padding, is offset from the finger, stays inside the viewport, matches the committed tile, leaks no hidden state, and clears on every completion path.
 6. The mapping and preview hold across Square, Rhombille, and Triangular fields, representative detail/pixel zooms, visible/hidden controls, and phone/desktop touch viewports.
 7. The existing fatal-input/game-over guard and bounded interaction-performance contracts remain green.

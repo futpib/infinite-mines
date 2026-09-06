@@ -47,8 +47,24 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
     expect(initialPreview.x).toBeGreaterThanOrEqual(12);
     expect(initialPreview.x + initialPreview.width).toBeLessThanOrEqual(1188);
     expect(initialPreview.y + initialPreview.height).toBeLessThan(startY - 30);
+    await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
     await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
     await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO FLAG");
+    const previewLayout = await page.locator(".touch-preview-card").evaluate((card) => {
+      const tile = card.querySelector<HTMLElement>("#touch-preview-tile");
+      if (!tile) throw new Error("Missing magnified tile");
+      const cardBounds = card.getBoundingClientRect();
+      const tileBounds = tile.getBoundingClientRect();
+      const style = getComputedStyle(card);
+      return {
+        card: { width: cardBounds.width, height: cardBounds.height },
+        tile: { width: tileBounds.width, height: tileBounds.height },
+        padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+      };
+    });
+    expect(previewLayout.padding).toEqual(["0px", "0px", "0px", "0px"]);
+    expect(previewLayout.card.width).toBeCloseTo(previewLayout.tile.width, 5);
+    expect(previewLayout.card.height).toBeCloseTo(previewLayout.tile.height, 5);
     await session.send("Input.dispatchTouchEvent", {
       type: "touchMove",
       touchPoints: [touchPoint(1, startX + 4, startY + 4)],
@@ -218,7 +234,7 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
       const target = await coveredTarget();
       await startAt({ x: target.screenX, y: target.screenY });
       await expect(page.locator("#touch-preview")).toHaveAttribute("data-topology", topology);
-      await expect(page.locator("#touch-preview-coordinate")).toHaveText(`${target.x}, ${target.y}`);
+      await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
       await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
       const clipPath = await page.locator("#touch-preview-tile").evaluate((tile) => getComputedStyle(tile).clipPath);
       if (topology === "square") expect(clipPath).toBe("none");
@@ -243,7 +259,7 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
     expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject(pixelTarget.cell);
     const previewBounds = await page.locator("#touch-preview").boundingBox();
     if (!previewBounds) throw new Error("Missing pixel-zoom preview bounds");
-    expect(previewBounds.width).toBeGreaterThan(100);
+    expect(previewBounds.width).toBeGreaterThanOrEqual(68);
     expect(previewBounds.y + previewBounds.height).toBeLessThan(pixelTarget.y - 30);
     await cancel();
   } finally {
