@@ -74,11 +74,21 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
         viewport: { width: viewportBounds.width, height: viewportBounds.height, bottom: viewportBounds.bottom },
         action: { width: actionBounds.width, height: actionBounds.height, top: actionBounds.top },
         padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
-        viewportClip: { overflow: viewportStyle.overflow, borderRadius: viewportStyle.borderRadius },
+        viewportClip: {
+          overflow: viewportStyle.overflow,
+          borderRadius: viewportStyle.borderRadius,
+          outlineWidth: viewportStyle.outlineWidth,
+          borderWidth: viewportStyle.borderWidth,
+        },
       };
     });
     expect(previewLayout.padding).toEqual(["0px", "0px", "0px", "0px"]);
-    expect(previewLayout.viewportClip).toEqual({ overflow: "visible", borderRadius: "0px" });
+    expect(previewLayout.viewportClip).toEqual({
+      overflow: "visible",
+      borderRadius: "0px",
+      outlineWidth: "0px",
+      borderWidth: "0px",
+    });
     expect(previewLayout.viewport).toMatchObject(previewLayout.neighborhood);
     expect(previewLayout.action.top).toBeGreaterThanOrEqual(previewLayout.viewport.bottom);
     expect(previewLayout.card.width).toBeCloseTo(previewLayout.neighborhood.width, 5);
@@ -294,16 +304,19 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
           minY >= preview.sourceY - tolerance &&
           maxX <= preview.sourceX + neighborhoodBounds.width + tolerance &&
           maxY <= preview.sourceY + neighborhoodBounds.height + tolerance;
-        const tightToCompleteNeighborhood =
+        const ownedEdgeExtension = window.__infiniteMines.model.topologyId === "square"
+          ? window.__infiniteMines.diagnostics().borderCssPixels
+          : 0;
+        const tightToRenderedNeighborhood =
           preview.neighborhoodRings === 1 &&
           minX - preview.sourceX >= -tolerance &&
           minX - preview.sourceX < tolerance &&
           minY - preview.sourceY >= -tolerance &&
           minY - preview.sourceY < tolerance &&
-          preview.sourceX + neighborhoodBounds.width - maxX >= -tolerance &&
-          preview.sourceX + neighborhoodBounds.width - maxX < tolerance &&
-          preview.sourceY + neighborhoodBounds.height - maxY >= -tolerance &&
-          preview.sourceY + neighborhoodBounds.height - maxY < tolerance;
+          preview.sourceX + neighborhoodBounds.width - maxX >= ownedEdgeExtension - tolerance &&
+          preview.sourceX + neighborhoodBounds.width - maxX < ownedEdgeExtension + tolerance &&
+          preview.sourceY + neighborhoodBounds.height - maxY >= ownedEdgeExtension - tolerance &&
+          preview.sourceY + neighborhoodBounds.height - maxY < ownedEdgeExtension + tolerance;
         const targetScreenPolygon = window.__infiniteMines.renderer.cellScreenPolygon(preview.x, preview.y);
         const sampleCssX =
           targetScreenPolygon.reduce((sum, point) => sum + point.x, 0) / targetScreenPolygon.length - preview.sourceX;
@@ -333,7 +346,7 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
           target: { width: targetBounds.width, height: targetBounds.height },
           actionStartsAfterNeighborhood: actionBounds.top >= viewportBounds.bottom,
           containsCompleteNeighborhood,
-          tightToCompleteNeighborhood,
+          tightToRenderedNeighborhood,
           sampleMatches,
           pixelRatio,
           cellSize: window.__infiniteMines.renderer.cellSize,
@@ -355,7 +368,7 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
       expect(previewGeometry.captureMs).toBeLessThan(8);
       expect(previewGeometry.actionStartsAfterNeighborhood).toBe(true);
       expect(previewGeometry.containsCompleteNeighborhood).toBe(true);
-      expect(previewGeometry.tightToCompleteNeighborhood).toBe(true);
+      expect(previewGeometry.tightToRenderedNeighborhood).toBe(true);
       expect(previewGeometry.sampleMatches).toBe(true);
       await cancel();
     }
@@ -407,4 +420,272 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
     await session.detach();
     await context.close();
   }
+});
+
+test("R47 — preview pixels stay aligned and unobscured across zoom and device scale", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const matrix: Array<{
+    deviceScaleFactor: number;
+    rendererPixelRatio: number;
+    cellSize: number;
+    width: number;
+    height: number;
+    edgeSlack: number;
+    ownedEdgeExtension: number;
+    rightOwnedEdgePresent: boolean;
+    bottomOwnedEdgePresent: boolean;
+    rightOwnedEdgePixels: boolean;
+    bottomOwnedEdgePixels: boolean;
+    targetAlignmentError: number;
+    labelOverlap: number;
+    captureMs: number;
+  }> = [];
+
+  for (const deviceScaleFactor of [1, 1.25, 1.5, 2, 3]) {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const page = await context.newPage();
+    const errors: Error[] = [];
+    page.on("pageerror", (error) => errors.push(error));
+    const session = await context.newCDPSession(page);
+    let pointerId = 200;
+    try {
+      await openDeterministicGame(page);
+      const target = await page.evaluate(() => {
+        const api = window.__infiniteMines;
+        api.model.reset("beginner", 0x5eed_1234, false, "square");
+        for (let y = -2; y <= 2; y += 1) {
+          for (let x = -2; x <= 2; x += 1) {
+            if (x !== 0 || y !== 0) api.model.store.set(x, y, 2);
+          }
+        }
+        api.renderer.requestRender();
+        return { x: 0, y: 0 };
+      });
+      for (const cellSize of [1, 4, 8, 25, 34.25, 55]) {
+        const touch = await page.evaluate(({ nextCellSize, cell }) => {
+          const api = window.__infiniteMines;
+          const board = document.querySelector<HTMLCanvasElement>("#board");
+          if (!board) throw new Error("Missing board");
+          const bounds = board.getBoundingClientRect();
+          const localTarget = { x: bounds.width / 2, y: 600 };
+          api.renderer.restoreView({
+            version: 1,
+            zoom: nextCellSize / 25,
+            panX: localTarget.x - bounds.width / 2 - cell.x * nextCellSize,
+            panY: localTarget.y - bounds.height / 2 - cell.y * nextCellSize,
+          });
+          return { cell, pageX: bounds.left + localTarget.x, pageY: bounds.top + localTarget.y };
+        }, { nextCellSize: cellSize, cell: { x: target.x, y: target.y } });
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), touch.cell)).toBe(0);
+        pointerId += 1;
+        await session.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [touchPoint(pointerId, touch.pageX, touch.pageY)],
+        });
+        await page.waitForTimeout(450);
+        await expect(page.locator("#touch-preview")).toBeVisible();
+        const measurement = await page.evaluate(() => {
+          const api = window.__infiniteMines;
+          const preview = api.diagnostics().touchPreview;
+          const canvas = document.querySelector<HTMLCanvasElement>("#touch-preview-neighborhood");
+          const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
+          const action = document.querySelector<HTMLElement>("#touch-preview-action");
+          const target = document.querySelector<SVGGraphicsElement>("#touch-preview-target");
+          const board = document.querySelector<HTMLCanvasElement>("#board");
+          const gl = board?.getContext("webgl2");
+          const context2d = canvas?.getContext("2d");
+          if (!preview || !canvas || !viewport || !action || !target || !board || !gl || !context2d) {
+            throw new Error("Missing preview measurement surface");
+          }
+          const pixelRatio = api.diagnostics().pixelRatio;
+          const borderCssPixels = api.diagnostics().borderCssPixels;
+          const viewportBounds = viewport.getBoundingClientRect();
+          const actionBounds = action.getBoundingClientRect();
+          const targetBounds = target.getBBox();
+          const cells = [{ x: preview.x, y: preview.y }];
+          api.model.topology.forEachNeighbor(preview.x, preview.y, (x, y) => cells.push({ x, y }));
+          const points = cells.flatMap(({ x, y }) => api.renderer.cellScreenPolygon(x, y));
+          const minX = Math.min(...points.map((point) => point.x));
+          const minY = Math.min(...points.map((point) => point.y));
+          const maxX = Math.max(...points.map((point) => point.x));
+          const maxY = Math.max(...points.map((point) => point.y));
+          const tolerance = 1 / pixelRatio + 0.01;
+          const completeRing =
+            minX >= preview.sourceX - tolerance &&
+            minY >= preview.sourceY - tolerance &&
+            maxX <= preview.sourceX + viewportBounds.width + tolerance &&
+            maxY <= preview.sourceY + viewportBounds.height + tolerance;
+          const ringWidth = maxX - minX;
+          const ringHeight = maxY - minY;
+          const ownedEdgeExtension = api.model.topologyId === "square" ? borderCssPixels : 0;
+          const rightOwnedEdgePresent =
+            preview.sourceX + viewportBounds.width >= maxX + ownedEdgeExtension - tolerance;
+          const bottomOwnedEdgePresent =
+            preview.sourceY + viewportBounds.height >= maxY + ownedEdgeExtension - tolerance;
+          const borderColor = getComputedStyle(document.documentElement).getPropertyValue("--board-cell-border").trim();
+          const borderRgb = [
+            Number.parseInt(borderColor.slice(1, 3), 16),
+            Number.parseInt(borderColor.slice(3, 5), 16),
+            Number.parseInt(borderColor.slice(5, 7), 16),
+          ];
+          const hasBorderPixel = (screenX: number, screenY: number, horizontal: boolean): boolean => {
+            const baseX = Math.floor((screenX - preview.sourceX) * pixelRatio);
+            const baseY = Math.floor((screenY - preview.sourceY) * pixelRatio);
+            const radius = Math.ceil(pixelRatio) + 1;
+            for (let offset = -1; offset <= radius; offset += 1) {
+              const sampleX = horizontal ? baseX + offset : baseX;
+              const sampleY = horizontal ? baseY : baseY + offset;
+              if (sampleX < 0 || sampleX >= canvas.width || sampleY < 0 || sampleY >= canvas.height) continue;
+              const sample = context2d.getImageData(sampleX, sampleY, 1, 1).data;
+              if (borderRgb.every((channel, index) => Math.abs(channel - sample[index]) <= 3)) return true;
+            }
+            return false;
+          };
+          const detailedBorders = api.diagnostics().detailMix > 0.999;
+          const rightOwnedEdgePixels = !detailedBorders || [0.5, 1.5, 2.5].every((row) =>
+            hasBorderPixel(maxX, minY + row * api.renderer.cellSize, true),
+          );
+          const bottomOwnedEdgePixels = !detailedBorders || [0.5, 1.5, 2.5].every((column) =>
+            hasBorderPixel(minX + column * api.renderer.cellSize, maxY, false),
+          );
+          const edgeSlack = Math.max(
+            minX - preview.sourceX,
+            minY - preview.sourceY,
+            preview.sourceX + viewportBounds.width - maxX,
+            preview.sourceY + viewportBounds.height - maxY,
+          );
+          const targetPoints = api.renderer.cellScreenPolygon(preview.x, preview.y);
+          const expectedTarget = {
+            x: Math.min(...targetPoints.map((point) => point.x)) - preview.sourceX,
+            y: Math.min(...targetPoints.map((point) => point.y)) - preview.sourceY,
+            width: Math.max(...targetPoints.map((point) => point.x)) - Math.min(...targetPoints.map((point) => point.x)),
+            height: Math.max(...targetPoints.map((point) => point.y)) - Math.min(...targetPoints.map((point) => point.y)),
+          };
+          const targetAlignmentError = Math.max(
+            Math.abs(targetBounds.x - expectedTarget.x),
+            Math.abs(targetBounds.y - expectedTarget.y),
+            Math.abs(targetBounds.width - expectedTarget.width),
+            Math.abs(targetBounds.height - expectedTarget.height),
+          );
+          const sampleCssX =
+            targetPoints.reduce((sum, point) => sum + point.x, 0) / targetPoints.length - preview.sourceX;
+          const sampleCssY =
+            targetPoints.reduce((sum, point) => sum + point.y, 0) / targetPoints.length - preview.sourceY;
+          const samplePixelX = Math.min(canvas.width - 1, Math.max(0, Math.floor(sampleCssX * pixelRatio)));
+          const samplePixelY = Math.min(canvas.height - 1, Math.max(0, Math.floor(sampleCssY * pixelRatio)));
+          const sourcePixel = new Uint8Array(4);
+          gl.readPixels(
+            Math.round(preview.sourceX * pixelRatio) + samplePixelX,
+            board.height - Math.round(preview.sourceY * pixelRatio) - samplePixelY - 1,
+            1,
+            1,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            sourcePixel,
+          );
+          const previewPixels = context2d.getImageData(samplePixelX, samplePixelY, 1, 1).data;
+          const style = getComputedStyle(viewport);
+          return {
+            rendererPixelRatio: pixelRatio,
+            cellSize: api.renderer.cellSize,
+            width: viewportBounds.width,
+            height: viewportBounds.height,
+            backingWidth: canvas.width,
+            backingHeight: canvas.height,
+            ringWidth,
+            ringHeight,
+            edgeSlack,
+            ownedEdgeExtension,
+            rightOwnedEdgePresent,
+            bottomOwnedEdgePresent,
+            rightOwnedEdgePixels,
+            bottomOwnedEdgePixels,
+            completeRing,
+            targetAlignmentError,
+            labelOverlap: Math.max(
+              0,
+              Math.min(viewportBounds.right, actionBounds.right) - Math.max(viewportBounds.left, actionBounds.left),
+            ) * Math.max(0, Math.min(viewportBounds.bottom, actionBounds.bottom) - Math.max(viewportBounds.top, actionBounds.top)),
+            actionBelow: actionBounds.top >= viewportBounds.bottom,
+            paint: {
+              overflow: style.overflow,
+              borderRadius: style.borderRadius,
+              borderWidth: style.borderWidth,
+              outlineWidth: style.outlineWidth,
+            },
+            framebufferMatches: sourcePixel.every((channel, index) => channel === previewPixels[index]),
+            captureMs: preview.captureMs,
+          };
+        });
+        expect(measurement.rendererPixelRatio).toBeCloseTo(Math.min(deviceScaleFactor, 2), 8);
+        expect(measurement.cellSize).toBeCloseTo(cellSize, 8);
+        expect(measurement.width).toBeGreaterThanOrEqual(64);
+        expect(measurement.height).toBeGreaterThanOrEqual(64);
+        expect(measurement.backingWidth).toBe(Math.round(measurement.width * measurement.rendererPixelRatio));
+        expect(measurement.backingHeight).toBe(Math.round(measurement.height * measurement.rendererPixelRatio));
+        expect(measurement.completeRing).toBe(true);
+        expect(
+          measurement.rightOwnedEdgePresent,
+          `${cellSize}px cells at ${deviceScaleFactor}x device scale: ${JSON.stringify(measurement)}`,
+        ).toBe(true);
+        expect(
+          measurement.rightOwnedEdgePixels,
+          `${cellSize}px cells at ${deviceScaleFactor}x device scale: ${JSON.stringify(measurement)}`,
+        ).toBe(true);
+        expect(
+          measurement.bottomOwnedEdgePixels,
+          `${cellSize}px cells at ${deviceScaleFactor}x device scale: ${JSON.stringify(measurement)}`,
+        ).toBe(true);
+        expect(
+          measurement.bottomOwnedEdgePresent,
+          `${cellSize}px cells at ${deviceScaleFactor}x device scale: ${JSON.stringify(measurement)}`,
+        ).toBe(true);
+        if (measurement.ringWidth >= 64 && measurement.ringHeight >= 64) {
+          expect(measurement.edgeSlack).toBeLessThan(
+            measurement.ownedEdgeExtension + 1 / measurement.rendererPixelRatio + 0.01,
+          );
+        }
+        expect(measurement.targetAlignmentError).toBeLessThan(0.001);
+        expect(measurement.labelOverlap).toBe(0);
+        expect(measurement.actionBelow).toBe(true);
+        expect(measurement.paint).toEqual({
+          overflow: "visible",
+          borderRadius: "0px",
+          borderWidth: "0px",
+          outlineWidth: "0px",
+        });
+        expect(measurement.framebufferMatches).toBe(true);
+        expect(measurement.captureMs, `${cellSize}px cells at ${deviceScaleFactor}x device scale`).toBeLessThan(35);
+        matrix.push({
+          deviceScaleFactor,
+          rendererPixelRatio: measurement.rendererPixelRatio,
+          cellSize: measurement.cellSize,
+          width: measurement.width,
+          height: measurement.height,
+          edgeSlack: measurement.edgeSlack,
+          ownedEdgeExtension: measurement.ownedEdgeExtension,
+          rightOwnedEdgePresent: measurement.rightOwnedEdgePresent,
+          bottomOwnedEdgePresent: measurement.bottomOwnedEdgePresent,
+          rightOwnedEdgePixels: measurement.rightOwnedEdgePixels,
+          bottomOwnedEdgePixels: measurement.bottomOwnedEdgePixels,
+          targetAlignmentError: measurement.targetAlignmentError,
+          labelOverlap: measurement.labelOverlap,
+          captureMs: measurement.captureMs,
+        });
+        await session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        await expect(page.locator("#touch-preview")).toBeHidden();
+      }
+      expect(errors).toEqual([]);
+    } finally {
+      await session.detach();
+      await context.close();
+    }
+  }
+  console.log("TOUCH_PREVIEW_MATRIX", JSON.stringify(matrix));
 });

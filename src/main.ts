@@ -594,13 +594,17 @@ function showTouchPreview(
   }
   const horizontalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxX - minX)) / 2;
   const verticalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxY - minY)) / 2;
+  // Square's detailed grid gives shared lines to the tile below/right. The
+  // neighborhood's visible footprint therefore extends one CSS pixel beyond
+  // its geometric right/bottom bounds. Keep those owned pixels in the crop.
+  const ownedEdgeExtension = model.topologyId === "square" ? renderer.diagnostics.borderCssPixels : 0;
   const polygon = renderer.cellScreenPolygon(x, y);
   const { sourceX, sourceY, width, height } = renderer.copyScreenBounds(
     touchPreviewContext,
     minX - horizontalExpansion,
     minY - verticalExpansion,
-    maxX + horizontalExpansion,
-    maxY + verticalExpansion,
+    maxX + horizontalExpansion + ownedEdgeExtension,
+    maxY + verticalExpansion + ownedEdgeExtension,
   );
   touchPreviewViewport.style.width = `${width}px`;
   touchPreviewViewport.style.height = `${height}px`;
@@ -619,6 +623,7 @@ function showTouchPreview(
   touchPreview.dataset.neighborhoodCells = String(neighborhood.length);
   touchPreview.dataset.neighborhoodRings = "1";
   touchPreview.dataset.cellSize = renderer.cellSize.toFixed(3);
+  touchPreview.dataset.ownedEdgeExtension = ownedEdgeExtension.toFixed(3);
   touchPreview.dataset.captureMs = (performance.now() - captureStartedAt).toFixed(3);
   touchPreviewTarget.setAttribute(
     "points",
@@ -1388,6 +1393,7 @@ function getDiagnostics() {
           neighborhoodCells: Number(touchPreview.dataset.neighborhoodCells),
           neighborhoodRings: Number(touchPreview.dataset.neighborhoodRings),
           cellSize: Number(touchPreview.dataset.cellSize),
+          ownedEdgeExtension: Number(touchPreview.dataset.ownedEdgeExtension),
           captureMs: Number(touchPreview.dataset.captureMs),
         },
     gameplayInteractionCount,
