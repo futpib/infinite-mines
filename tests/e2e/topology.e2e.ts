@@ -151,7 +151,60 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
   await expect(page.locator("#topology-pill")).toHaveText("RHOMBILLE");
 });
 
-test("R48 — boundary lines continue one edge-neighbor cell into covered fog", async ({ page }) => {
+test("R48 — fog-grid continuation is opt-in, redraws immediately, and persists", async ({ page }) => {
+  await openDeterministicGame(page, 0xf09b_4800);
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-fog-frontier"))).toBeNull();
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().fogFrontierMode)).toBe("off");
+
+  const prepared = await page.evaluate((opened) => {
+    const api = window.__infiniteMines;
+    const frameCount = api.diagnostics().frameCount;
+    api.newGame("beginner", "square");
+    api.model.store.clear();
+    api.model.store.set(0, 0, opened);
+    api.renderer.home();
+    return { frameCount, field: JSON.stringify(api.model.createSnapshot()) };
+  }, CellState.Opened1);
+  await waitForNextFrame(page, prepared.frameCount);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    drawnCells: 1,
+    frontierCells: 0,
+    frontierEdges: 0,
+  });
+
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="off"]')).toHaveAttribute("aria-pressed", "true");
+  const beforeEnabled = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.locator("#fog-frontier-options").getByRole("button", { name: /^One edge/ }).click();
+  await waitForNextFrame(page, beforeEnabled);
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-fog-frontier"))).toBe("on");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    fogFrontierMode: "on",
+    frontierCells: 4,
+    frontierEdges: 8,
+  });
+  expect(await page.evaluate(() => JSON.stringify(window.__infiniteMines.model.createSnapshot()))).toBe(prepared.field);
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("on");
+  await page.getByRole("button", { name: "Game settings" }).click();
+  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="on"]')).toHaveAttribute("aria-pressed", "true");
+  const beforeDisabled = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.locator("#fog-frontier-options").getByRole("button", { name: /^Off/ }).click();
+  await waitForNextFrame(page, beforeDisabled);
+  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-fog-frontier"))).toBe("off");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    fogFrontierMode: "off",
+    frontierCells: 0,
+    frontierEdges: 0,
+  });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("off");
+});
+
+test("R48 — every boundary-vertex segment continues one edge into covered fog", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("infinite-mines-fog-frontier", "on"));
   await openDeterministicGame(page, 0xf09b_0048);
 
   for (const topology of ["square", "triangular", "rhombille"] as const) {
@@ -183,11 +236,9 @@ test("R48 — boundary lines continue one edge-neighbor cell into covered fog", 
       const border = parseHex(styles.getPropertyValue("--board-cell-border").trim());
       const distance = (pixel: Uint8Array, expected: number[]) =>
         Math.hypot(pixel[0] - expected[0], pixel[1] - expected[1], pixel[2] - expected[2]);
+      const pointKey = (point: { x: number; y: number }) => `${point.x.toFixed(6)},${point.y.toFixed(6)}`;
       const segmentKey = (start: { x: number; y: number }, end: { x: number; y: number }) =>
-        [start, end]
-          .map((point) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`)
-          .sort()
-          .join("|");
+        [pointKey(start), pointKey(end)].sort().join("|");
       const readCssPixel = (x: number, y: number) => {
         const pixel = new Uint8Array(4);
         gl.readPixels(
@@ -201,10 +252,14 @@ test("R48 — boundary lines continue one edge-neighbor cell into covered fog", 
         );
         return pixel;
       };
-      const neighbors = api.model.topology.edgeNeighbors(0, 0);
-      const sourcePolygon = api.renderer.cellScreenPolygon(0, 0);
-      const samePoint = (left: { x: number; y: number }, right: { x: number; y: number }) =>
-        Math.hypot(left.x - right.x, left.y - right.y) < 0.01;
+      const topology = api.model.topology;
+      const neighbors: Array<{ x: number; y: number }> = [];
+      topology.forEachNeighbor(0, 0, (x, y) => neighbors.push({ x, y }));
+      const sourceVertices = topology.geometry(0, 0).vertices;
+      const sourceVertexKeys = new Set(sourceVertices.map(pointKey));
+      const sourceEdges = new Set(
+        sourceVertices.map((point, edge) => segmentKey(point, sourceVertices[(edge + 1) % sourceVertices.length])),
+      );
       const hasLineNear = (x: number, y: number) => {
         for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
           for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
@@ -214,85 +269,63 @@ test("R48 — boundary lines continue one edge-neighbor cell into covered fog", 
         return false;
       };
       gl.finish();
-      const continuationSegments = new Set<string>();
+      const continuationSegments = new Map<
+        string,
+        { start: { x: number; y: number }; end: { x: number; y: number } }
+      >();
+      const forbiddenSegments = new Map<
+        string,
+        { start: { x: number; y: number }; end: { x: number; y: number } }
+      >();
       const samples = neighbors.map((cell) => {
+        const geometry = topology.geometry(cell.x, cell.y);
         const polygon = api.renderer.cellScreenPolygon(cell.x, cell.y);
         const center = {
           x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
           y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
         };
-        const left = Math.floor(Math.min(...polygon.map((point) => point.x)) * dpr);
-        const right = Math.ceil(Math.max(...polygon.map((point) => point.x)) * dpr);
-        const top = Math.floor(Math.min(...polygon.map((point) => point.y)) * dpr);
-        const bottom = Math.ceil(Math.max(...polygon.map((point) => point.y)) * dpr);
-        const pixels = new Uint8Array(Math.max(1, right - left) * Math.max(1, bottom - top) * 4);
-        gl.readPixels(
-          left,
-          canvas.height - bottom,
-          Math.max(1, right - left),
-          Math.max(1, bottom - top),
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          pixels,
-        );
-        let borderPixels = 0;
-        for (let offset = 0; offset < pixels.length; offset += 4) {
-          if (distance(pixels.subarray(offset, offset + 4), border) < 35) borderPixels += 1;
-        }
-        const sharedEdge = polygon.findIndex((point, index) => {
-          const next = polygon[(index + 1) % polygon.length];
-          return (
-            sourcePolygon.some((source) => samePoint(source, point)) &&
-            sourcePolygon.some((source) => samePoint(source, next))
-          );
-        });
-        const paintedEdges = polygon.map((point, index) => {
-          const next = polygon[(index + 1) % polygon.length];
-          return hasLineNear((point.x + next.x) / 2, (point.y + next.y) / 2);
-        });
-        const expectedPainted = paintedEdges.map(
-          (_painted, index) =>
-            index === sharedEdge ||
-            index === (sharedEdge + polygon.length - 1) % polygon.length ||
-            index === (sharedEdge + 1) % polygon.length,
-        );
-        for (const edge of [
-          (sharedEdge + polygon.length - 1) % polygon.length,
-          (sharedEdge + 1) % polygon.length,
-        ]) {
-          continuationSegments.add(segmentKey(polygon[edge], polygon[(edge + 1) % polygon.length]));
+        for (let edge = 0; edge < geometry.vertices.length; edge += 1) {
+          const start = geometry.vertices[edge];
+          const end = geometry.vertices[(edge + 1) % geometry.vertices.length];
+          const key = segmentKey(start, end);
+          if (sourceEdges.has(key)) continue;
+          const screenSegment = { start: polygon[edge], end: polygon[(edge + 1) % polygon.length] };
+          if (sourceVertexKeys.has(pointKey(start)) || sourceVertexKeys.has(pointKey(end))) {
+            continuationSegments.set(key, screenSegment);
+          } else {
+            forbiddenSegments.set(key, screenSegment);
+          }
         }
         return {
           state: api.model.getState(cell.x, cell.y),
           centerIsFog: distance(readCssPixel(center.x, center.y), background) < 3,
-          borderPixels,
-          sharedEdge,
-          paintedEdges,
-          expectedPainted,
         };
       });
+      for (const key of continuationSegments.keys()) forbiddenSegments.delete(key);
       return {
         diagnostics: api.diagnostics(),
         neighborCount: neighbors.length,
         continuationSegmentCount: continuationSegments.size,
+        missing: [...continuationSegments]
+          .filter(([, segment]) => !hasLineNear((segment.start.x + segment.end.x) / 2, (segment.start.y + segment.end.y) / 2))
+          .map(([key]) => key),
+        unexpected: [...forbiddenSegments]
+          .filter(([, segment]) => hasLineNear((segment.start.x + segment.end.x) / 2, (segment.start.y + segment.end.y) / 2))
+          .map(([key]) => key),
         samples,
       };
     });
 
     expect(detail.diagnostics.lod).toBe("detail");
-    expect(detail.diagnostics.frontierCells).toBe(detail.neighborCount);
+    expect(detail.continuationSegmentCount).toBe({ square: 8, triangular: 12, rhombille: 10 }[topology]);
     expect(detail.diagnostics.frontierEdges).toBe(detail.continuationSegmentCount);
-    expect(detail.diagnostics.drawnCells).toBe(detail.neighborCount + 1);
+    expect(detail.diagnostics.frontierCells).toBeGreaterThan(0);
+    expect(detail.diagnostics.frontierCells).toBeLessThanOrEqual(detail.neighborCount);
+    expect(detail.diagnostics.drawnCells).toBe(detail.diagnostics.frontierCells + 1);
     expect(detail.samples.every((sample) => sample.state === CellState.Covered)).toBe(true);
     expect(detail.samples.every((sample) => sample.centerIsFog)).toBe(true);
-    expect(detail.samples.every((sample) => sample.borderPixels > 0)).toBe(true);
-    expect(detail.samples.every((sample) => sample.sharedEdge >= 0)).toBe(true);
-    expect(
-      detail.samples.every((sample) =>
-        sample.paintedEdges.every((painted, index) => painted === sample.expectedPainted[index]),
-      ),
-      JSON.stringify({ topology, samples: detail.samples }),
-    ).toBe(true);
+    expect(detail.missing, `${topology} missing boundary-vertex segments`).toEqual([]);
+    expect(detail.unexpected, `${topology} painted second-edge caps`).toEqual([]);
 
     if (topology === "square") {
       const beforeMarkFrame = detail.diagnostics.frameCount;
@@ -350,40 +383,42 @@ test("R48 — boundary lines continue one edge-neighbor cell into covered fog", 
       const segmentKey = (start: { x: number; y: number }, end: { x: number; y: number }) =>
         [pointKey(start), pointKey(end)].sort().join("|");
       const openedEdges = new Set<string>();
+      const boundaryVertices = new Set<string>();
       for (const source of sources) {
         const vertices = topology.geometry(source.x, source.y).vertices;
         for (let edge = 0; edge < vertices.length; edge += 1) {
           openedEdges.add(segmentKey(vertices[edge], vertices[(edge + 1) % vertices.length]));
+          const neighbor = topology.edgeNeighbors(source.x, source.y)[edge];
+          if (!sourceKeys.has(`${neighbor.x},${neighbor.y}`)) {
+            boundaryVertices.add(pointKey(vertices[edge]));
+            boundaryVertices.add(pointKey(vertices[(edge + 1) % vertices.length]));
+          }
         }
       }
       const frontier = new Map<string, { x: number; y: number }>();
       for (const source of sources) {
-        for (const neighbor of topology.edgeNeighbors(source.x, source.y)) {
+        topology.forEachNeighbor(source.x, source.y, (x, y) => {
+          const neighbor = { x, y };
           if (!sourceKeys.has(`${neighbor.x},${neighbor.y}`) && api.model.getState(neighbor.x, neighbor.y) === 0) {
             frontier.set(`${neighbor.x},${neighbor.y}`, neighbor);
           }
-        }
+        });
       }
       const desired = new Map<string, { start: { x: number; y: number }; end: { x: number; y: number } }>();
       const candidate = new Map<string, { start: { x: number; y: number }; end: { x: number; y: number } }>();
       for (const cell of frontier.values()) {
         const geometry = topology.geometry(cell.x, cell.y);
         const screen = api.renderer.cellScreenPolygon(cell.x, cell.y);
-        const neighbors = topology.edgeNeighbors(cell.x, cell.y);
         for (let edge = 0; edge < geometry.vertices.length; edge += 1) {
-          const key = segmentKey(geometry.vertices[edge], geometry.vertices[(edge + 1) % geometry.vertices.length]);
+          const start = geometry.vertices[edge];
+          const end = geometry.vertices[(edge + 1) % geometry.vertices.length];
+          const key = segmentKey(start, end);
           candidate.set(key, { start: screen[edge], end: screen[(edge + 1) % screen.length] });
-        }
-        for (let shared = 0; shared < neighbors.length; shared += 1) {
-          if (!sourceKeys.has(`${neighbors[shared].x},${neighbors[shared].y}`)) continue;
-          for (const edge of [
-            (shared + geometry.vertices.length - 1) % geometry.vertices.length,
-            (shared + 1) % geometry.vertices.length,
-          ]) {
-            const key = segmentKey(geometry.vertices[edge], geometry.vertices[(edge + 1) % geometry.vertices.length]);
-            if (!openedEdges.has(key)) {
-              desired.set(key, { start: screen[edge], end: screen[(edge + 1) % screen.length] });
-            }
+          if (
+            !openedEdges.has(key) &&
+            (boundaryVertices.has(pointKey(start)) || boundaryVertices.has(pointKey(end)))
+          ) {
+            desired.set(key, { start: screen[edge], end: screen[(edge + 1) % screen.length] });
           }
         }
       }
@@ -506,6 +541,7 @@ test("R48 — unique frontier segments stay complete across zoom and device scal
       deviceScaleFactor,
       colorScheme: "light",
     });
+    await context.addInitScript(() => localStorage.setItem("infinite-mines-fog-frontier", "on"));
     const page = await context.newPage();
     await openDeterministicGame(page, 0xf09b_48d0 + deviceScaleFactor * 100);
     for (const topology of ["square", "triangular", "rhombille"] as const) {
@@ -529,43 +565,41 @@ test("R48 — unique frontier segments stay complete across zoom and device scal
           const dpr = canvas.width / canvas.getBoundingClientRect().width;
           const backgroundHex = api.diagnostics().backgroundColor;
           const background = backgroundHex.slice(1).match(/.{2}/g)!.map((value) => Number.parseInt(value, 16));
-          const source = api.renderer.cellScreenPolygon(0, 0);
           const pointKey = (point: { x: number; y: number }) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
           const segmentKey = (start: { x: number; y: number }, end: { x: number; y: number }) =>
             [pointKey(start), pointKey(end)].sort().join("|");
-          const samePoint = (left: { x: number; y: number }, right: { x: number; y: number }) =>
-            Math.hypot(left.x - right.x, left.y - right.y) < 0.01;
+          const topology = api.model.topology;
+          const source = topology.geometry(0, 0).vertices;
+          const sourceVertexKeys = new Set(source.map(pointKey));
+          const sourceEdges = new Set(
+            source.map((point, edge) => segmentKey(point, source[(edge + 1) % source.length])),
+          );
           const expected = new Map<string, { start: { x: number; y: number }; end: { x: number; y: number } }>();
           const forbidden = new Map<string, { start: { x: number; y: number }; end: { x: number; y: number } }>();
-          for (const neighbor of api.model.topology.edgeNeighbors(0, 0)) {
+          const neighbors: Array<{ x: number; y: number }> = [];
+          topology.forEachNeighbor(0, 0, (x, y) => neighbors.push({ x, y }));
+          for (const neighbor of neighbors) {
+            const geometry = topology.geometry(neighbor.x, neighbor.y);
             const polygon = api.renderer.cellScreenPolygon(neighbor.x, neighbor.y);
-            const shared = polygon.findIndex((point, edge) => {
-              const end = polygon[(edge + 1) % polygon.length];
-              return source.some((candidate) => samePoint(point, candidate)) && source.some((candidate) => samePoint(end, candidate));
-            });
-            for (const edge of [
-              (shared + polygon.length - 1) % polygon.length,
-              (shared + 1) % polygon.length,
-            ]) {
-              expected.set(segmentKey(polygon[edge], polygon[(edge + 1) % polygon.length]), {
-                start: polygon[edge],
-                end: polygon[(edge + 1) % polygon.length],
-              });
-            }
-            if (polygon.length === 4) {
-              const opposite = (shared + 2) % polygon.length;
-              forbidden.set(segmentKey(polygon[opposite], polygon[(opposite + 1) % polygon.length]), {
-                start: polygon[opposite],
-                end: polygon[(opposite + 1) % polygon.length],
-              });
+            for (let edge = 0; edge < geometry.vertices.length; edge += 1) {
+              const start = geometry.vertices[edge];
+              const end = geometry.vertices[(edge + 1) % geometry.vertices.length];
+              const key = segmentKey(start, end);
+              if (sourceEdges.has(key)) continue;
+              const screenSegment = { start: polygon[edge], end: polygon[(edge + 1) % polygon.length] };
+              if (sourceVertexKeys.has(pointKey(start)) || sourceVertexKeys.has(pointKey(end))) {
+                expected.set(key, screenSegment);
+              } else {
+                forbidden.set(key, screenSegment);
+              }
             }
           }
           for (const key of expected.keys()) forbidden.delete(key);
           const hasPaint = ({ start, end }: { start: { x: number; y: number }; end: { x: number; y: number } }) => {
             const x = Math.floor(((start.x + end.x) / 2) * dpr);
             const y = canvas.height - 1 - Math.floor(((start.y + end.y) / 2) * dpr);
-            for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
-              for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
+            for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+              for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
                 const pixel = new Uint8Array(4);
                 gl.readPixels(x + offsetX, y + offsetY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
                 if (Math.hypot(pixel[0] - background[0], pixel[1] - background[1], pixel[2] - background[2]) > 15) {
