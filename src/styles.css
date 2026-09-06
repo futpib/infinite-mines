@@ -411,8 +411,13 @@ a:focus-visible {
   fill: color-mix(in srgb, var(--danger) 13%, transparent);
   stroke: var(--danger);
   stroke-linejoin: round;
-  stroke-width: 2px;
+  stroke-width: 4px;
   vector-effect: non-scaling-stroke;
+}
+
+.touch-preview-target #touch-preview-target-clip-polygon {
+  fill: #000;
+  stroke: none;
 }
 
 .touch-preview-action {
@@ -445,6 +450,13 @@ a:focus-visible {
 
 .touch-preview[data-armed="true"] .touch-preview-card {
   filter: drop-shadow(0 13px 17px color-mix(in srgb, var(--danger) 20%, transparent));
+}
+
+.touch-preview[data-armed="true"] .touch-preview-viewport {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--danger) 68%, var(--line-strong)),
+    0 18px 32px rgba(24, 32, 33, 0.2),
+    0 4px 9px rgba(24, 32, 33, 0.16);
 }
 
 .controls {

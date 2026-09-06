@@ -53,7 +53,12 @@
           <div class="touch-preview-viewport" id="touch-preview-viewport">
             <canvas class="touch-preview-neighborhood" id="touch-preview-neighborhood" width="80" height="80"></canvas>
             <svg class="touch-preview-target" viewBox="0 0 80 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-              <polygon id="touch-preview-target"></polygon>
+              <defs>
+                <clipPath id="touch-preview-target-clip">
+                  <polygon id="touch-preview-target-clip-polygon"></polygon>
+                </clipPath>
+              </defs>
+              <polygon id="touch-preview-target" clip-path="url(#touch-preview-target-clip)"></polygon>
             </svg>
           </div>
           <strong class="touch-preview-action" id="touch-preview-action">RELEASE TO REVEAL</strong>

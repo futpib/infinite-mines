@@ -79,6 +79,7 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
           borderRadius: viewportStyle.borderRadius,
           outlineWidth: viewportStyle.outlineWidth,
           borderWidth: viewportStyle.borderWidth,
+          boxShadow: viewportStyle.boxShadow,
         },
       };
     });
@@ -88,7 +89,10 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
       borderRadius: "0px",
       outlineWidth: "0px",
       borderWidth: "0px",
+      boxShadow: previewLayout.viewportClip.boxShadow,
     });
+    expect(previewLayout.viewportClip.boxShadow).not.toBe("none");
+    expect(previewLayout.viewportClip.boxShadow).not.toContain("inset");
     expect(previewLayout.viewport).toMatchObject(previewLayout.neighborhood);
     expect(previewLayout.action.top).toBeGreaterThanOrEqual(previewLayout.viewport.bottom);
     expect(previewLayout.card.width).toBeCloseTo(previewLayout.neighborhood.width, 5);
@@ -423,8 +427,9 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
 });
 
 test("R47 — preview pixels stay aligned and unobscured across zoom and device scale", async ({ browser }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const matrix: Array<{
+    topology: "square" | "rhombille" | "triangular";
     deviceScaleFactor: number;
     rendererPixelRatio: number;
     cellSize: number;
@@ -437,6 +442,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
     rightOwnedEdgePixels: boolean;
     bottomOwnedEdgePixels: boolean;
     targetAlignmentError: number;
+    clipAlignmentError: number;
     labelOverlap: number;
     captureMs: number;
   }> = [];
@@ -455,18 +461,19 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
     let pointerId = 200;
     try {
       await openDeterministicGame(page);
-      const target = await page.evaluate(() => {
-        const api = window.__infiniteMines;
-        api.model.reset("beginner", 0x5eed_1234, false, "square");
-        for (let y = -2; y <= 2; y += 1) {
-          for (let x = -2; x <= 2; x += 1) {
-            if (x !== 0 || y !== 0) api.model.store.set(x, y, 2);
+      for (const topology of ["square", "rhombille", "triangular"] as const) {
+        const target = await page.evaluate((topologyId) => {
+          const api = window.__infiniteMines;
+          api.model.reset("beginner", 0x5eed_1234, false, topologyId);
+          for (let y = -2; y <= 2; y += 1) {
+            for (let x = -2; x <= 2; x += 1) {
+              if (x !== 0 || y !== 0) api.model.store.set(x, y, 2);
+            }
           }
-        }
-        api.renderer.requestRender();
-        return { x: 0, y: 0 };
-      });
-      for (const cellSize of [1, 4, 8, 25, 34.25, 55]) {
+          api.renderer.requestRender();
+          return { x: 0, y: 0 };
+        }, topology);
+        for (const cellSize of [1, 4, 8, 25, 34.25, 55]) {
         const touch = await page.evaluate(({ nextCellSize, cell }) => {
           const api = window.__infiniteMines;
           const board = document.querySelector<HTMLCanvasElement>("#board");
@@ -476,8 +483,19 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           api.renderer.restoreView({
             version: 1,
             zoom: nextCellSize / 25,
-            panX: localTarget.x - bounds.width / 2 - cell.x * nextCellSize,
-            panY: localTarget.y - bounds.height / 2 - cell.y * nextCellSize,
+            panX: 0,
+            panY: 0,
+          });
+          const polygon = api.renderer.cellScreenPolygon(cell.x, cell.y);
+          const center = {
+            x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
+            y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
+          };
+          api.renderer.restoreView({
+            version: 1,
+            zoom: nextCellSize / 25,
+            panX: localTarget.x - center.x,
+            panY: localTarget.y - center.y,
           });
           return { cell, pageX: bounds.left + localTarget.x, pageY: bounds.top + localTarget.y };
         }, { nextCellSize: cellSize, cell: { x: target.x, y: target.y } });
@@ -497,10 +515,11 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
           const action = document.querySelector<HTMLElement>("#touch-preview-action");
           const target = document.querySelector<SVGGraphicsElement>("#touch-preview-target");
+          const targetClip = document.querySelector<SVGGraphicsElement>("#touch-preview-target-clip-polygon");
           const board = document.querySelector<HTMLCanvasElement>("#board");
           const gl = board?.getContext("webgl2");
           const context2d = canvas?.getContext("2d");
-          if (!preview || !canvas || !viewport || !action || !target || !board || !gl || !context2d) {
+          if (!preview || !canvas || !viewport || !action || !target || !targetClip || !board || !gl || !context2d) {
             throw new Error("Missing preview measurement surface");
           }
           const pixelRatio = api.diagnostics().pixelRatio;
@@ -508,6 +527,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           const viewportBounds = viewport.getBoundingClientRect();
           const actionBounds = action.getBoundingClientRect();
           const targetBounds = target.getBBox();
+          const targetClipBounds = targetClip.getBBox();
           const cells = [{ x: preview.x, y: preview.y }];
           api.model.topology.forEachNeighbor(preview.x, preview.y, (x, y) => cells.push({ x, y }));
           const points = cells.flatMap(({ x, y }) => api.renderer.cellScreenPolygon(x, y));
@@ -547,7 +567,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
             }
             return false;
           };
-          const detailedBorders = api.diagnostics().detailMix > 0.999;
+          const detailedBorders = api.model.topologyId === "square" && api.diagnostics().detailMix > 0.999;
           const rightOwnedEdgePixels = !detailedBorders || [0.5, 1.5, 2.5].every((row) =>
             hasBorderPixel(maxX, minY + row * api.renderer.cellSize, true),
           );
@@ -573,6 +593,12 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
             Math.abs(targetBounds.width - expectedTarget.width),
             Math.abs(targetBounds.height - expectedTarget.height),
           );
+          const clipAlignmentError = Math.max(
+            Math.abs(targetClipBounds.x - expectedTarget.x),
+            Math.abs(targetClipBounds.y - expectedTarget.y),
+            Math.abs(targetClipBounds.width - expectedTarget.width),
+            Math.abs(targetClipBounds.height - expectedTarget.height),
+          );
           const sampleCssX =
             targetPoints.reduce((sum, point) => sum + point.x, 0) / targetPoints.length - preview.sourceX;
           const sampleCssY =
@@ -591,7 +617,10 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           );
           const previewPixels = context2d.getImageData(samplePixelX, samplePixelY, 1, 1).data;
           const style = getComputedStyle(viewport);
+          const targetStyle = getComputedStyle(target);
+          const targetClipStyle = getComputedStyle(targetClip);
           return {
+            topology: api.model.topologyId,
             rendererPixelRatio: pixelRatio,
             cellSize: api.renderer.cellSize,
             width: viewportBounds.width,
@@ -608,6 +637,14 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
             bottomOwnedEdgePixels,
             completeRing,
             targetAlignmentError,
+            clipAlignmentError,
+            targetClipMatches: target.getAttribute("points") === targetClip.getAttribute("points"),
+            targetPaint: {
+              clipPath: targetStyle.clipPath,
+              strokeWidth: targetStyle.strokeWidth,
+              clipFill: targetClipStyle.fill,
+              clipStroke: targetClipStyle.stroke,
+            },
             labelOverlap: Math.max(
               0,
               Math.min(viewportBounds.right, actionBounds.right) - Math.max(viewportBounds.left, actionBounds.left),
@@ -618,6 +655,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
               borderRadius: style.borderRadius,
               borderWidth: style.borderWidth,
               outlineWidth: style.outlineWidth,
+              boxShadow: style.boxShadow,
             },
             framebufferMatches: sourcePixel.every((channel, index) => channel === previewPixels[index]),
             captureMs: preview.captureMs,
@@ -625,6 +663,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
         });
         expect(measurement.rendererPixelRatio).toBeCloseTo(Math.min(deviceScaleFactor, 2), 8);
         expect(measurement.cellSize).toBeCloseTo(cellSize, 8);
+        expect(measurement.topology).toBe(topology);
         expect(measurement.width).toBeGreaterThanOrEqual(64);
         expect(measurement.height).toBeGreaterThanOrEqual(64);
         expect(measurement.backingWidth).toBe(Math.round(measurement.width * measurement.rendererPixelRatio));
@@ -652,6 +691,12 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           );
         }
         expect(measurement.targetAlignmentError).toBeLessThan(0.001);
+        expect(measurement.clipAlignmentError).toBeLessThan(0.001);
+        expect(measurement.targetClipMatches).toBe(true);
+        expect(measurement.targetPaint.clipPath).toContain("touch-preview-target-clip");
+        expect(measurement.targetPaint.strokeWidth).toBe("4px");
+        expect(measurement.targetPaint.clipFill).toBe("rgb(0, 0, 0)");
+        expect(measurement.targetPaint.clipStroke).toBe("none");
         expect(measurement.labelOverlap).toBe(0);
         expect(measurement.actionBelow).toBe(true);
         expect(measurement.paint).toEqual({
@@ -659,10 +704,14 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           borderRadius: "0px",
           borderWidth: "0px",
           outlineWidth: "0px",
+          boxShadow: measurement.paint.boxShadow,
         });
+        expect(measurement.paint.boxShadow).not.toBe("none");
+        expect(measurement.paint.boxShadow).not.toContain("inset");
         expect(measurement.framebufferMatches).toBe(true);
         expect(measurement.captureMs, `${cellSize}px cells at ${deviceScaleFactor}x device scale`).toBeLessThan(35);
         matrix.push({
+          topology,
           deviceScaleFactor,
           rendererPixelRatio: measurement.rendererPixelRatio,
           cellSize: measurement.cellSize,
@@ -675,11 +724,13 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           rightOwnedEdgePixels: measurement.rightOwnedEdgePixels,
           bottomOwnedEdgePixels: measurement.bottomOwnedEdgePixels,
           targetAlignmentError: measurement.targetAlignmentError,
+          clipAlignmentError: measurement.clipAlignmentError,
           labelOverlap: measurement.labelOverlap,
           captureMs: measurement.captureMs,
         });
         await session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
         await expect(page.locator("#touch-preview")).toBeHidden();
+        }
       }
       expect(errors).toEqual([]);
     } finally {

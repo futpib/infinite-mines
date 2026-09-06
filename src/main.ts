@@ -76,6 +76,7 @@ const touchPreview = element<HTMLElement>("#touch-preview");
 const touchPreviewViewport = element<HTMLElement>("#touch-preview-viewport");
 const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neighborhood");
 const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
+const touchPreviewTargetClip = element<SVGPolygonElement>("#touch-preview-target-clip-polygon");
 const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
 const touchPreviewContext = (() => {
   const context = touchPreviewNeighborhood.getContext("2d", { alpha: false });
@@ -625,10 +626,11 @@ function showTouchPreview(
   touchPreview.dataset.cellSize = renderer.cellSize.toFixed(3);
   touchPreview.dataset.ownedEdgeExtension = ownedEdgeExtension.toFixed(3);
   touchPreview.dataset.captureMs = (performance.now() - captureStartedAt).toFixed(3);
-  touchPreviewTarget.setAttribute(
-    "points",
-    polygon.map((point) => `${(point.x - sourceX).toFixed(3)},${(point.y - sourceY).toFixed(3)}`).join(" "),
-  );
+  const targetPoints = polygon
+    .map((point) => `${(point.x - sourceX).toFixed(3)},${(point.y - sourceY).toFixed(3)}`)
+    .join(" ");
+  touchPreviewTarget.setAttribute("points", targetPoints);
+  touchPreviewTargetClip.setAttribute("points", targetPoints);
   touchPreviewAction.textContent = "RELEASE TO REVEAL";
   positionTouchPreview(screenX, screenY);
 }

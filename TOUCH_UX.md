@@ -32,7 +32,8 @@ The preview must:
 - reproduce only the board's public appearance; it must never expose a covered mine or any other hidden state;
 - identify the exact tile and action that would commit on release;
 - place the action cue outside the neighborhood image so it never covers board context;
-- leave the neighborhood's own outer pixels unframed and unclipped, including renderer-owned shared-edge pixels beyond a tile's geometric bounds; emphasis belongs on the target polygon and separate action cue, not on an inset shell that paints over boundary cells;
+- leave the neighborhood's own outer pixels unclipped, including renderer-owned shared-edge pixels beyond a tile's geometric bounds; an optional frame and shadow must paint outside that image, never inset over its boundary cells;
+- align target emphasis to the exact topology polygon and clip its stroke inward so Square, Rhombille, and Triangular targets do not grow beyond or drift away from the rendered cell;
 - remain in sync with the commit target if the interaction allows the candidate to move;
 - make the armed reveal explicit without relying on color alone;
 - work for every topology and zoom level, including distraction-free mode;
@@ -57,6 +58,6 @@ Fatal touch input must still stop at the game-over decision surface. Neither the
 3. Flags cannot be revealed directly; questions follow the deliberate-reveal rule.
 4. Pan, pinch, pointer cancellation, and release before the threshold cannot accidentally reveal.
 5. Short taps, flagged holds, opened-tile taps, and explicit-tool taps show no preview. A valid reveal hold shows the neighborhood only after the threshold.
-6. The preview has no coordinates, padding, clipping mask, or inset frame; it contains the complete topology-neighbor ring, keeps its action cue outside the field image, stays offset and inside the viewport, matches the committed tile, uses the field's current zoom level, leaks no hidden state, and clears on every completion path.
+6. The preview has no coordinates, padding, image clipping mask, or inset frame; it contains the complete topology-neighbor ring, keeps its action cue outside the field image, stays offset and inside the viewport, matches the committed tile with an inward-clipped topology outline, uses the field's current zoom level, leaks no hidden state, and clears on every completion path. Any callout border and shadow remain outside the image.
 7. The mapping and preview hold across Square, Rhombille, and Triangular fields, a measured detail/pixel zoom × device-pixel-ratio matrix, visible/hidden controls, and phone/desktop touch viewports. The matrix checks the actual rendered footprint, including asymmetric shared-edge ownership, rather than only the cells' geometric bounding box.
 8. The existing fatal-input/game-over guard and bounded interaction-performance contracts remain green.
