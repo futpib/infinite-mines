@@ -59,19 +59,30 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
     await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
     const previewLayout = await page.locator(".touch-preview-card").evaluate((card) => {
       const neighborhood = card.querySelector<HTMLElement>("#touch-preview-neighborhood");
-      if (!neighborhood) throw new Error("Missing neighborhood preview");
+      const viewport = card.querySelector<HTMLElement>("#touch-preview-viewport");
+      const action = card.querySelector<HTMLElement>("#touch-preview-action");
+      if (!neighborhood || !viewport || !action) throw new Error("Missing neighborhood preview");
       const cardBounds = card.getBoundingClientRect();
       const neighborhoodBounds = neighborhood.getBoundingClientRect();
+      const viewportBounds = viewport.getBoundingClientRect();
+      const actionBounds = action.getBoundingClientRect();
       const style = getComputedStyle(card);
+      const viewportStyle = getComputedStyle(viewport);
       return {
         card: { width: cardBounds.width, height: cardBounds.height },
         neighborhood: { width: neighborhoodBounds.width, height: neighborhoodBounds.height },
+        viewport: { width: viewportBounds.width, height: viewportBounds.height, bottom: viewportBounds.bottom },
+        action: { width: actionBounds.width, height: actionBounds.height, top: actionBounds.top },
         padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+        viewportClip: { overflow: viewportStyle.overflow, borderRadius: viewportStyle.borderRadius },
       };
     });
     expect(previewLayout.padding).toEqual(["0px", "0px", "0px", "0px"]);
+    expect(previewLayout.viewportClip).toEqual({ overflow: "visible", borderRadius: "0px" });
+    expect(previewLayout.viewport).toMatchObject(previewLayout.neighborhood);
+    expect(previewLayout.action.top).toBeGreaterThanOrEqual(previewLayout.viewport.bottom);
     expect(previewLayout.card.width).toBeCloseTo(previewLayout.neighborhood.width, 5);
-    expect(previewLayout.card.height).toBeCloseTo(previewLayout.neighborhood.height, 5);
+    expect(previewLayout.card.height).toBeGreaterThan(previewLayout.neighborhood.height);
 
     await session.send("Input.dispatchTouchEvent", {
       type: "touchMove",
@@ -250,10 +261,16 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
       await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
       const previewGeometry = await page.evaluate(() => {
         const neighborhood = document.querySelector<HTMLCanvasElement>("#touch-preview-neighborhood");
+        const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
         const targetPolygon = document.querySelector<SVGGraphicsElement>("#touch-preview-target");
-        if (!neighborhood || !targetPolygon) throw new Error("Missing neighborhood preview geometry");
+        const action = document.querySelector<HTMLElement>("#touch-preview-action");
+        if (!neighborhood || !viewport || !targetPolygon || !action) {
+          throw new Error("Missing neighborhood preview geometry");
+        }
         const neighborhoodBounds = neighborhood.getBoundingClientRect();
+        const viewportBounds = viewport.getBoundingClientRect();
         const targetBounds = targetPolygon.getBBox();
+        const actionBounds = action.getBoundingClientRect();
         const context = neighborhood.getContext("2d");
         if (!context) throw new Error("Missing neighborhood preview context");
         const board = document.querySelector<HTMLCanvasElement>("#board");
@@ -263,26 +280,49 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
         const previewPixels = context.getImageData(0, 0, neighborhood.width, neighborhood.height).data;
         const sourcePixelX = Math.round(preview.sourceX * window.__infiniteMines.diagnostics().pixelRatio);
         const sourcePixelY = Math.round(preview.sourceY * window.__infiniteMines.diagnostics().pixelRatio);
+        const cells = [{ x: preview.x, y: preview.y }];
+        window.__infiniteMines.model.topology.forEachNeighbor(preview.x, preview.y, (x, y) => cells.push({ x, y }));
+        const completeNeighborhood = cells.flatMap(({ x, y }) => window.__infiniteMines.renderer.cellScreenPolygon(x, y));
+        const minX = Math.min(...completeNeighborhood.map((point) => point.x));
+        const minY = Math.min(...completeNeighborhood.map((point) => point.y));
+        const maxX = Math.max(...completeNeighborhood.map((point) => point.x));
+        const maxY = Math.max(...completeNeighborhood.map((point) => point.y));
+        const pixelRatio = window.__infiniteMines.diagnostics().pixelRatio;
+        const tolerance = 1 / pixelRatio + 0.01;
+        const containsCompleteNeighborhood =
+          minX >= preview.sourceX - tolerance &&
+          minY >= preview.sourceY - tolerance &&
+          maxX <= preview.sourceX + neighborhoodBounds.width + tolerance &&
+          maxY <= preview.sourceY + neighborhoodBounds.height + tolerance;
+        const tightToCompleteNeighborhood =
+          preview.neighborhoodRings === 1 &&
+          minX - preview.sourceX >= -tolerance &&
+          minX - preview.sourceX < tolerance &&
+          minY - preview.sourceY >= -tolerance &&
+          minY - preview.sourceY < tolerance &&
+          preview.sourceX + neighborhoodBounds.width - maxX >= -tolerance &&
+          preview.sourceX + neighborhoodBounds.width - maxX < tolerance &&
+          preview.sourceY + neighborhoodBounds.height - maxY >= -tolerance &&
+          preview.sourceY + neighborhoodBounds.height - maxY < tolerance;
+        const targetScreenPolygon = window.__infiniteMines.renderer.cellScreenPolygon(preview.x, preview.y);
+        const sampleCssX =
+          targetScreenPolygon.reduce((sum, point) => sum + point.x, 0) / targetScreenPolygon.length - preview.sourceX;
+        const sampleCssY =
+          targetScreenPolygon.reduce((sum, point) => sum + point.y, 0) / targetScreenPolygon.length - preview.sourceY;
+        const samplePixelX = Math.min(neighborhood.width - 1, Math.max(0, Math.floor(sampleCssX * pixelRatio)));
+        const samplePixelY = Math.min(neighborhood.height - 1, Math.max(0, Math.floor(sampleCssY * pixelRatio)));
         const sourcePixel = new Uint8Array(4);
-        const sampleMatches = [
-          [4, 4],
-          [40, 40],
-          [74, 54],
-        ].every(([cssX, cssY]) => {
-          const pixelX = Math.round(cssX * window.__infiniteMines.diagnostics().pixelRatio);
-          const pixelY = Math.round(cssY * window.__infiniteMines.diagnostics().pixelRatio);
-          gl.readPixels(
-            sourcePixelX + pixelX,
-            board.height - sourcePixelY - pixelY - 1,
-            1,
-            1,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            sourcePixel,
-          );
-          const previewOffset = (pixelY * neighborhood.width + pixelX) * 4;
-          return sourcePixel.every((channel, index) => channel === previewPixels[previewOffset + index]);
-        });
+        gl.readPixels(
+          sourcePixelX + samplePixelX,
+          board.height - sourcePixelY - samplePixelY - 1,
+          1,
+          1,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          sourcePixel,
+        );
+        const previewOffset = (samplePixelY * neighborhood.width + samplePixelX) * 4;
+        const sampleMatches = sourcePixel.every((channel, index) => channel === previewPixels[previewOffset + index]);
         return {
           neighborhood: {
             width: neighborhoodBounds.width,
@@ -291,21 +331,31 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
             backingHeight: neighborhood.height,
           },
           target: { width: targetBounds.width, height: targetBounds.height },
+          actionStartsAfterNeighborhood: actionBounds.top >= viewportBounds.bottom,
+          containsCompleteNeighborhood,
+          tightToCompleteNeighborhood,
           sampleMatches,
-          pixelRatio: window.__infiniteMines.diagnostics().pixelRatio,
+          pixelRatio,
           cellSize: window.__infiniteMines.renderer.cellSize,
           previewCellSize: window.__infiniteMines.diagnostics().touchPreview?.cellSize,
+          neighborhoodCells: preview.neighborhoodCells,
+          neighborhoodRings: preview.neighborhoodRings,
           captureMs: window.__infiniteMines.diagnostics().touchPreview?.captureMs,
         };
       });
-      expect(previewGeometry.neighborhood.width).toBe(80);
-      expect(previewGeometry.neighborhood.height).toBe(80);
-      expect(previewGeometry.neighborhood.backingWidth).toBe(Math.round(80 * previewGeometry.pixelRatio));
-      expect(previewGeometry.neighborhood.backingHeight).toBe(Math.round(80 * previewGeometry.pixelRatio));
+      expect(previewGeometry.neighborhood.width).toBeGreaterThanOrEqual(64);
+      expect(previewGeometry.neighborhood.height).toBeGreaterThanOrEqual(64);
+      expect(previewGeometry.neighborhood.backingWidth).toBe(Math.round(previewGeometry.neighborhood.width * previewGeometry.pixelRatio));
+      expect(previewGeometry.neighborhood.backingHeight).toBe(Math.round(previewGeometry.neighborhood.height * previewGeometry.pixelRatio));
       expect(previewGeometry.target.width).toBeCloseTo(target.width, 2);
       expect(previewGeometry.target.height).toBeCloseTo(target.height, 2);
       expect(previewGeometry.previewCellSize).toBeCloseTo(previewGeometry.cellSize, 3);
+      expect(previewGeometry.neighborhoodRings).toBe(1);
+      expect(previewGeometry.neighborhoodCells).toBeGreaterThan(1);
       expect(previewGeometry.captureMs).toBeLessThan(8);
+      expect(previewGeometry.actionStartsAfterNeighborhood).toBe(true);
+      expect(previewGeometry.containsCompleteNeighborhood).toBe(true);
+      expect(previewGeometry.tightToCompleteNeighborhood).toBe(true);
       expect(previewGeometry.sampleMatches).toBe(true);
       await cancel();
     }
@@ -337,10 +387,15 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
       cellSize: 1,
     });
     const previewBounds = await page.locator("#touch-preview").boundingBox();
-    if (!previewBounds) throw new Error("Missing pixel-zoom preview bounds");
-    expect(previewBounds.width).toBe(80);
-    expect(previewBounds.height).toBe(80);
+    const pixelNeighborhoodBounds = await page.locator("#touch-preview-neighborhood").boundingBox();
+    const pixelActionBounds = await page.locator("#touch-preview-action").boundingBox();
+    if (!previewBounds || !pixelNeighborhoodBounds || !pixelActionBounds) throw new Error("Missing pixel-zoom preview bounds");
+    expect(pixelNeighborhoodBounds.width).toBeGreaterThanOrEqual(64);
+    expect(pixelNeighborhoodBounds.height).toBeGreaterThanOrEqual(64);
+    expect(pixelActionBounds.y).toBeGreaterThanOrEqual(pixelNeighborhoodBounds.y + pixelNeighborhoodBounds.height);
     expect(previewBounds.y + previewBounds.height).toBeLessThan(pixelTarget.y - 30);
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview?.neighborhoodRings)).toBe(1);
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview?.captureMs)).toBeLessThan(8);
     const pixelTargetBounds = await page.locator("#touch-preview-target").evaluate((target) => {
       const bounds = (target as SVGGraphicsElement).getBBox();
       return { width: bounds.width, height: bounds.height };

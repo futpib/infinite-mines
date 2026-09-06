@@ -21,7 +21,7 @@ npm run preview
 
 `npm test` runs the engine tests, production build, and the Playwright acceptance contract. See [REQUIREMENTS.md](./REQUIREMENTS.md) for the thread-to-test matrix. Install the bundled browser once with `npx playwright install chromium`.
 
-The guarded touch gesture and finger-offset, board-scale neighborhood preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract.
+The guarded touch gesture and finger-offset, board-scale neighborhood preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract. Its preview keeps the complete immediate topology-neighbor ring visible, with the release instruction outside the unobscured field image.
 
 For the exact environment used by GitHub Actions, run:
 

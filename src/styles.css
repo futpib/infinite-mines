@@ -348,17 +348,15 @@ a:focus-visible {
 
 .touch-preview-card {
   position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
   z-index: 1;
   width: max-content;
-  overflow: hidden;
   padding: 0;
   border: 0;
-  border-radius: 12px;
-  outline: 1px solid var(--board-cell-border);
-  outline-offset: -1px;
   color: var(--ink);
   background: transparent;
-  box-shadow: 0 18px 32px rgba(24, 32, 33, 0.18), 0 4px 9px rgba(24, 32, 33, 0.14);
 }
 
 .touch-preview::after {
@@ -385,10 +383,18 @@ a:focus-visible {
 
 .touch-preview-neighborhood {
   display: block;
-  width: 80px;
-  height: 80px;
   border: 0;
   background: var(--board-bg);
+}
+
+.touch-preview-viewport {
+  position: relative;
+  overflow: visible;
+  border-radius: 0;
+  outline: 1px solid var(--board-cell-border);
+  outline-offset: -1px;
+  background: var(--board-bg);
+  box-shadow: 0 18px 32px rgba(24, 32, 33, 0.18), 0 4px 9px rgba(24, 32, 33, 0.14);
 }
 
 .touch-preview-target {
@@ -396,8 +402,8 @@ a:focus-visible {
   z-index: 1;
   inset: 0;
   display: block;
-  width: 80px;
-  height: 80px;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -410,20 +416,17 @@ a:focus-visible {
 }
 
 .touch-preview-action {
-  position: absolute;
+  position: relative;
   z-index: 2;
-  right: 0;
-  bottom: 0;
-  left: 0;
   display: grid;
-  min-height: 21px;
-  padding: 0;
-  border-radius: 0 0 10px 10px;
+  min-height: 16px;
+  padding: 0 2px;
+  border-radius: 999px;
   place-items: center;
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 94%, transparent);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 7px;
+  font-size: 5.5px;
   font-weight: 780;
   letter-spacing: 0.02em;
   line-height: 1;
@@ -441,9 +444,12 @@ a:focus-visible {
 }
 
 .touch-preview[data-armed="true"] .touch-preview-card {
+  filter: drop-shadow(0 13px 17px color-mix(in srgb, var(--danger) 20%, transparent));
+}
+
+.touch-preview[data-armed="true"] .touch-preview-viewport {
   outline: 2px solid color-mix(in srgb, var(--danger) 68%, var(--line-strong));
   outline-offset: -2px;
-  box-shadow: 0 18px 34px color-mix(in srgb, var(--danger) 20%, transparent), 0 4px 9px rgba(24, 32, 33, 0.14);
 }
 
 .controls {

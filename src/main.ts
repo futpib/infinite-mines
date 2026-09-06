@@ -73,6 +73,7 @@ const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
 const touchPreview = element<HTMLElement>("#touch-preview");
+const touchPreviewViewport = element<HTMLElement>("#touch-preview-viewport");
 const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neighborhood");
 const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
 const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
@@ -542,7 +543,7 @@ function locateCellAt(screenX: number, screenY: number, forceText = false, showH
   refreshCellLocator(forceText, showHover);
 }
 
-const TOUCH_PREVIEW_SIZE = 80;
+const TOUCH_PREVIEW_MIN_EXTENT = 64;
 
 function hideTouchPreview(): void {
   touchPreview.hidden = true;
@@ -575,16 +576,37 @@ function showTouchPreview(
   screenY: number,
 ): void {
   const captureStartedAt = performance.now();
+  const neighborhood = [{ x, y }];
+  model.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+    neighborhood.push({ x: neighborX, y: neighborY });
+  });
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const cell of neighborhood) {
+    for (const point of renderer.cellScreenPolygon(cell.x, cell.y)) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+  }
+  const horizontalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxX - minX)) / 2;
+  const verticalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxY - minY)) / 2;
   const polygon = renderer.cellScreenPolygon(x, y);
-  const targetCenterX = polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length;
-  const targetCenterY = polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length;
-  const { sourceX, sourceY } = renderer.copyScreenRegion(
+  const { sourceX, sourceY, width, height } = renderer.copyScreenBounds(
     touchPreviewContext,
-    targetCenterX,
-    targetCenterY,
-    TOUCH_PREVIEW_SIZE,
-    TOUCH_PREVIEW_SIZE,
+    minX - horizontalExpansion,
+    minY - verticalExpansion,
+    maxX + horizontalExpansion,
+    maxY + verticalExpansion,
   );
+  touchPreviewViewport.style.width = `${width}px`;
+  touchPreviewViewport.style.height = `${height}px`;
+  touchPreviewNeighborhood.style.width = `${width}px`;
+  touchPreviewNeighborhood.style.height = `${height}px`;
+  touchPreviewTarget.setAttribute("viewBox", `0 0 ${width} ${height}`);
   touchPreview.dataset.x = String(x);
   touchPreview.dataset.y = String(y);
   touchPreview.dataset.topology = model.topologyId;
@@ -592,6 +614,10 @@ function showTouchPreview(
   touchPreview.dataset.armed = "true";
   touchPreview.dataset.sourceX = sourceX.toFixed(3);
   touchPreview.dataset.sourceY = sourceY.toFixed(3);
+  touchPreview.dataset.width = width.toFixed(3);
+  touchPreview.dataset.height = height.toFixed(3);
+  touchPreview.dataset.neighborhoodCells = String(neighborhood.length);
+  touchPreview.dataset.neighborhoodRings = "1";
   touchPreview.dataset.cellSize = renderer.cellSize.toFixed(3);
   touchPreview.dataset.captureMs = (performance.now() - captureStartedAt).toFixed(3);
   touchPreviewTarget.setAttribute(
@@ -1357,6 +1383,10 @@ function getDiagnostics() {
           placement: touchPreview.dataset.placement,
           sourceX: Number(touchPreview.dataset.sourceX),
           sourceY: Number(touchPreview.dataset.sourceY),
+          width: Number(touchPreview.dataset.width),
+          height: Number(touchPreview.dataset.height),
+          neighborhoodCells: Number(touchPreview.dataset.neighborhoodCells),
+          neighborhoodRings: Number(touchPreview.dataset.neighborhoodRings),
           cellSize: Number(touchPreview.dataset.cellSize),
           captureMs: Number(touchPreview.dataset.captureMs),
         },

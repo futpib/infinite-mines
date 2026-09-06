@@ -50,10 +50,12 @@
       <div class="hover-overlay" id="hover-overlay" aria-hidden="true"></div>
       <div class="touch-preview" id="touch-preview" aria-hidden="true" hidden>
         <div class="touch-preview-card">
-          <canvas class="touch-preview-neighborhood" id="touch-preview-neighborhood" width="80" height="80"></canvas>
-          <svg class="touch-preview-target" viewBox="0 0 80 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-            <polygon id="touch-preview-target"></polygon>
-          </svg>
+          <div class="touch-preview-viewport" id="touch-preview-viewport">
+            <canvas class="touch-preview-neighborhood" id="touch-preview-neighborhood" width="80" height="80"></canvas>
+            <svg class="touch-preview-target" viewBox="0 0 80 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+              <polygon id="touch-preview-target"></polygon>
+            </svg>
+          </div>
           <strong class="touch-preview-action" id="touch-preview-action">RELEASE TO REVEAL</strong>
         </div>
       </div>

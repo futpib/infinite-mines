@@ -726,22 +726,26 @@ export class WebGLRenderer {
     );
   }
 
-  copyScreenRegion(
+  copyScreenBounds(
     context: CanvasRenderingContext2D,
-    centerX: number,
-    centerY: number,
-    cssWidth: number,
-    cssHeight: number,
-  ): { sourceX: number; sourceY: number } {
-    const pixelWidth = Math.max(1, Math.round(cssWidth * this.dpr));
-    const pixelHeight = Math.max(1, Math.round(cssHeight * this.dpr));
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+  ): { sourceX: number; sourceY: number; width: number; height: number } {
+    const requestedPixelLeft = Math.floor(left * this.dpr);
+    const requestedPixelTop = Math.floor(top * this.dpr);
+    const requestedPixelRight = Math.ceil(right * this.dpr);
+    const requestedPixelBottom = Math.ceil(bottom * this.dpr);
+    const pixelWidth = Math.min(this.canvas.width, Math.max(1, requestedPixelRight - requestedPixelLeft));
+    const pixelHeight = Math.min(this.canvas.height, Math.max(1, requestedPixelBottom - requestedPixelTop));
     const sourcePixelX = Math.min(
       Math.max(0, this.canvas.width - pixelWidth),
-      Math.max(0, Math.round((centerX - cssWidth / 2) * this.dpr)),
+      Math.max(0, requestedPixelLeft),
     );
     const sourcePixelY = Math.min(
       Math.max(0, this.canvas.height - pixelHeight),
-      Math.max(0, Math.round((centerY - cssHeight / 2) * this.dpr)),
+      Math.max(0, requestedPixelTop),
     );
     const sourceBottom = this.canvas.height - sourcePixelY - pixelHeight;
     const byteLength = pixelWidth * pixelHeight * 4;
@@ -772,7 +776,12 @@ export class WebGLRenderer {
     if (context.canvas.width !== pixelWidth) context.canvas.width = pixelWidth;
     if (context.canvas.height !== pixelHeight) context.canvas.height = pixelHeight;
     context.putImageData(captureImage, 0, 0);
-    return { sourceX: sourcePixelX / this.dpr, sourceY: sourcePixelY / this.dpr };
+    return {
+      sourceX: sourcePixelX / this.dpr,
+      sourceY: sourcePixelY / this.dpr,
+      width: pixelWidth / this.dpr,
+      height: pixelHeight / this.dpr,
+    };
   }
 
   cellScreenPolygon(x: number, y: number): WorldPoint[] {
