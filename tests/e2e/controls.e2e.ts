@@ -209,14 +209,11 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
     const heldCell = await findCell(page, "covered-safe");
     const heldPoint = await worldPoint(page, heldCell);
     await touchStart(heldPoint);
-    await expect(page.locator("#touch-preview")).toBeVisible();
-    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
-      ...heldCell,
-      action: "flag",
-      armed: false,
-    });
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toBeNull();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBe(0);
     await page.waitForTimeout(470);
+    await expect(page.locator("#touch-preview")).toBeVisible();
     await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
     expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
       ...heldCell,
@@ -243,25 +240,26 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
     const healthBeforeMark = await page.evaluate(() => window.__infiniteMines.model.health);
     const framesBeforePreview = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await touchStart(markedPoint);
-    await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
-    await expect(page.locator("#touch-preview-glyph")).toBeEmpty();
+    await expect(page.locator("#touch-preview")).toBeHidden();
     expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBe(framesBeforePreview);
     await touchEnd();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(10);
     expect(await page.evaluate(() => window.__infiniteMines.model.health)).toBe(healthBeforeMark);
 
     await touchStart(markedPoint);
-    await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO QUESTION");
+    await expect(page.locator("#touch-preview")).toBeHidden();
     await page.waitForTimeout(470);
-    await expect(page.locator("#touch-preview-action")).toHaveText("FLAGGED · TAP TO CHANGE");
+    await expect(page.locator("#touch-preview")).toBeHidden();
     await touchEnd();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(10);
 
     await page.touchscreen.tap(markedPoint.x, markedPoint.y);
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(11);
     await touchStart(markedPoint);
-    await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO CLEAR");
+    await expect(page.locator("#touch-preview")).toBeHidden();
     await page.waitForTimeout(470);
+    await expect(page.locator("#touch-preview")).toBeVisible();
+    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(11);
     await touchEnd();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(12);
@@ -275,12 +273,13 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
     await expect(page.locator("#mobile-tool")).toContainText("REVEAL");
     await expect(page.locator("#mobile-tool")).toHaveAttribute("aria-pressed", "true");
     await touchStart(explicitLockedPoint);
-    await expect(page.locator("#touch-preview-action")).toHaveText("FLAGGED · TAP TO CHANGE");
+    await expect(page.locator("#touch-preview")).toBeHidden();
     await touchEnd();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), explicitLocked)).toBe(10);
     const explicitReveal = await findCell(page, "covered-safe");
     const explicitPoint = await worldPoint(page, explicitReveal);
     await page.touchscreen.tap(explicitPoint.x, explicitPoint.y);
+    await expect(page.locator("#touch-preview")).toBeHidden();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), explicitReveal)).toBeGreaterThan(0);
   } finally {
     await session.detach();

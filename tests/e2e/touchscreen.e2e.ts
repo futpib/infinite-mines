@@ -41,6 +41,14 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
       type: "touchStart",
       touchPoints: [touchPoint(1, startX, startY)],
     });
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [touchPoint(1, startX + 4, startY + 4)],
+    });
+    expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(before.view);
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    await page.waitForTimeout(470);
     await expect(page.locator("#touch-preview")).toBeVisible();
     const initialPreview = await page.locator("#touch-preview").boundingBox();
     if (!initialPreview) throw new Error("Missing touch preview bounds");
@@ -48,29 +56,22 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
     expect(initialPreview.x + initialPreview.width).toBeLessThanOrEqual(1188);
     expect(initialPreview.y + initialPreview.height).toBeLessThan(startY - 30);
     await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
-    await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
-    await expect(page.locator("#touch-preview-action")).toHaveText("TAP TO FLAG");
+    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
     const previewLayout = await page.locator(".touch-preview-card").evaluate((card) => {
-      const tile = card.querySelector<HTMLElement>("#touch-preview-tile");
-      if (!tile) throw new Error("Missing magnified tile");
+      const neighborhood = card.querySelector<HTMLElement>("#touch-preview-neighborhood");
+      if (!neighborhood) throw new Error("Missing neighborhood preview");
       const cardBounds = card.getBoundingClientRect();
-      const tileBounds = tile.getBoundingClientRect();
+      const neighborhoodBounds = neighborhood.getBoundingClientRect();
       const style = getComputedStyle(card);
       return {
         card: { width: cardBounds.width, height: cardBounds.height },
-        tile: { width: tileBounds.width, height: tileBounds.height },
+        neighborhood: { width: neighborhoodBounds.width, height: neighborhoodBounds.height },
         padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
       };
     });
     expect(previewLayout.padding).toEqual(["0px", "0px", "0px", "0px"]);
-    expect(previewLayout.card.width).toBeCloseTo(previewLayout.tile.width, 5);
-    expect(previewLayout.card.height).toBeCloseTo(previewLayout.tile.height, 5);
-    await session.send("Input.dispatchTouchEvent", {
-      type: "touchMove",
-      touchPoints: [touchPoint(1, startX + 4, startY + 4)],
-    });
-    expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(before.view);
-    await expect(page.locator("#touch-preview")).toBeVisible();
+    expect(previewLayout.card.width).toBeCloseTo(previewLayout.neighborhood.width, 5);
+    expect(previewLayout.card.height).toBeCloseTo(previewLayout.neighborhood.height, 5);
 
     await session.send("Input.dispatchTouchEvent", {
       type: "touchMove",
@@ -99,6 +100,8 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
       type: "touchStart",
       touchPoints: [touchPoint(2, edgeX, edgeY)],
     });
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    await page.waitForTimeout(470);
     await expect(page.locator("#touch-preview")).toHaveAttribute("data-placement", "below");
     const edgePreview = await page.locator("#touch-preview").boundingBox();
     if (!edgePreview) throw new Error("Missing edge touch preview bounds");
@@ -189,7 +192,7 @@ test("R22 — two-finger touch pans and zooms focally without opening cells, the
   }
 });
 
-test("R47 — the magnified callout stays topology-aware and usable at pixel zoom", async ({ browser }) => {
+test("R47 — the board-scale neighborhood stays topology-aware and usable at pixel zoom", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
   const session = await context.newCDPSession(page);
@@ -208,7 +211,15 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
   const coveredTarget = async () =>
     page.evaluate(() => {
       const api = window.__infiniteMines;
-      let best: { x: number; y: number; screenX: number; screenY: number; aspect: number; distance: number } | null = null;
+      let best: {
+        x: number;
+        y: number;
+        screenX: number;
+        screenY: number;
+        width: number;
+        height: number;
+        distance: number;
+      } | null = null;
       for (let y = -40; y <= 40; y += 1) {
         for (let x = -40; x <= 40; x += 1) {
           if (api.model.getState(x, y) !== 0) continue;
@@ -219,7 +230,7 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
           const width = Math.max(...polygon.map((point) => point.x)) - Math.min(...polygon.map((point) => point.x));
           const height = Math.max(...polygon.map((point) => point.y)) - Math.min(...polygon.map((point) => point.y));
           const distance = Math.hypot(screenX - 245, screenY - 610);
-          if (!best || distance < best.distance) best = { x, y, screenX, screenY, aspect: width / height, distance };
+          if (!best || distance < best.distance) best = { x, y, screenX, screenY, width, height, distance };
         }
       }
       if (!best) throw new Error("No covered on-screen cell");
@@ -233,15 +244,69 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
       const target = await coveredTarget();
       await startAt({ x: target.screenX, y: target.screenY });
+      await expect(page.locator("#touch-preview")).toBeHidden();
+      await page.waitForTimeout(470);
       await expect(page.locator("#touch-preview")).toHaveAttribute("data-topology", topology);
       await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
-      await expect(page.locator("#touch-preview-tile")).toHaveAttribute("data-state", "covered");
-      const clipPath = await page.locator("#touch-preview-tile").evaluate((tile) => getComputedStyle(tile).clipPath);
-      if (topology === "square") expect(clipPath).toBe("none");
-      else expect(clipPath).toContain("polygon(");
-      const tileBounds = await page.locator("#touch-preview-tile").boundingBox();
-      if (!tileBounds) throw new Error("Missing magnified tile bounds");
-      expect(tileBounds.width / tileBounds.height).toBeCloseTo(target.aspect, 2);
+      const previewGeometry = await page.evaluate(() => {
+        const neighborhood = document.querySelector<HTMLCanvasElement>("#touch-preview-neighborhood");
+        const targetPolygon = document.querySelector<SVGGraphicsElement>("#touch-preview-target");
+        if (!neighborhood || !targetPolygon) throw new Error("Missing neighborhood preview geometry");
+        const neighborhoodBounds = neighborhood.getBoundingClientRect();
+        const targetBounds = targetPolygon.getBBox();
+        const context = neighborhood.getContext("2d");
+        if (!context) throw new Error("Missing neighborhood preview context");
+        const board = document.querySelector<HTMLCanvasElement>("#board");
+        const gl = board?.getContext("webgl2");
+        const preview = window.__infiniteMines.diagnostics().touchPreview;
+        if (!board || !gl || !preview) throw new Error("Missing board-scale preview source");
+        const previewPixels = context.getImageData(0, 0, neighborhood.width, neighborhood.height).data;
+        const sourcePixelX = Math.round(preview.sourceX * window.__infiniteMines.diagnostics().pixelRatio);
+        const sourcePixelY = Math.round(preview.sourceY * window.__infiniteMines.diagnostics().pixelRatio);
+        const sourcePixel = new Uint8Array(4);
+        const sampleMatches = [
+          [4, 4],
+          [40, 40],
+          [74, 54],
+        ].every(([cssX, cssY]) => {
+          const pixelX = Math.round(cssX * window.__infiniteMines.diagnostics().pixelRatio);
+          const pixelY = Math.round(cssY * window.__infiniteMines.diagnostics().pixelRatio);
+          gl.readPixels(
+            sourcePixelX + pixelX,
+            board.height - sourcePixelY - pixelY - 1,
+            1,
+            1,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            sourcePixel,
+          );
+          const previewOffset = (pixelY * neighborhood.width + pixelX) * 4;
+          return sourcePixel.every((channel, index) => channel === previewPixels[previewOffset + index]);
+        });
+        return {
+          neighborhood: {
+            width: neighborhoodBounds.width,
+            height: neighborhoodBounds.height,
+            backingWidth: neighborhood.width,
+            backingHeight: neighborhood.height,
+          },
+          target: { width: targetBounds.width, height: targetBounds.height },
+          sampleMatches,
+          pixelRatio: window.__infiniteMines.diagnostics().pixelRatio,
+          cellSize: window.__infiniteMines.renderer.cellSize,
+          previewCellSize: window.__infiniteMines.diagnostics().touchPreview?.cellSize,
+          captureMs: window.__infiniteMines.diagnostics().touchPreview?.captureMs,
+        };
+      });
+      expect(previewGeometry.neighborhood.width).toBe(80);
+      expect(previewGeometry.neighborhood.height).toBe(80);
+      expect(previewGeometry.neighborhood.backingWidth).toBe(Math.round(80 * previewGeometry.pixelRatio));
+      expect(previewGeometry.neighborhood.backingHeight).toBe(Math.round(80 * previewGeometry.pixelRatio));
+      expect(previewGeometry.target.width).toBeCloseTo(target.width, 2);
+      expect(previewGeometry.target.height).toBeCloseTo(target.height, 2);
+      expect(previewGeometry.previewCellSize).toBeCloseTo(previewGeometry.cellSize, 3);
+      expect(previewGeometry.captureMs).toBeLessThan(8);
+      expect(previewGeometry.sampleMatches).toBe(true);
       await cancel();
     }
 
@@ -252,15 +317,36 @@ test("R47 — the magnified callout stays topology-aware and usable at pixel zoo
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.renderer.cellSize)).toBe(1);
     const pixelTarget = await page.evaluate(() => {
       const point = { x: 245, y: 610 };
-      return { ...point, cell: window.__infiniteMines.renderer.screenToCell(point.x, point.y) };
+      const cell = window.__infiniteMines.renderer.screenToCell(point.x, point.y);
+      const polygon = window.__infiniteMines.renderer.cellScreenPolygon(cell.x, cell.y);
+      return {
+        ...point,
+        cell,
+        width: Math.max(...polygon.map((vertex) => vertex.x)) - Math.min(...polygon.map((vertex) => vertex.x)),
+        height: Math.max(...polygon.map((vertex) => vertex.y)) - Math.min(...polygon.map((vertex) => vertex.y)),
+      };
     });
     await startAt(pixelTarget);
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    await page.waitForTimeout(470);
     await expect(page.locator("#touch-preview")).toBeVisible();
-    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject(pixelTarget.cell);
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
+      ...pixelTarget.cell,
+      action: "reveal",
+      armed: true,
+      cellSize: 1,
+    });
     const previewBounds = await page.locator("#touch-preview").boundingBox();
     if (!previewBounds) throw new Error("Missing pixel-zoom preview bounds");
-    expect(previewBounds.width).toBeGreaterThanOrEqual(68);
+    expect(previewBounds.width).toBe(80);
+    expect(previewBounds.height).toBe(80);
     expect(previewBounds.y + previewBounds.height).toBeLessThan(pixelTarget.y - 30);
+    const pixelTargetBounds = await page.locator("#touch-preview-target").evaluate((target) => {
+      const bounds = (target as SVGGraphicsElement).getBBox();
+      return { width: bounds.width, height: bounds.height };
+    });
+    expect(pixelTargetBounds.width).toBeCloseTo(pixelTarget.width, 2);
+    expect(pixelTargetBounds.height).toBeCloseTo(pixelTarget.height, 2);
     await cancel();
   } finally {
     await session.detach();

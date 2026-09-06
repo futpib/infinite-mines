@@ -585,6 +585,8 @@ export class WebGLRenderer {
   private retainedVersion = -1;
   private scratchWidth = 0;
   private scratchHeight = 0;
+  private screenCaptureRaw = new Uint8Array(0);
+  private screenCaptureImage: ImageData | null = null;
   private fullRedraws = 0;
   private damageRedraws = 0;
   private panRedraws = 0;
@@ -722,6 +724,55 @@ export class WebGLRenderer {
       origin.x + (screenX - this.width / 2 - this.panX) / this.cellSize,
       origin.y + (screenY - this.height / 2 - this.panY) / this.cellSize,
     );
+  }
+
+  copyScreenRegion(
+    context: CanvasRenderingContext2D,
+    centerX: number,
+    centerY: number,
+    cssWidth: number,
+    cssHeight: number,
+  ): { sourceX: number; sourceY: number } {
+    const pixelWidth = Math.max(1, Math.round(cssWidth * this.dpr));
+    const pixelHeight = Math.max(1, Math.round(cssHeight * this.dpr));
+    const sourcePixelX = Math.min(
+      Math.max(0, this.canvas.width - pixelWidth),
+      Math.max(0, Math.round((centerX - cssWidth / 2) * this.dpr)),
+    );
+    const sourcePixelY = Math.min(
+      Math.max(0, this.canvas.height - pixelHeight),
+      Math.max(0, Math.round((centerY - cssHeight / 2) * this.dpr)),
+    );
+    const sourceBottom = this.canvas.height - sourcePixelY - pixelHeight;
+    const byteLength = pixelWidth * pixelHeight * 4;
+    if (this.screenCaptureRaw.length !== byteLength) this.screenCaptureRaw = new Uint8Array(byteLength);
+    let captureImage = this.screenCaptureImage;
+    if (!captureImage || captureImage.width !== pixelWidth || captureImage.height !== pixelHeight) {
+      captureImage = context.createImageData(pixelWidth, pixelHeight);
+      this.screenCaptureImage = captureImage;
+    }
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    this.gl.readPixels(
+      sourcePixelX,
+      sourceBottom,
+      pixelWidth,
+      pixelHeight,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      this.screenCaptureRaw,
+    );
+    const rowBytes = pixelWidth * 4;
+    for (let targetY = 0; targetY < pixelHeight; targetY += 1) {
+      const sourceY = pixelHeight - targetY - 1;
+      captureImage.data.set(
+        this.screenCaptureRaw.subarray(sourceY * rowBytes, (sourceY + 1) * rowBytes),
+        targetY * rowBytes,
+      );
+    }
+    if (context.canvas.width !== pixelWidth) context.canvas.width = pixelWidth;
+    if (context.canvas.height !== pixelHeight) context.canvas.height = pixelHeight;
+    context.putImageData(captureImage, 0, 0);
+    return { sourceX: sourcePixelX / this.dpr, sourceY: sourcePixelY / this.dpr };
   }
 
   cellScreenPolygon(x: number, y: number): WorldPoint[] {

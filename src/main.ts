@@ -73,9 +73,14 @@ const cellCoordinate = element<HTMLElement>("#cell-coordinate");
 const cellState = element<HTMLElement>("#cell-state");
 const hoverOverlay = element<HTMLElement>("#hover-overlay");
 const touchPreview = element<HTMLElement>("#touch-preview");
-const touchPreviewTile = element<HTMLElement>("#touch-preview-tile");
-const touchPreviewGlyph = element<HTMLElement>("#touch-preview-glyph");
+const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neighborhood");
+const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
 const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
+const touchPreviewContext = (() => {
+  const context = touchPreviewNeighborhood.getContext("2d", { alpha: false });
+  if (!context) throw new Error("2D canvas is required for the touch preview");
+  return context;
+})();
 const colorSchemeMeta = element<HTMLMetaElement>("#color-scheme");
 const lightThemeColorMeta = element<HTMLMetaElement>("#theme-color-light");
 const darkThemeColorMeta = element<HTMLMetaElement>("#theme-color-dark");
@@ -537,14 +542,7 @@ function locateCellAt(screenX: number, screenY: number, forceText = false, showH
   refreshCellLocator(forceText, showHover);
 }
 
-type TouchPreviewAction = "flag" | "question" | "clear" | "reveal" | "chord" | "locked";
-const touchPreviewActionLabels: Record<Exclude<TouchPreviewAction, "reveal">, string> = {
-  flag: "TAP TO FLAG",
-  question: "TAP TO QUESTION",
-  clear: "TAP TO CLEAR",
-  chord: "TAP TO CHORD",
-  locked: "FLAGGED · TAP TO CHANGE",
-};
+const TOUCH_PREVIEW_SIZE = 80;
 
 function hideTouchPreview(): void {
   touchPreview.hidden = true;
@@ -570,65 +568,37 @@ function positionTouchPreview(screenX: number, screenY: number): void {
   touchPreview.style.transform = `translate3d(${left}px, ${top}px, 0)`;
 }
 
-function touchPreviewVisual(x: number, y: number): { state: string; glyph: string; color: string } {
-  const state = model.getState(x, y);
-  if (state === CellState.Flagged) return { state: "flagged", glyph: "⚑", color: "" };
-  if (state === CellState.Question) return { state: "question", glyph: "?", color: "" };
-  if (state === CellState.Exploded) return { state: "exploded", glyph: "✹", color: "" };
-  if (isOpened(state)) {
-    if (state === CellState.Opened && model.artifactAt(x, y)) return { state: "artifact", glyph: "◆", color: "" };
-    const clue = openedClue(state);
-    return {
-      state: "opened",
-      glyph: clue === 0 ? "" : String(clue),
-      color: clue === 0 ? "" : `var(--board-number-${Math.min(clue, 8)})`,
-    };
-  }
-  return { state: "covered", glyph: "", color: "" };
-}
-
-function updateTouchPreviewAction(action: TouchPreviewAction, armed = false): void {
-  touchPreview.dataset.action = action;
-  touchPreview.dataset.armed = String(armed);
-  touchPreviewAction.textContent =
-    action === "reveal" ? (armed ? "RELEASE TO REVEAL" : "TAP TO REVEAL") : touchPreviewActionLabels[action];
-}
-
 function showTouchPreview(
   x: number,
   y: number,
   screenX: number,
   screenY: number,
-  action: TouchPreviewAction,
 ): void {
-  const visual = touchPreviewVisual(x, y);
+  const captureStartedAt = performance.now();
+  const polygon = renderer.cellScreenPolygon(x, y);
+  const targetCenterX = polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length;
+  const targetCenterY = polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length;
+  const { sourceX, sourceY } = renderer.copyScreenRegion(
+    touchPreviewContext,
+    targetCenterX,
+    targetCenterY,
+    TOUCH_PREVIEW_SIZE,
+    TOUCH_PREVIEW_SIZE,
+  );
   touchPreview.dataset.x = String(x);
   touchPreview.dataset.y = String(y);
   touchPreview.dataset.topology = model.topologyId;
-  touchPreviewTile.dataset.state = visual.state;
-  touchPreviewGlyph.textContent = visual.glyph;
-  touchPreviewGlyph.style.color = visual.color;
-  const polygon = renderer.cellScreenPolygon(x, y);
-  if (model.topologyId === "square") {
-    touchPreviewTile.classList.remove("is-polygon");
-    touchPreviewTile.style.clipPath = "";
-    touchPreviewTile.style.width = "80px";
-    touchPreviewTile.style.height = "80px";
-  } else {
-    const left = Math.min(...polygon.map((point) => point.x));
-    const top = Math.min(...polygon.map((point) => point.y));
-    const width = Math.max(1e-6, Math.max(...polygon.map((point) => point.x)) - left);
-    const height = Math.max(1e-6, Math.max(...polygon.map((point) => point.y)) - top);
-    const previewWidth = width >= height ? 80 : (80 * width) / height;
-    const previewHeight = height >= width ? 80 : (80 * height) / width;
-    touchPreviewTile.classList.add("is-polygon");
-    touchPreviewTile.style.width = `${previewWidth}px`;
-    touchPreviewTile.style.height = `${previewHeight}px`;
-    touchPreviewTile.style.clipPath = `polygon(${polygon
-      .map((point) => `${(((point.x - left) / width) * 100).toFixed(3)}% ${(((point.y - top) / height) * 100).toFixed(3)}%`)
-      .join(",")})`;
-  }
-  updateTouchPreviewAction(action);
+  touchPreview.dataset.action = "reveal";
+  touchPreview.dataset.armed = "true";
+  touchPreview.dataset.sourceX = sourceX.toFixed(3);
+  touchPreview.dataset.sourceY = sourceY.toFixed(3);
+  touchPreview.dataset.cellSize = renderer.cellSize.toFixed(3);
+  touchPreview.dataset.captureMs = (performance.now() - captureStartedAt).toFixed(3);
+  touchPreviewTarget.setAttribute(
+    "points",
+    polygon.map((point) => `${(point.x - sourceX).toFixed(3)},${(point.y - sourceY).toFixed(3)}`).join(" "),
+  );
+  touchPreviewAction.textContent = "RELEASE TO REVEAL";
   positionTouchPreview(screenX, screenY);
 }
 
@@ -1048,28 +1018,16 @@ canvas.addEventListener("pointerdown", (event) => {
     cellY: cell.y,
     timer: 0,
   };
-  if (touch) {
-    const previewAction: TouchPreviewAction =
-      state === CellState.Flagged
-        ? touchRevealTool
-          ? "locked"
-          : "question"
-        : touchRevealTool
-          ? "reveal"
-          : isOpened(state)
-            ? "chord"
-            : state === CellState.Question
-              ? "clear"
-              : "flag";
-    showTouchPreview(cell.x, cell.y, point.x, point.y, previewAction);
-  }
   if (touch && !touchRevealTool && concealed) {
     gesture.timer = window.setTimeout(() => {
       if (!gesture || gesture.moved) return;
       gesture.longPressed = true;
       gesture.longPressAction = state === CellState.Flagged ? "locked" : "reveal";
-      updateTouchPreviewAction(gesture.longPressAction, true);
-      navigator.vibrate?.(18);
+      if (gesture.longPressAction === "reveal") {
+        const activePoint = activeTouches.get(gesture.id);
+        showTouchPreview(cell.x, cell.y, activePoint?.localX ?? point.x, activePoint?.localY ?? point.y);
+        navigator.vibrate?.(18);
+      }
     }, 430);
   }
 });
@@ -1397,6 +1355,10 @@ function getDiagnostics() {
           action: touchPreview.dataset.action,
           armed: touchPreview.dataset.armed === "true",
           placement: touchPreview.dataset.placement,
+          sourceX: Number(touchPreview.dataset.sourceX),
+          sourceY: Number(touchPreview.dataset.sourceY),
+          cellSize: Number(touchPreview.dataset.cellSize),
+          captureMs: Number(touchPreview.dataset.captureMs),
         },
     gameplayInteractionCount,
     fullscreen: document.fullscreenElement !== null,

@@ -21,17 +21,18 @@ A flag remains a hard interlock. Holding a flagged tile must not reveal it; the 
 
 The visible Reveal/Flag tool remains an accessibility and repeated-action alternative. Choosing Reveal explicitly is itself the extra act of intent, so it may make short taps reveal while that mode is visibly selected. The default mode must retain the guarded mapping above.
 
-## Preview before commitment
+## Preview after dangerous intent
 
-The first single-finger contact immediately shows a magnified preview of the exact candidate tile outside the area hidden by the finger, like an Android keyboard key preview. Prefer above the contact point, clamp it inside the viewport, and move it to another unobscured side when there is not enough room.
+Ordinary taps stay visually quiet. Only a valid default-mode hold that crosses the reveal threshold shows an offset preview outside the area hidden by the finger. Prefer above the contact point, clamp it inside the viewport, and move it to another unobscured side when there is not enough room. A flagged hold, opened-tile tap, or explicitly selected Reveal-tool tap does not show it.
 
 The preview must:
 
-- use the magnified tile itself as the callout, with no coordinate label or padding around it;
-- reproduce only the tile's public appearance; it must never expose a covered mine or any other hidden state;
+- show a compact neighborhood centered on the commit target where viewport bounds allow, at exactly the field's current zoom level;
+- use that neighborhood itself as the callout, with no coordinate label or padding around it;
+- reproduce only the board's public appearance; it must never expose a covered mine or any other hidden state;
 - identify the exact tile and action that would commit on release;
 - remain in sync with the commit target if the interaction allows the candidate to move;
-- distinguish the normal mark action from an armed reveal without relying on color alone;
+- make the armed reveal explicit without relying on color alone;
 - work for every topology and zoom level, including distraction-free mode;
 - use bounded, reusable UI with no per-cell DOM, continuous render loop, or field materialization.
 
@@ -53,6 +54,7 @@ Fatal touch input must still stop at the game-over decision surface. Neither the
 2. A long press changes nothing at the threshold, visibly arms reveal, and reveals only on a valid release.
 3. Flags cannot be revealed directly; questions follow the deliberate-reveal rule.
 4. Pan, pinch, pointer cancellation, and release before the threshold cannot accidentally reveal.
-5. The tile-only preview appears on contact without coordinates or surrounding padding, is offset from the finger, stays inside the viewport, matches the committed tile, leaks no hidden state, and clears on every completion path.
-6. The mapping and preview hold across Square, Rhombille, and Triangular fields, representative detail/pixel zooms, visible/hidden controls, and phone/desktop touch viewports.
-7. The existing fatal-input/game-over guard and bounded interaction-performance contracts remain green.
+5. Short taps, flagged holds, opened-tile taps, and explicit-tool taps show no preview. A valid reveal hold shows the neighborhood only after the threshold.
+6. The preview has no coordinates or surrounding padding, stays offset and inside the viewport, matches the committed tile, uses the field's current zoom level, leaks no hidden state, and clears on every completion path.
+7. The mapping and preview hold across Square, Rhombille, and Triangular fields, representative detail/pixel zooms, visible/hidden controls, and phone/desktop touch viewports.
+8. The existing fatal-input/game-over guard and bounded interaction-performance contracts remain green.
