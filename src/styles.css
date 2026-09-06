@@ -948,10 +948,12 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
 }
 
 .topology-options,
-.theme-options { grid-template-columns: repeat(3, 1fr); }
+.theme-options,
+.fog-frontier-options { grid-template-columns: repeat(3, 1fr); }
 
 .topology-options button,
-.theme-options button { min-width: 0; padding-right: 35px; }
+.theme-options button,
+.fog-frontier-options button { min-width: 0; padding-right: 35px; }
 
 .control-options button {
   position: relative;
@@ -1177,15 +1179,20 @@ dialog::backdrop { background: color-mix(in srgb, var(--board-bg) 68%, transpare
   .stat-wide #density-stat { font-size: 9px; }
   .hint { display: none; }
   .topology-options,
-  .theme-options { grid-template-columns: repeat(3, 1fr); }
+  .theme-options,
+  .fog-frontier-options { grid-template-columns: repeat(3, 1fr); }
   .topology-options button,
-  .theme-options button { min-height: 84px; padding: 12px 8px; }
+  .theme-options button,
+  .fog-frontier-options button { min-height: 84px; padding: 12px 8px; }
   .topology-options button::after,
-  .theme-options button::after { top: 7px; right: 7px; width: 15px; height: 15px; font-size: 9px; }
+  .theme-options button::after,
+  .fog-frontier-options button::after { top: 7px; right: 7px; width: 15px; height: 15px; font-size: 9px; }
   .topology-options b,
-  .theme-options b { padding-right: 12px; font-size: 11px; }
+  .theme-options b,
+  .fog-frontier-options b { padding-right: 12px; font-size: 11px; }
   .topology-options small,
-  .theme-options small { font-size: 8px; }
+  .theme-options small,
+  .fog-frontier-options small { font-size: 8px; }
   .cell-locator {
     bottom: 14px;
     left: 12px;

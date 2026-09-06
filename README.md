@@ -23,7 +23,7 @@ npm run preview
 
 The guarded touch gesture and finger-offset, board-scale neighborhood preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract. Its preview keeps the complete immediate topology-neighbor ring visible inside an outward-framed callout, aligns an inward-clipped target outline to each topology, and places the release instruction outside the unobscured field image.
 
-The optional **Fog grid → One edge** setting continues every grid segment incident to an explored boundary vertex by exactly one edge. It is off by default and persists independently of the current field.
+The optional **Fog grid** setting is off by default and persists independently of the current field. **One edge** continues every grid segment incident to an explored boundary vertex by exactly one edge; **One cell** outlines the complete first ring of covered cells touching the explored region.
 
 For the exact environment used by GitHub Actions, run:
 

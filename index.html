@@ -242,12 +242,15 @@
         </section>
         <section class="settings-section" aria-labelledby="fog-frontier-heading">
           <p class="settings-label" id="fog-frontier-heading">FOG GRID</p>
-          <div class="control-options" id="fog-frontier-options" aria-labelledby="fog-frontier-heading">
+          <div class="control-options fog-frontier-options" id="fog-frontier-options" aria-labelledby="fog-frontier-heading">
             <button type="button" data-fog-frontier="off" aria-pressed="true">
               <b>Off</b><small>Stop grid lines at explored cells</small>
             </button>
-            <button type="button" data-fog-frontier="on" aria-pressed="false">
+            <button type="button" data-fog-frontier="edge" aria-pressed="false">
               <b>One edge</b><small>Continue boundary rays into fog</small>
+            </button>
+            <button type="button" data-fog-frontier="cell" aria-pressed="false">
+              <b>One cell</b><small>Outline one complete fog ring</small>
             </button>
           </div>
         </section>

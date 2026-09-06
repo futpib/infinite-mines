@@ -39,6 +39,8 @@ export interface RenderDiagnostics {
   panRedraws: number;
 }
 
+export type FogFrontierMode = "off" | "edge" | "cell";
+
 const BASE_CELL_SIZE = 25;
 const MIN_CELL_SIZE = 1;
 const MIN_ZOOM = MIN_CELL_SIZE / BASE_CELL_SIZE;
@@ -639,9 +641,9 @@ export class WebGLRenderer {
   private fullRedraws = 0;
   private damageRedraws = 0;
   private panRedraws = 0;
-  private fogFrontierEnabled: boolean;
+  private fogFrontierMode: FogFrontierMode;
 
-  constructor(canvas: HTMLCanvasElement, model: GameModel, fogFrontierEnabled = false) {
+  constructor(canvas: HTMLCanvasElement, model: GameModel, fogFrontierMode: FogFrontierMode = "off") {
     const gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: false,
@@ -655,7 +657,7 @@ export class WebGLRenderer {
     this.canvas = canvas;
     this.gl = gl;
     this.model = model;
-    this.fogFrontierEnabled = fogFrontierEnabled;
+    this.fogFrontierMode = fogFrontierMode;
     this.theme = this.readTheme();
     this.resources = this.createResources();
 
@@ -686,9 +688,9 @@ export class WebGLRenderer {
     this.frameObserver = observer;
   }
 
-  setFogFrontierEnabled(enabled: boolean): void {
-    if (enabled === this.fogFrontierEnabled) return;
-    this.fogFrontierEnabled = enabled;
+  setFogFrontierMode(mode: FogFrontierMode): void {
+    if (mode === this.fogFrontierMode) return;
+    this.fogFrontierMode = mode;
     this.resetTileCache();
     this.retainedFrame = false;
     this.requestRender();
@@ -1444,7 +1446,7 @@ export class WebGLRenderer {
     this.genericAnchorWorldX = anchor.x;
     this.genericAnchorWorldY = anchor.y;
     const cellKey = (x: number, y: number) => `${x},${y}`;
-    const detailFrontier = this.fogFrontierEnabled && this.cellSize > SPARSE_LOD_THRESHOLD;
+    const detailFrontier = this.fogFrontierMode !== "off" && this.cellSize > SPARSE_LOD_THRESHOLD;
     const renderCells = detailFrontier
       ? new Map<string, { x: number; y: number; state: CellState; frontier: boolean }>()
       : null;
@@ -1460,17 +1462,19 @@ export class WebGLRenderer {
       const frontierCandidates = new Map<string, { x: number; y: number }>();
       for (const source of sourceCells) {
         if (!this.isUncovered(source.state)) continue;
-        const geometry = topology.geometry(source.x, source.y);
-        const edgeNeighbors = topology.edgeNeighbors(source.x, source.y);
-        let hasExposedEdge = false;
-        for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
-          const neighbor = edgeNeighbors[edge];
-          if (this.isUncovered(this.model.getState(neighbor.x, neighbor.y))) continue;
-          hasExposedEdge = true;
-          boundaryVertices.add(worldPointKey(geometry.vertices[edge]));
-          boundaryVertices.add(worldPointKey(geometry.vertices[(edge + 1) % geometry.vertices.length]));
+        if (this.fogFrontierMode === "edge") {
+          const geometry = topology.geometry(source.x, source.y);
+          const edgeNeighbors = topology.edgeNeighbors(source.x, source.y);
+          let hasExposedEdge = false;
+          for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
+            const neighbor = edgeNeighbors[edge];
+            if (this.isUncovered(this.model.getState(neighbor.x, neighbor.y))) continue;
+            hasExposedEdge = true;
+            boundaryVertices.add(worldPointKey(geometry.vertices[edge]));
+            boundaryVertices.add(worldPointKey(geometry.vertices[(edge + 1) % geometry.vertices.length]));
+          }
+          if (!hasExposedEdge) continue;
         }
-        if (!hasExposedEdge) continue;
         topology.forEachNeighbor(source.x, source.y, (x, y) => {
           if (x < minX || x > maxX || y < minY || y > maxY) return;
           const key = cellKey(x, y);
@@ -1479,32 +1483,50 @@ export class WebGLRenderer {
         });
       }
 
-      const segmentOwners = new Map<string, { x: number; y: number; edge: number }>();
-      for (const candidate of frontierCandidates.values()) {
-        const geometry = topology.geometry(candidate.x, candidate.y);
-        const edgeNeighbors = topology.edgeNeighbors(candidate.x, candidate.y);
-        for (let edge = 0; edge < geometry.vertices.length; edge += 1) {
-          const start = geometry.vertices[edge];
-          const end = geometry.vertices[(edge + 1) % geometry.vertices.length];
-          if (!boundaryVertices.has(worldPointKey(start)) && !boundaryVertices.has(worldPointKey(end))) continue;
-          const neighbor = edgeNeighbors[edge];
-          if (this.isRenderable(this.model.getState(neighbor.x, neighbor.y))) continue;
-          const candidateComesFirst = compareCells(candidate, neighbor) <= 0;
-          const first = candidateComesFirst ? candidate : neighbor;
-          const second = candidateComesFirst ? neighbor : candidate;
-          const segmentKey = `${cellKey(first.x, first.y)}|${cellKey(second.x, second.y)}`;
-          const existing = segmentOwners.get(segmentKey);
-          if (!existing || compareCells(existing, candidate) < 0) {
-            segmentOwners.set(segmentKey, { ...candidate, edge });
+      if (this.fogFrontierMode === "edge") {
+        const segmentOwners = new Map<string, { x: number; y: number; edge: number }>();
+        for (const candidate of frontierCandidates.values()) {
+          const geometry = topology.geometry(candidate.x, candidate.y);
+          const edgeNeighbors = topology.edgeNeighbors(candidate.x, candidate.y);
+          for (let edge = 0; edge < geometry.vertices.length; edge += 1) {
+            const start = geometry.vertices[edge];
+            const end = geometry.vertices[(edge + 1) % geometry.vertices.length];
+            if (!boundaryVertices.has(worldPointKey(start)) && !boundaryVertices.has(worldPointKey(end))) continue;
+            const neighbor = edgeNeighbors[edge];
+            if (this.isRenderable(this.model.getState(neighbor.x, neighbor.y))) continue;
+            const candidateComesFirst = compareCells(candidate, neighbor) <= 0;
+            const first = candidateComesFirst ? candidate : neighbor;
+            const second = candidateComesFirst ? neighbor : candidate;
+            const segmentKey = `${cellKey(first.x, first.y)}|${cellKey(second.x, second.y)}`;
+            const existing = segmentOwners.get(segmentKey);
+            if (!existing || compareCells(existing, candidate) < 0) {
+              segmentOwners.set(segmentKey, { ...candidate, edge });
+            }
           }
         }
-      }
-      for (const owner of segmentOwners.values()) {
-        const key = cellKey(owner.x, owner.y);
-        frontierEdgesByCell.set(key, (frontierEdgesByCell.get(key) ?? 0) | (1 << owner.edge));
-        if (!renderCells.has(key)) {
-          renderCells.set(key, { x: owner.x, y: owner.y, state: CellState.Covered, frontier: true });
+        for (const owner of segmentOwners.values()) {
+          const key = cellKey(owner.x, owner.y);
+          frontierEdgesByCell.set(key, (frontierEdgesByCell.get(key) ?? 0) | (1 << owner.edge));
         }
+      } else {
+        for (const candidate of frontierCandidates.values()) {
+          const edgeNeighbors = topology.edgeNeighbors(candidate.x, candidate.y);
+          let edges = 0;
+          for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
+            const neighbor = edgeNeighbors[edge];
+            if (this.isRenderable(this.model.getState(neighbor.x, neighbor.y))) continue;
+            if (frontierCandidates.has(cellKey(neighbor.x, neighbor.y)) && compareCells(candidate, neighbor) < 0) {
+              continue;
+            }
+            edges |= 1 << edge;
+          }
+          if (edges !== 0) frontierEdgesByCell.set(cellKey(candidate.x, candidate.y), edges);
+        }
+      }
+      for (const candidate of frontierCandidates.values()) {
+        const key = cellKey(candidate.x, candidate.y);
+        if (!frontierEdgesByCell.has(key) || renderCells.has(key)) continue;
+        renderCells.set(key, { ...candidate, state: CellState.Covered, frontier: true });
       }
     }
     const storedCapacity = Math.max(
@@ -1633,7 +1655,7 @@ export class WebGLRenderer {
         const frontier = tile.cells[source + 3] === FRONTIER_CELL_KIND;
         // Every grid line belongs to the cell below/right of it. Exposed right/bottom
         // lines are therefore extended into the otherwise unrendered neighbor.
-        let edges = frontier ? this.squareFrontierContinuationEdges(worldX, worldY) : 1 | 2;
+        let edges = frontier ? this.squareFrontierEdges(worldX, worldY) : 1 | 2;
         if (frontier && edges === 0) continue;
         if (!frontier && !this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
         if (!frontier && !this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
@@ -1766,18 +1788,16 @@ export class WebGLRenderer {
         ) {
           renderCells.set(localY * RENDER_TILE_CELLS + localX, { localX, localY, state, frontier: false });
         }
-        if (!this.fogFrontierEnabled || !this.isUncovered(state)) return;
-        for (const neighbor of this.model.topology.edgeNeighbors(x, y)) {
-          const frontierX = neighbor.x - originX;
-          const frontierY = neighbor.y - originY;
+        if (this.fogFrontierMode === "off" || !this.isUncovered(state)) return;
+        const appendFrontier = (frontierX: number, frontierY: number) => {
           if (
             frontierX < 0 ||
             frontierX >= RENDER_TILE_CELLS ||
             frontierY < 0 ||
             frontierY >= RENDER_TILE_CELLS ||
-            this.model.getState(neighbor.x, neighbor.y) !== CellState.Covered
+            this.model.getState(originX + frontierX, originY + frontierY) !== CellState.Covered
           ) {
-            continue;
+            return;
           }
           const frontierIndex = frontierY * RENDER_TILE_CELLS + frontierX;
           if (!renderCells.has(frontierIndex)) {
@@ -1787,6 +1807,15 @@ export class WebGLRenderer {
               state: CellState.Covered,
               frontier: true,
             });
+          }
+        };
+        if (this.fogFrontierMode === "cell") {
+          this.model.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+            appendFrontier(neighborX - originX, neighborY - originY);
+          });
+        } else {
+          for (const neighbor of this.model.topology.edgeNeighbors(x, y)) {
+            appendFrontier(neighbor.x - originX, neighbor.y - originY);
           }
         }
       },
@@ -1825,7 +1854,8 @@ export class WebGLRenderer {
     return version;
   }
 
-  private squareFrontierContinuationEdges(x: number, y: number): number {
+  private squareFrontierEdges(x: number, y: number): number {
+    if (this.fogFrontierMode === "cell") return this.squareFrontierCellEdges(x, y);
     const rawEdges = this.squareRawFrontierContinuationEdges(x, y);
     const edgeNeighbors = [
       { x, y: y - 1, bit: 1, oppositeBit: 8 },
@@ -1848,6 +1878,31 @@ export class WebGLRenderer {
       edges |= neighbor.bit;
     }
     return edges;
+  }
+
+  private squareFrontierCellEdges(x: number, y: number): number {
+    const edgeNeighbors = [
+      { x, y: y - 1, bit: 1 },
+      { x: x - 1, y, bit: 2 },
+      { x: x + 1, y, bit: 4 },
+      { x, y: y + 1, bit: 8 },
+    ];
+    let edges = 0;
+    for (const neighbor of edgeNeighbors) {
+      if (this.isRenderable(this.model.getState(neighbor.x, neighbor.y))) continue;
+      if (this.isSquareCellFrontier(neighbor.x, neighbor.y) && compareCells({ x, y }, neighbor) < 0) continue;
+      edges |= neighbor.bit;
+    }
+    return edges;
+  }
+
+  private isSquareCellFrontier(x: number, y: number): boolean {
+    if (this.model.getState(x, y) !== CellState.Covered) return false;
+    let frontier = false;
+    this.model.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+      if (this.isUncovered(this.model.getState(neighborX, neighborY))) frontier = true;
+    });
+    return frontier;
   }
 
   private squareRawFrontierContinuationEdges(x: number, y: number): number {

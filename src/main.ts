@@ -16,7 +16,7 @@ import {
   type PresetMode,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
-import { WebGLRenderer } from "./renderer";
+import { WebGLRenderer, type FogFrontierMode } from "./renderer";
 import { TOPOLOGIES, isTopologyId, type TopologyId } from "./topology";
 
 const element = <T extends Element>(selector: string): T => {
@@ -125,9 +125,13 @@ let hoverMode: HoverMode = savedHoverMode === "cell" ? "cell" : "affected";
 type HintHoverMode = "show" | "hide";
 const savedHintHoverMode = storageGet("infinite-mines-hint-hover");
 let hintHoverMode: HintHoverMode = savedHintHoverMode === "hide" ? "hide" : "show";
-type FogFrontierMode = "off" | "on";
 const savedFogFrontierMode = storageGet("infinite-mines-fog-frontier");
-let fogFrontierMode: FogFrontierMode = savedFogFrontierMode === "on" ? "on" : "off";
+let fogFrontierMode: FogFrontierMode =
+  savedFogFrontierMode === "cell"
+    ? "cell"
+    : savedFogFrontierMode === "edge" || savedFogFrontierMode === "on"
+      ? "edge"
+      : "off";
 type AutoHideMode = "after-fifty" | "never";
 const savedAutoHideMode = storageGet("infinite-mines-auto-hide-controls");
 let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "after-fifty";
@@ -176,7 +180,7 @@ const settleFpsCounter = (): void => {
   fpsValue.textContent = "IDLE";
 };
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-const renderer = new WebGLRenderer(canvas, model, fogFrontierMode === "on");
+const renderer = new WebGLRenderer(canvas, model, fogFrontierMode);
 renderer.setFrameObserver((diagnostics) => {
   const now = performance.now();
   fpsLastFrameAt = now;
@@ -274,7 +278,7 @@ function updateFogFrontierMode(): void {
   for (const button of fogFrontierOptions.querySelectorAll<HTMLButtonElement>("button[data-fog-frontier]")) {
     button.ariaPressed = String(button.dataset.fogFrontier === fogFrontierMode);
   }
-  renderer.setFogFrontierEnabled(fogFrontierMode === "on");
+  renderer.setFogFrontierMode(fogFrontierMode);
 }
 
 function updateAutoHideMode(): void {
@@ -1298,7 +1302,8 @@ hintHoverOptions.addEventListener("click", (event) => {
 fogFrontierOptions.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-fog-frontier]");
   if (!button) return;
-  fogFrontierMode = button.dataset.fogFrontier === "on" ? "on" : "off";
+  fogFrontierMode =
+    button.dataset.fogFrontier === "cell" ? "cell" : button.dataset.fogFrontier === "edge" ? "edge" : "off";
   storageSet("infinite-mines-fog-frontier", fogFrontierMode);
   updateFogFrontierMode();
 });
