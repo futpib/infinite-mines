@@ -180,18 +180,23 @@ void main() {
   bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
   vec3 fill = frontier ? u_background : (v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
   vec3 base = fill;
+  float innerDistance = 100000.0;
   if (u_cellSize >= 3.0) {
     vec2 pixelWidth = max(fwidth(v_cellUv), vec2(0.000001));
     vec2 edgeDistance = vec2(
       v_cellUv.y / pixelWidth.y,
       v_cellUv.x / pixelWidth.x
     );
-    float innerDistance = 100000.0;
     if ((edges & 1) != 0) innerDistance = min(innerDistance, edgeDistance.x);
     if ((edges & 2) != 0) innerDistance = min(innerDistance, edgeDistance.y);
     float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, innerDistance);
     base = mix(u_cellBorder, fill, fillMix);
   }
+
+  // Frontier instances contribute lines only. Painting their background-filled
+  // cells would overwrite the already-owned boundary line before repainting it,
+  // producing missing or visually doubled seams depending on draw order.
+  if (frontier && !outerBorder && innerDistance >= u_dpr + 0.5) discard;
 
   int stateIndex = int(clamp(v_sprite, 0.0, ${SQUARE_EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
@@ -239,11 +244,13 @@ flat out float v_edges;
 
 void main() {
   int shape = int(a_shapeEdges.x + 0.5);
+  bool frontier = a_axisVState.w > 1.5;
   vec2 local = a_corner * 2.0 - 1.0;
-  if (shape == 3) {
-    // A rhombus vertex sits on the edge of this instanced bounding quad. Grow
-    // only the carrier quad so the fragment shader, which still clips to the
-    // exact diamond, can own every shared-vertex device pixel.
+  if (shape == 3 || frontier) {
+    // Polygon edges can coincide with an excluded edge of their carrier quad
+    // (notably the horizontal edge of a down triangle). Grow only the carrier;
+    // the fragment shader still clips to the exact polygon. This guarantees
+    // every selected line has fragments without changing the cell geometry.
     vec2 carrierMargin = vec2(
       2.0 / max(u_cellSize * length(a_centerAxisU.zw), 1.0),
       2.0 / max(u_cellSize * length(a_axisVState.xy), 1.0)
@@ -304,18 +311,32 @@ void main() {
     float left = v_local.x + (v_local.y + 1.0) * 0.5;
     float right = (v_local.y + 1.0) * 0.5 - v_local.x;
     float base = 1.0 - v_local.y;
-    inside = left >= 0.0 && right >= 0.0 && base >= 0.0;
-    includeEdge(left, 1, edges, edgePixels);
-    includeEdge(right, 2, edges, edgePixels);
-    includeEdge(base, 4, edges, edgePixels);
+    float coverage = max(max(fwidth(left), fwidth(right)), fwidth(base)) * 0.75;
+    inside = min(min(left, right), base) >= (frontier ? -coverage : 0.0);
+    if (frontier) {
+      if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(left) / max(fwidth(left), 0.000001) * 2.0);
+      if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(right) / max(fwidth(right), 0.000001) * 2.0);
+      if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(base) / max(fwidth(base), 0.000001) * 2.0);
+    } else {
+      includeEdge(left, 1, edges, edgePixels);
+      includeEdge(right, 2, edges, edgePixels);
+      includeEdge(base, 4, edges, edgePixels);
+    }
   } else if (shape == 2) {
     float base = v_local.y + 1.0;
     float right = (1.0 - v_local.y) * 0.5 - v_local.x;
     float left = v_local.x + (1.0 - v_local.y) * 0.5;
-    inside = base >= 0.0 && right >= 0.0 && left >= 0.0;
-    includeEdge(base, 1, edges, edgePixels);
-    includeEdge(right, 2, edges, edgePixels);
-    includeEdge(left, 4, edges, edgePixels);
+    float coverage = max(max(fwidth(base), fwidth(right)), fwidth(left)) * 0.75;
+    inside = min(min(base, right), left) >= (frontier ? -coverage : 0.0);
+    if (frontier) {
+      if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(base) / max(fwidth(base), 0.000001) * 2.0);
+      if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(right) / max(fwidth(right), 0.000001) * 2.0);
+      if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(left) / max(fwidth(left), 0.000001) * 2.0);
+    } else {
+      includeEdge(base, 1, edges, edgePixels);
+      includeEdge(right, 2, edges, edgePixels);
+      includeEdge(left, 4, edges, edgePixels);
+    }
   } else {
     float edge0 = 1.0 + v_local.x + v_local.y;
     float edge1 = 1.0 - v_local.x + v_local.y;
@@ -340,6 +361,11 @@ void main() {
     }
   }
   if (!inside) discard;
+
+  // As above, a frontier carrier is a sparse line primitive rather than a
+  // background-filled cell. This preserves the single owner of the exposed
+  // boundary and prevents overlapping rhombi from erasing neighboring lines.
+  if (frontier && edgePixels >= u_dpr + 0.5) discard;
 
   vec3 fill = frontier ? u_background : (v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
   vec3 detailedBase = fill;
@@ -1461,6 +1487,7 @@ export class WebGLRenderer {
       }
       const edgeNeighbors = topology.edgeNeighbors(x, y);
       let edges = frontier ? this.frontierContinuationEdges(x, y) : 0;
+      if (frontier && edges === 0) return;
       if (!frontier) {
         for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
           const neighbor = edgeNeighbors[edge];
@@ -1555,6 +1582,7 @@ export class WebGLRenderer {
         // Every grid line belongs to the cell below/right of it. Exposed right/bottom
         // lines are therefore extended into the otherwise unrendered neighbor.
         let edges = frontier ? this.squareFrontierContinuationEdges(worldX, worldY) : 1 | 2;
+        if (frontier && edges === 0) continue;
         if (!frontier && !this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
         if (!frontier && !this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
         instances[instanceIndex++] = tile.relativeOriginX + localX;
@@ -1746,21 +1774,72 @@ export class WebGLRenderer {
   }
 
   private squareFrontierContinuationEdges(x: number, y: number): number {
+    const rawEdges = this.squareRawFrontierContinuationEdges(x, y);
+    const edgeNeighbors = [
+      { x, y: y - 1, bit: 1, oppositeBit: 8 },
+      { x: x - 1, y, bit: 2, oppositeBit: 4 },
+      { x: x + 1, y, bit: 4, oppositeBit: 2 },
+      { x, y: y + 1, bit: 8, oppositeBit: 1 },
+    ];
     let edges = 0;
-    if (this.isUncovered(this.model.getState(x, y - 1))) edges |= 1 | 2 | 4;
-    if (this.isUncovered(this.model.getState(x + 1, y))) edges |= 1 | 4 | 8;
-    if (this.isUncovered(this.model.getState(x, y + 1))) edges |= 2 | 4 | 8;
-    if (this.isUncovered(this.model.getState(x - 1, y))) edges |= 1 | 2 | 8;
+    for (const neighbor of edgeNeighbors) {
+      if ((rawEdges & neighbor.bit) === 0) continue;
+      const neighborState = this.model.getState(neighbor.x, neighbor.y);
+      if (this.isRenderable(neighborState)) continue;
+      if (
+        neighborState === CellState.Covered &&
+        (this.squareRawFrontierContinuationEdges(neighbor.x, neighbor.y) & neighbor.oppositeBit) !== 0 &&
+        compareCells({ x, y }, neighbor) < 0
+      ) {
+        continue;
+      }
+      edges |= neighbor.bit;
+    }
+    return edges;
+  }
+
+  private squareRawFrontierContinuationEdges(x: number, y: number): number {
+    let edges = 0;
+    if (this.isUncovered(this.model.getState(x, y - 1))) edges |= 2 | 4;
+    if (this.isUncovered(this.model.getState(x + 1, y))) edges |= 1 | 8;
+    if (this.isUncovered(this.model.getState(x, y + 1))) edges |= 2 | 4;
+    if (this.isUncovered(this.model.getState(x - 1, y))) edges |= 1 | 8;
     return edges;
   }
 
   private frontierContinuationEdges(x: number, y: number): number {
     const edgeNeighbors = this.model.topology.edgeNeighbors(x, y);
+    const rawEdges = this.rawFrontierContinuationEdges(x, y);
+    let edges = 0;
+    for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
+      const bit = 1 << edge;
+      if ((rawEdges & bit) === 0) continue;
+      const neighbor = edgeNeighbors[edge];
+      const neighborState = this.model.getState(neighbor.x, neighbor.y);
+      if (this.isRenderable(neighborState)) continue;
+      if (neighborState === CellState.Covered) {
+        const reciprocalEdge = this.model.topology
+          .edgeNeighbors(neighbor.x, neighbor.y)
+          .findIndex((candidate) => candidate.x === x && candidate.y === y);
+        if (
+          reciprocalEdge >= 0 &&
+          (this.rawFrontierContinuationEdges(neighbor.x, neighbor.y) & (1 << reciprocalEdge)) !== 0 &&
+          compareCells({ x, y }, neighbor) < 0
+        ) {
+          continue;
+        }
+      }
+      edges |= bit;
+    }
+    return edges;
+  }
+
+  private rawFrontierContinuationEdges(x: number, y: number): number {
+    const edgeNeighbors = this.model.topology.edgeNeighbors(x, y);
     let edges = 0;
     for (let sharedEdge = 0; sharedEdge < edgeNeighbors.length; sharedEdge += 1) {
       const neighbor = edgeNeighbors[sharedEdge];
       if (!this.isUncovered(this.model.getState(neighbor.x, neighbor.y))) continue;
-      edges |= 1 << sharedEdge;
       edges |= 1 << ((sharedEdge + edgeNeighbors.length - 1) % edgeNeighbors.length);
       edges |= 1 << ((sharedEdge + 1) % edgeNeighbors.length);
     }
