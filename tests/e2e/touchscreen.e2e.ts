@@ -442,7 +442,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
     rightOwnedEdgePixels: boolean;
     bottomOwnedEdgePixels: boolean;
     targetAlignmentError: number;
-    clipAlignmentError: number;
+    viewBoxAlignmentError: number;
     labelOverlap: number;
     captureMs: number;
   }> = [];
@@ -514,20 +514,19 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           const canvas = document.querySelector<HTMLCanvasElement>("#touch-preview-neighborhood");
           const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
           const action = document.querySelector<HTMLElement>("#touch-preview-action");
+          const targetOverlay = document.querySelector<SVGSVGElement>("#touch-preview-target-overlay");
           const target = document.querySelector<SVGGraphicsElement>("#touch-preview-target");
           const targetClip = document.querySelector<SVGGraphicsElement>("#touch-preview-target-clip-polygon");
           const board = document.querySelector<HTMLCanvasElement>("#board");
           const gl = board?.getContext("webgl2");
           const context2d = canvas?.getContext("2d");
-          if (!preview || !canvas || !viewport || !action || !target || !targetClip || !board || !gl || !context2d) {
+          if (!preview || !canvas || !viewport || !action || !targetOverlay || !target || !targetClip || !board || !gl || !context2d) {
             throw new Error("Missing preview measurement surface");
           }
           const pixelRatio = api.diagnostics().pixelRatio;
           const borderCssPixels = api.diagnostics().borderCssPixels;
           const viewportBounds = viewport.getBoundingClientRect();
           const actionBounds = action.getBoundingClientRect();
-          const targetBounds = target.getBBox();
-          const targetClipBounds = targetClip.getBBox();
           const cells = [{ x: preview.x, y: preview.y }];
           api.model.topology.forEachNeighbor(preview.x, preview.y, (x, y) => cells.push({ x, y }));
           const points = cells.flatMap(({ x, y }) => api.renderer.cellScreenPolygon(x, y));
@@ -581,23 +580,28 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
             preview.sourceY + viewportBounds.height - maxY,
           );
           const targetPoints = api.renderer.cellScreenPolygon(preview.x, preview.y);
-          const expectedTarget = {
-            x: Math.min(...targetPoints.map((point) => point.x)) - preview.sourceX,
-            y: Math.min(...targetPoints.map((point) => point.y)) - preview.sourceY,
-            width: Math.max(...targetPoints.map((point) => point.x)) - Math.min(...targetPoints.map((point) => point.x)),
-            height: Math.max(...targetPoints.map((point) => point.y)) - Math.min(...targetPoints.map((point) => point.y)),
-          };
-          const targetAlignmentError = Math.max(
-            Math.abs(targetBounds.x - expectedTarget.x),
-            Math.abs(targetBounds.y - expectedTarget.y),
-            Math.abs(targetBounds.width - expectedTarget.width),
-            Math.abs(targetBounds.height - expectedTarget.height),
+          const targetCoordinates = (target.getAttribute("points") ?? "").split(" ").map((pair) => {
+            const [x, y] = pair.split(",").map(Number);
+            return { x, y };
+          });
+          const targetTransform = target.getScreenCTM();
+          if (!targetTransform || targetCoordinates.length !== targetPoints.length) {
+            throw new Error("Missing painted target transform");
+          }
+          const paintedTargetPoints = targetCoordinates.map((point) =>
+            new DOMPoint(point.x, point.y).matrixTransform(targetTransform),
           );
-          const clipAlignmentError = Math.max(
-            Math.abs(targetClipBounds.x - expectedTarget.x),
-            Math.abs(targetClipBounds.y - expectedTarget.y),
-            Math.abs(targetClipBounds.width - expectedTarget.width),
-            Math.abs(targetClipBounds.height - expectedTarget.height),
+          const expectedTargetPoints = targetPoints.map((point) => ({
+            x: viewportBounds.left + (point.x - preview.sourceX) * viewportBounds.width / preview.width,
+            y: viewportBounds.top + (point.y - preview.sourceY) * viewportBounds.height / preview.height,
+          }));
+          const targetAlignmentError = Math.max(...paintedTargetPoints.flatMap((point, index) => [
+            Math.abs(point.x - expectedTargetPoints[index].x),
+            Math.abs(point.y - expectedTargetPoints[index].y),
+          ]));
+          const viewBoxAlignmentError = Math.max(
+            Math.abs(targetOverlay.viewBox.baseVal.width - preview.width),
+            Math.abs(targetOverlay.viewBox.baseVal.height - preview.height),
           );
           const sampleCssX =
             targetPoints.reduce((sum, point) => sum + point.x, 0) / targetPoints.length - preview.sourceX;
@@ -637,7 +641,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
             bottomOwnedEdgePixels,
             completeRing,
             targetAlignmentError,
-            clipAlignmentError,
+            viewBoxAlignmentError,
             targetClipMatches: target.getAttribute("points") === targetClip.getAttribute("points"),
             targetPaint: {
               clipPath: targetStyle.clipPath,
@@ -691,7 +695,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           );
         }
         expect(measurement.targetAlignmentError).toBeLessThan(0.001);
-        expect(measurement.clipAlignmentError).toBeLessThan(0.001);
+        expect(measurement.viewBoxAlignmentError).toBeLessThan(0.001);
         expect(measurement.targetClipMatches).toBe(true);
         expect(measurement.targetPaint.clipPath).toContain("touch-preview-target-clip");
         expect(measurement.targetPaint.strokeWidth).toBe("4px");
@@ -724,7 +728,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
           rightOwnedEdgePixels: measurement.rightOwnedEdgePixels,
           bottomOwnedEdgePixels: measurement.bottomOwnedEdgePixels,
           targetAlignmentError: measurement.targetAlignmentError,
-          clipAlignmentError: measurement.clipAlignmentError,
+          viewBoxAlignmentError: measurement.viewBoxAlignmentError,
           labelOverlap: measurement.labelOverlap,
           captureMs: measurement.captureMs,
         });

@@ -75,6 +75,7 @@ const hoverOverlay = element<HTMLElement>("#hover-overlay");
 const touchPreview = element<HTMLElement>("#touch-preview");
 const touchPreviewViewport = element<HTMLElement>("#touch-preview-viewport");
 const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neighborhood");
+const touchPreviewTargetOverlay = element<SVGSVGElement>("#touch-preview-target-overlay");
 const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
 const touchPreviewTargetClip = element<SVGPolygonElement>("#touch-preview-target-clip-polygon");
 const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
@@ -611,7 +612,7 @@ function showTouchPreview(
   touchPreviewViewport.style.height = `${height}px`;
   touchPreviewNeighborhood.style.width = `${width}px`;
   touchPreviewNeighborhood.style.height = `${height}px`;
-  touchPreviewTarget.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  touchPreviewTargetOverlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
   touchPreview.dataset.x = String(x);
   touchPreview.dataset.y = String(y);
   touchPreview.dataset.topology = model.topologyId;
@@ -627,7 +628,7 @@ function showTouchPreview(
   touchPreview.dataset.ownedEdgeExtension = ownedEdgeExtension.toFixed(3);
   touchPreview.dataset.captureMs = (performance.now() - captureStartedAt).toFixed(3);
   const targetPoints = polygon
-    .map((point) => `${(point.x - sourceX).toFixed(3)},${(point.y - sourceY).toFixed(3)}`)
+    .map((point) => `${(point.x - sourceX).toFixed(6)},${(point.y - sourceY).toFixed(6)}`)
     .join(" ");
   touchPreviewTarget.setAttribute("points", targetPoints);
   touchPreviewTargetClip.setAttribute("points", targetPoints);
