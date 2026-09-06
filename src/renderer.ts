@@ -20,6 +20,8 @@ export interface RenderDiagnostics {
   frameMs: number;
   visibleCells: number;
   drawnCells: number;
+  frontierCells: number;
+  frontierEdges: number;
   chunks: number;
   storedCells: number;
   cachedTiles: number;
@@ -55,6 +57,8 @@ const SQUARE_FLAG_SPRITE = 9;
 const SQUARE_QUESTION_SPRITE = 10;
 const SQUARE_EXPLODED_SPRITE = 11;
 const SQUARE_SPRITE_COUNT = 12;
+const ARTIFACT_CELL_KIND = 1;
+const FRONTIER_CELL_KIND = 2;
 const MAX_CLUE_SPRITE = 18;
 const FLAG_SPRITE = 19;
 const QUESTION_SPRITE = 20;
@@ -123,7 +127,7 @@ uniform float u_dpr;
 
 out vec2 v_cellUv;
 flat out float v_sprite;
-flat out float v_artifact;
+flat out float v_cellKind;
 flat out float v_edges;
 
 void main() {
@@ -142,7 +146,7 @@ void main() {
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_cellUv = (drawPixelDevice - startDevice) / max(endDevice - startDevice, vec2(1.0));
   v_sprite = a_cell.z;
-  v_artifact = a_cell.w;
+  v_cellKind = a_cell.w;
   v_edges = a_edges;
 }`;
 
@@ -164,15 +168,17 @@ uniform float u_cellSize;
 
 in vec2 v_cellUv;
 flat in float v_sprite;
-flat in float v_artifact;
+flat in float v_cellKind;
 flat in float v_edges;
 out vec4 outColor;
 
 void main() {
   int edges = int(v_edges + 0.5);
+  bool frontier = v_cellKind > 1.5;
+  bool artifact = v_cellKind > 0.5 && !frontier;
   bool insideCell = v_cellUv.x >= 0.0 && v_cellUv.y >= 0.0 && v_cellUv.x < 1.0 && v_cellUv.y < 1.0;
   bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
-  vec3 fill = v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell);
+  vec3 fill = frontier ? u_background : (v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
   vec3 base = fill;
   if (u_cellSize >= 3.0) {
     vec2 pixelWidth = max(fwidth(v_cellUv), vec2(0.000001));
@@ -188,15 +194,15 @@ void main() {
   }
 
   int stateIndex = int(clamp(v_sprite, 0.0, ${SQUARE_EXPLODED_SPRITE.toFixed(1)}) + 0.5);
-  vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
+  vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
 
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${SQUARE_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
-  if (!insideCell) glyph.a = 0.0;
+  if (!insideCell || frontier) glyph.a = 0.0;
   vec4 color = vec4(mix(base, glyph.rgb, glyph.a), 1.0);
 
-  if (v_artifact > 0.5 && insideCell) {
+  if (artifact && insideCell) {
     vec2 centered = v_cellUv - 0.5;
     vec2 rotated = vec2(centered.x + centered.y, centered.y - centered.x) * 0.707107;
     float square = max(abs(rotated.x), abs(rotated.y));
@@ -227,7 +233,7 @@ uniform float u_cellSize;
 out vec2 v_local;
 out vec2 v_spriteOffset;
 flat out float v_sprite;
-flat out float v_artifact;
+flat out float v_cellKind;
 flat out float v_shape;
 flat out float v_edges;
 
@@ -254,7 +260,7 @@ void main() {
   v_local = local;
   v_spriteOffset = world - spriteCenter;
   v_sprite = a_axisVState.z;
-  v_artifact = a_axisVState.w;
+  v_cellKind = a_axisVState.w;
   v_shape = a_shapeEdges.x;
   v_edges = a_shapeEdges.y;
 }`;
@@ -268,6 +274,7 @@ uniform vec3 u_artifactEdge;
 uniform vec3 u_lodArtifact;
 uniform vec3 u_cell;
 uniform vec3 u_cellBorder;
+uniform vec3 u_background;
 uniform vec3 u_marked;
 uniform vec3 u_exploded;
 uniform vec3 u_lodColors[${SPRITE_COUNT}];
@@ -277,7 +284,7 @@ uniform float u_cellSize;
 in vec2 v_local;
 in vec2 v_spriteOffset;
 flat in float v_sprite;
-flat in float v_artifact;
+flat in float v_cellKind;
 flat in float v_shape;
 flat in float v_edges;
 out vec4 outColor;
@@ -289,6 +296,8 @@ void includeEdge(float lineValue, int bit, int edges, inout float edgePixels) {
 void main() {
   int shape = int(v_shape + 0.5);
   int edges = int(v_edges + 0.5);
+  bool frontier = v_cellKind > 1.5;
+  bool artifact = v_cellKind > 0.5 && !frontier;
   float edgePixels = 100000.0;
   bool inside = false;
   if (shape == 1) {
@@ -318,14 +327,21 @@ void main() {
     // carrier quads overlap only in this narrow strip, so draw order cannot
     // reveal the clear color at diagonal edges or six-way vertices.
     inside = withinCoverage;
-    edgePixels = min(
-      min(abs(edge0) / max(fwidth(edge0), 0.000001), abs(edge1) / max(fwidth(edge1), 0.000001)),
-      min(abs(edge2) / max(fwidth(edge2), 0.000001), abs(edge3) / max(fwidth(edge3), 0.000001))
-    ) * 2.0;
+    if (frontier) {
+      if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(edge0) / max(fwidth(edge0), 0.000001) * 2.0);
+      if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(edge1) / max(fwidth(edge1), 0.000001) * 2.0);
+      if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(edge2) / max(fwidth(edge2), 0.000001) * 2.0);
+      if ((edges & 8) != 0) edgePixels = min(edgePixels, abs(edge3) / max(fwidth(edge3), 0.000001) * 2.0);
+    } else {
+      edgePixels = min(
+        min(abs(edge0) / max(fwidth(edge0), 0.000001), abs(edge1) / max(fwidth(edge1), 0.000001)),
+        min(abs(edge2) / max(fwidth(edge2), 0.000001), abs(edge3) / max(fwidth(edge3), 0.000001))
+      ) * 2.0;
+    }
   }
   if (!inside) discard;
 
-  vec3 fill = v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell);
+  vec3 fill = frontier ? u_background : (v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
   vec3 detailedBase = fill;
   if (u_cellSize >= 3.0 && edgePixels < 100000.0) {
     float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, edgePixels);
@@ -333,16 +349,17 @@ void main() {
   }
 
   int stateIndex = int(clamp(v_sprite, 0.0, ${EXPLODED_SPRITE.toFixed(1)}) + 0.5);
-  vec3 stateColor = v_artifact > 0.5 ? u_lodArtifact : u_lodColors[stateIndex];
+  vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
   float contentExtent = shape == 3 ? 0.85 : 0.62;
   vec2 contentLocal = v_spriteOffset / contentExtent;
   vec2 uv = clamp(contentLocal + 0.5, 0.0, 1.0);
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
+  if (frontier) glyph.a = 0.0;
   vec3 detailed = mix(detailedBase, glyph.rgb, glyph.a);
 
-  if (v_artifact > 0.5) {
+  if (artifact) {
     vec2 rotated = vec2(contentLocal.x + contentLocal.y, contentLocal.y - contentLocal.x) * 0.707107;
     float square = max(abs(rotated.x), abs(rotated.y));
     if (square < 0.27) detailed = u_artifactEdge;
@@ -405,7 +422,7 @@ void main() {
 interface CachedTile {
   cells: Float32Array;
   generation: number;
-  version: number;
+  version: string;
 }
 
 interface VisibleTile {
@@ -452,6 +469,7 @@ interface GlResources {
   genericLodArtifactUniform: WebGLUniformLocation;
   genericCellUniform: WebGLUniformLocation;
   genericCellBorderUniform: WebGLUniformLocation;
+  genericBackgroundUniform: WebGLUniformLocation;
   genericMarkedUniform: WebGLUniformLocation;
   genericExplodedUniform: WebGLUniformLocation;
   genericLodColorsUniform: WebGLUniformLocation;
@@ -534,6 +552,8 @@ export class WebGLRenderer {
     frameMs: 0,
     visibleCells: 0,
     drawnCells: 0,
+    frontierCells: 0,
+    frontierEdges: 0,
     chunks: 0,
     storedCells: 0,
     cachedTiles: 0,
@@ -559,6 +579,8 @@ export class WebGLRenderer {
   private frameId: number | null = null;
   private contextLost = false;
   private instanceCount = 0;
+  private frontierCellCount = 0;
+  private frontierEdgeCount = 0;
   private instanceUploads = 0;
   private frameCount = 0;
   private previousFrameStartedAt = 0;
@@ -998,6 +1020,8 @@ export class WebGLRenderer {
         instanceUploads: this.instanceUploads,
         cachedTiles: this.tileCache.size,
         storedCells: this.model.store.nonZeroCells,
+        frontierCells: this.frontierCellCount,
+        frontierEdges: this.frontierEdgeCount,
       };
       return;
     }
@@ -1034,6 +1058,8 @@ export class WebGLRenderer {
       frameMs: performance.now() - startedAt,
       visibleCells: Math.abs((visibleMax.x - visibleMin.x + 1) * (visibleMax.y - visibleMin.y + 1)),
       drawnCells: this.instanceCount,
+      frontierCells: this.frontierCellCount,
+      frontierEdges: this.frontierEdgeCount,
       chunks: this.model.store.chunkCount,
       storedCells: this.model.store.nonZeroCells,
       cachedTiles: this.tileCache.size,
@@ -1380,11 +1406,41 @@ export class WebGLRenderer {
     const anchor = topology.geometry(anchorCellX, anchorCellY).center;
     this.genericAnchorWorldX = anchor.x;
     this.genericAnchorWorldY = anchor.y;
-    const rangeCells = Math.max(1, Math.min(this.model.store.nonZeroCells, (maxX - minX + 1) * (maxY - minY + 1)));
-    const instances = new Float32Array(rangeCells * GENERIC_INSTANCE_FLOATS);
+    const cellKey = (x: number, y: number) => `${x},${y}`;
+    const detailFrontier = this.cellSize > SPARSE_LOD_THRESHOLD;
+    const renderCells = detailFrontier
+      ? new Map<string, { x: number; y: number; state: CellState; frontier: boolean }>()
+      : null;
+    if (renderCells) {
+      const sourceCells: Array<{ x: number; y: number; state: CellState }> = [];
+      this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+        const cell = { x, y, state };
+        sourceCells.push(cell);
+        renderCells.set(cellKey(x, y), { ...cell, frontier: false });
+      });
+      for (const source of sourceCells) {
+        if (!this.isUncovered(source.state)) continue;
+        for (const neighbor of topology.edgeNeighbors(source.x, source.y)) {
+          const { x, y } = neighbor;
+          if (x < minX || x > maxX || y < minY || y > maxY) continue;
+          const key = cellKey(x, y);
+          if (renderCells.has(key) || this.model.getState(x, y) !== CellState.Covered) continue;
+          renderCells.set(key, { x, y, state: CellState.Covered, frontier: true });
+        }
+      }
+    }
+    const storedCapacity = Math.max(
+      1,
+      Math.min(this.model.store.nonZeroCells, (maxX - minX + 1) * (maxY - minY + 1)),
+    );
+    const instances = new Float32Array(
+      Math.max(1, renderCells?.size ?? storedCapacity) * GENERIC_INSTANCE_FLOATS,
+    );
     let index = 0;
+    let frontierCells = 0;
+    let frontierEdges = 0;
 
-    this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+    const appendCell = (x: number, y: number, state: CellState, frontier: boolean) => {
       if (index + GENERIC_INSTANCE_FLOATS > instances.length) return;
       const geometry = topology.geometry(x, y);
       let drawCenterX = geometry.center.x;
@@ -1404,14 +1460,16 @@ export class WebGLRenderer {
         drawCenterY = (geometryMinY + geometryMaxY) / 2;
       }
       const edgeNeighbors = topology.edgeNeighbors(x, y);
-      let edges = 0;
-      for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
-        const neighbor = edgeNeighbors[edge];
-        if (
-          compareCells({ x, y }, neighbor) < 0 ||
-          !this.isRenderable(this.model.getState(neighbor.x, neighbor.y))
-        ) {
-          edges |= 1 << edge;
+      let edges = frontier ? this.frontierContinuationEdges(x, y) : 0;
+      if (!frontier) {
+        for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
+          const neighbor = edgeNeighbors[edge];
+          if (
+            compareCells({ x, y }, neighbor) < 0 ||
+            !this.isRenderable(this.model.getState(neighbor.x, neighbor.y))
+          ) {
+            edges |= 1 << edge;
+          }
         }
       }
       const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
@@ -1421,11 +1479,27 @@ export class WebGLRenderer {
       instances[index++] = geometry.axisU.y;
       instances[index++] = geometry.axisV.x;
       instances[index++] = geometry.axisV.y;
-      instances[index++] = this.spriteFor(state);
-      instances[index++] = state === CellState.Opened && this.model.artifactAt(x, y) ? 1 : 0;
+      instances[index++] = frontier ? 0 : this.spriteFor(state);
+      instances[index++] = frontier
+        ? FRONTIER_CELL_KIND
+        : state === CellState.Opened && this.model.artifactAt(x, y)
+          ? ARTIFACT_CELL_KIND
+          : 0;
       instances[index++] = shape;
       instances[index++] = edges;
-    });
+      if (frontier) {
+        frontierCells += 1;
+        frontierEdges += this.edgeCount(edges);
+      }
+    };
+
+    if (renderCells) {
+      for (const cell of renderCells.values()) appendCell(cell.x, cell.y, cell.state, cell.frontier);
+    } else {
+      this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+        appendCell(x, y, state, false);
+      });
+    }
 
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.resources.genericInstanceBuffer);
@@ -1433,6 +1507,8 @@ export class WebGLRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.instanceUploads += 1;
     this.instanceCount = index / GENERIC_INSTANCE_FLOATS;
+    this.frontierCellCount = frontierCells;
+    this.frontierEdgeCount = frontierEdges;
     this.range = {
       lod: this.cellSize <= SPARSE_LOD_THRESHOLD ? "pixel" : "detail",
       anchorX,
@@ -1467,22 +1543,29 @@ export class WebGLRenderer {
 
     const instances = new Float32Array(instanceFloats);
     let instanceIndex = 0;
+    let frontierCells = 0;
+    let frontierEdges = 0;
     for (const tile of visibleTiles) {
       for (let source = 0; source < tile.cells.length; source += CACHED_CELL_FLOATS) {
         const localX = tile.cells[source];
         const localY = tile.cells[source + 1];
         const worldX = tile.worldOriginX + localX;
         const worldY = tile.worldOriginY + localY;
+        const frontier = tile.cells[source + 3] === FRONTIER_CELL_KIND;
         // Every grid line belongs to the cell below/right of it. Exposed right/bottom
         // lines are therefore extended into the otherwise unrendered neighbor.
-        let edges = 1 | 2;
-        if (!this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
-        if (!this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
+        let edges = frontier ? this.squareFrontierContinuationEdges(worldX, worldY) : 1 | 2;
+        if (!frontier && !this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
+        if (!frontier && !this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
         instances[instanceIndex++] = tile.relativeOriginX + localX;
         instances[instanceIndex++] = tile.relativeOriginY + localY;
         instances[instanceIndex++] = tile.cells[source + 2];
         instances[instanceIndex++] = tile.cells[source + 3];
         instances[instanceIndex++] = edges;
+        if (frontier) {
+          frontierCells += 1;
+          frontierEdges += this.edgeCount(edges);
+        }
       }
     }
 
@@ -1492,6 +1575,8 @@ export class WebGLRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.instanceUploads += 1;
     this.instanceCount = instanceIndex / INSTANCE_FLOATS;
+    this.frontierCellCount = frontierCells;
+    this.frontierEdgeCount = frontierEdges;
     this.range = {
       lod: "detail",
       anchorX,
@@ -1549,6 +1634,8 @@ export class WebGLRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, textureWidth, textureHeight, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, statePixels);
     this.instanceUploads += 1;
     this.instanceCount = visibleStates;
+    this.frontierCellCount = 0;
+    this.frontierEdgeCount = 0;
     this.pixelTextureOriginX = textureOriginX - anchorWorldX;
     this.pixelTextureOriginY = textureOriginY - anchorWorldY;
     this.pixelTextureWidth = textureWidth;
@@ -1569,7 +1656,7 @@ export class WebGLRenderer {
 
   private getTileCells(tileX: number, tileY: number): Float32Array {
     const key = `${tileX},${tileY}`;
-    const version = this.model.store.getTileVersion(tileX, tileY);
+    const version = this.squareTileVersion(tileX, tileY);
     const existing = this.tileCache.get(key);
     if (existing?.generation === this.model.store.generation && existing.version === version) {
       this.tileCache.delete(key);
@@ -1577,19 +1664,66 @@ export class WebGLRenderer {
       return existing.cells;
     }
 
-    const cells = new Float32Array(CELLS_PER_TILE * CACHED_CELL_FLOATS);
     const originX = tileX * RENDER_TILE_CELLS;
     const originY = tileY * RENDER_TILE_CELLS;
+    const renderCells = new Map<
+      number,
+      { localX: number; localY: number; state: CellState; frontier: boolean }
+    >();
+    this.model.store.forEachNonZeroInBounds(
+      originX - 1,
+      originY - 1,
+      originX + RENDER_TILE_CELLS,
+      originY + RENDER_TILE_CELLS,
+      (x, y, state) => {
+        const localX = x - originX;
+        const localY = y - originY;
+        if (
+          localX >= 0 &&
+          localX < RENDER_TILE_CELLS &&
+          localY >= 0 &&
+          localY < RENDER_TILE_CELLS
+        ) {
+          renderCells.set(localY * RENDER_TILE_CELLS + localX, { localX, localY, state, frontier: false });
+        }
+        if (!this.isUncovered(state)) return;
+        for (const neighbor of this.model.topology.edgeNeighbors(x, y)) {
+          const frontierX = neighbor.x - originX;
+          const frontierY = neighbor.y - originY;
+          if (
+            frontierX < 0 ||
+            frontierX >= RENDER_TILE_CELLS ||
+            frontierY < 0 ||
+            frontierY >= RENDER_TILE_CELLS ||
+            this.model.getState(neighbor.x, neighbor.y) !== CellState.Covered
+          ) {
+            continue;
+          }
+          const frontierIndex = frontierY * RENDER_TILE_CELLS + frontierX;
+          if (!renderCells.has(frontierIndex)) {
+            renderCells.set(frontierIndex, {
+              localX: frontierX,
+              localY: frontierY,
+              state: CellState.Covered,
+              frontier: true,
+            });
+          }
+        }
+      },
+    );
+
+    const cells = new Float32Array(Math.min(CELLS_PER_TILE, renderCells.size) * CACHED_CELL_FLOATS);
     let index = 0;
-    for (let localY = 0; localY < RENDER_TILE_CELLS; localY += 1) {
-      for (let localX = 0; localX < RENDER_TILE_CELLS; localX += 1) {
-        const state = this.model.getState(originX + localX, originY + localY);
-        if (state === CellState.Covered || state === CellState.Queued) continue;
-        cells[index++] = localX;
-        cells[index++] = localY;
-        cells[index++] = this.squareSpriteFor(state);
-        cells[index++] = state === CellState.Opened && this.model.artifactAt(originX + localX, originY + localY) ? 1 : 0;
-      }
+    for (const cell of renderCells.values()) {
+      if (index + CACHED_CELL_FLOATS > cells.length) break;
+      cells[index++] = cell.localX;
+      cells[index++] = cell.localY;
+      cells[index++] = cell.frontier ? 0 : this.squareSpriteFor(cell.state);
+      cells[index++] = cell.frontier
+        ? FRONTIER_CELL_KIND
+        : cell.state === CellState.Opened && this.model.artifactAt(originX + cell.localX, originY + cell.localY)
+          ? ARTIFACT_CELL_KIND
+          : 0;
     }
 
     const tile: CachedTile = {
@@ -1599,6 +1733,48 @@ export class WebGLRenderer {
     };
     this.tileCache.set(key, tile);
     return tile.cells;
+  }
+
+  private squareTileVersion(tileX: number, tileY: number): string {
+    let version = "";
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        version += `${this.model.store.getTileVersion(tileX + offsetX, tileY + offsetY)},`;
+      }
+    }
+    return version;
+  }
+
+  private squareFrontierContinuationEdges(x: number, y: number): number {
+    let edges = 0;
+    if (this.isUncovered(this.model.getState(x, y - 1))) edges |= 1 | 2 | 4;
+    if (this.isUncovered(this.model.getState(x + 1, y))) edges |= 1 | 4 | 8;
+    if (this.isUncovered(this.model.getState(x, y + 1))) edges |= 2 | 4 | 8;
+    if (this.isUncovered(this.model.getState(x - 1, y))) edges |= 1 | 2 | 8;
+    return edges;
+  }
+
+  private frontierContinuationEdges(x: number, y: number): number {
+    const edgeNeighbors = this.model.topology.edgeNeighbors(x, y);
+    let edges = 0;
+    for (let sharedEdge = 0; sharedEdge < edgeNeighbors.length; sharedEdge += 1) {
+      const neighbor = edgeNeighbors[sharedEdge];
+      if (!this.isUncovered(this.model.getState(neighbor.x, neighbor.y))) continue;
+      edges |= 1 << sharedEdge;
+      edges |= 1 << ((sharedEdge + edgeNeighbors.length - 1) % edgeNeighbors.length);
+      edges |= 1 << ((sharedEdge + 1) % edgeNeighbors.length);
+    }
+    return edges;
+  }
+
+  private edgeCount(edges: number): number {
+    let remaining = edges;
+    let count = 0;
+    while (remaining > 0) {
+      count += remaining & 1;
+      remaining >>>= 1;
+    }
+    return count;
   }
 
   private spriteFor(state: CellState): number {
@@ -1619,6 +1795,10 @@ export class WebGLRenderer {
     return state !== CellState.Covered && state !== CellState.Queued;
   }
 
+  private isUncovered(state: CellState): boolean {
+    return isOpened(state) || state === CellState.Exploded;
+  }
+
   private trimTileCache(maxTiles: number): void {
     while (this.tileCache.size > maxTiles) {
       const oldestKey = this.tileCache.keys().next().value as string | undefined;
@@ -1631,6 +1811,8 @@ export class WebGLRenderer {
     this.tileCache.clear();
     this.range = null;
     this.instanceCount = 0;
+    this.frontierCellCount = 0;
+    this.frontierEdgeCount = 0;
   }
 
   private createResources(): GlResources {
@@ -1793,6 +1975,7 @@ export class WebGLRenderer {
       genericLodArtifactUniform: requireUniform(gl, genericProgram, "u_lodArtifact"),
       genericCellUniform: requireUniform(gl, genericProgram, "u_cell"),
       genericCellBorderUniform: requireUniform(gl, genericProgram, "u_cellBorder"),
+      genericBackgroundUniform: requireUniform(gl, genericProgram, "u_background"),
       genericMarkedUniform: requireUniform(gl, genericProgram, "u_marked"),
       genericExplodedUniform: requireUniform(gl, genericProgram, "u_exploded"),
       genericLodColorsUniform: requireUniform(gl, genericProgram, "u_lodColors[0]"),
@@ -1843,6 +2026,7 @@ export class WebGLRenderer {
     gl.uniform3fv(resources.genericLodArtifactUniform, artifactLod);
     gl.uniform3fv(resources.genericCellUniform, cell);
     gl.uniform3fv(resources.genericCellBorderUniform, hexToRgb(this.theme.cellBorder));
+    gl.uniform3fv(resources.genericBackgroundUniform, this.theme.backgroundRgb);
     gl.uniform3fv(resources.genericMarkedUniform, hexToRgb(this.theme.marked));
     gl.uniform3fv(resources.genericExplodedUniform, hexToRgb(this.theme.exploded));
     gl.uniform3fv(resources.genericLodColorsUniform, genericLodColors);

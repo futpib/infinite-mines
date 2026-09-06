@@ -151,6 +151,233 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
   await expect(page.locator("#topology-pill")).toHaveText("RHOMBILLE");
 });
 
+test("R48 — boundary lines continue one edge-neighbor cell into covered fog", async ({ page }) => {
+  await openDeterministicGame(page, 0xf09b_0048);
+
+  for (const topology of ["square", "triangular", "rhombille"] as const) {
+    const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await page.evaluate(
+      ({ topologyId, opened }) => {
+        const api = window.__infiniteMines;
+        api.newGame("beginner", topologyId);
+        api.model.store.clear();
+        api.model.store.set(0, 0, opened);
+        api.renderer.home();
+      },
+      { topologyId: topology, opened: CellState.Opened1 },
+    );
+    await waitForNextFrame(page, previousFrame);
+
+    const detail = await page.evaluate(() => {
+      const api = window.__infiniteMines;
+      const canvas = api.renderer.canvas;
+      const gl = api.renderer.gl;
+      const dpr = canvas.width / canvas.getBoundingClientRect().width;
+      const styles = getComputedStyle(document.documentElement);
+      const parseHex = (value: string) => [
+        Number.parseInt(value.slice(1, 3), 16),
+        Number.parseInt(value.slice(3, 5), 16),
+        Number.parseInt(value.slice(5, 7), 16),
+      ];
+      const background = parseHex(styles.getPropertyValue("--board-bg").trim());
+      const border = parseHex(styles.getPropertyValue("--board-cell-border").trim());
+      const distance = (pixel: Uint8Array, expected: number[]) =>
+        Math.hypot(pixel[0] - expected[0], pixel[1] - expected[1], pixel[2] - expected[2]);
+      const readCssPixel = (x: number, y: number) => {
+        const pixel = new Uint8Array(4);
+        gl.readPixels(
+          Math.floor(x * dpr),
+          canvas.height - 1 - Math.floor(y * dpr),
+          1,
+          1,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          pixel,
+        );
+        return pixel;
+      };
+      const neighbors = api.model.topology.edgeNeighbors(0, 0);
+      const sourcePolygon = api.renderer.cellScreenPolygon(0, 0);
+      const samePoint = (left: { x: number; y: number }, right: { x: number; y: number }) =>
+        Math.hypot(left.x - right.x, left.y - right.y) < 0.01;
+      const hasLineNear = (x: number, y: number) => {
+        for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
+          for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
+            if (distance(readCssPixel(x + offsetX / dpr, y + offsetY / dpr), background) > 10) return true;
+          }
+        }
+        return false;
+      };
+      gl.finish();
+      const samples = neighbors.map((cell) => {
+        const polygon = api.renderer.cellScreenPolygon(cell.x, cell.y);
+        const center = {
+          x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
+          y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
+        };
+        const left = Math.floor(Math.min(...polygon.map((point) => point.x)) * dpr);
+        const right = Math.ceil(Math.max(...polygon.map((point) => point.x)) * dpr);
+        const top = Math.floor(Math.min(...polygon.map((point) => point.y)) * dpr);
+        const bottom = Math.ceil(Math.max(...polygon.map((point) => point.y)) * dpr);
+        const pixels = new Uint8Array(Math.max(1, right - left) * Math.max(1, bottom - top) * 4);
+        gl.readPixels(
+          left,
+          canvas.height - bottom,
+          Math.max(1, right - left),
+          Math.max(1, bottom - top),
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          pixels,
+        );
+        let borderPixels = 0;
+        for (let offset = 0; offset < pixels.length; offset += 4) {
+          if (distance(pixels.subarray(offset, offset + 4), border) < 35) borderPixels += 1;
+        }
+        const sharedEdge = polygon.findIndex((point, index) => {
+          const next = polygon[(index + 1) % polygon.length];
+          return (
+            sourcePolygon.some((source) => samePoint(source, point)) &&
+            sourcePolygon.some((source) => samePoint(source, next))
+          );
+        });
+        const paintedEdges = polygon.map((point, index) => {
+          const next = polygon[(index + 1) % polygon.length];
+          return hasLineNear((point.x + next.x) / 2, (point.y + next.y) / 2);
+        });
+        const expectedPainted = paintedEdges.map(
+          (_painted, index) =>
+            index === sharedEdge ||
+            index === (sharedEdge + polygon.length - 1) % polygon.length ||
+            index === (sharedEdge + 1) % polygon.length,
+        );
+        return {
+          state: api.model.getState(cell.x, cell.y),
+          centerIsFog: distance(readCssPixel(center.x, center.y), background) < 3,
+          borderPixels,
+          sharedEdge,
+          paintedEdges,
+          expectedPainted,
+        };
+      });
+      return { diagnostics: api.diagnostics(), neighborCount: neighbors.length, samples };
+    });
+
+    expect(detail.diagnostics.lod).toBe("detail");
+    expect(detail.diagnostics.frontierCells).toBe(detail.neighborCount);
+    expect(detail.diagnostics.frontierEdges).toBe(detail.neighborCount * 3);
+    expect(detail.diagnostics.drawnCells).toBe(detail.neighborCount + 1);
+    expect(detail.samples.every((sample) => sample.state === CellState.Covered)).toBe(true);
+    expect(detail.samples.every((sample) => sample.centerIsFog)).toBe(true);
+    expect(detail.samples.every((sample) => sample.borderPixels > 0)).toBe(true);
+    expect(detail.samples.every((sample) => sample.sharedEdge >= 0)).toBe(true);
+    expect(
+      detail.samples.every((sample) =>
+        sample.paintedEdges.every((painted, index) => painted === sample.expectedPainted[index]),
+      ),
+      JSON.stringify({ topology, samples: detail.samples }),
+    ).toBe(true);
+
+    if (topology === "square") {
+      const beforeMarkFrame = detail.diagnostics.frameCount;
+      await page.evaluate((flagged) => {
+        const api = window.__infiniteMines;
+        api.model.store.set(10, 0, flagged);
+        api.renderer.requestRender({ minX: 10, minY: 0, maxX: 10, maxY: 0 });
+      }, CellState.Flagged);
+      await waitForNextFrame(page, beforeMarkFrame);
+      expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frontierCells)).toBe(4);
+      const beforeClearFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+      await page.evaluate(() => {
+        const api = window.__infiniteMines;
+        api.model.store.set(10, 0, 0);
+        api.renderer.requestRender({ minX: 10, minY: 0, maxX: 10, maxY: 0 });
+      });
+      await waitForNextFrame(page, beforeClearFrame);
+    }
+
+    const beforePixelFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+    await page.evaluate(() => {
+      window.__infiniteMines.renderer.restoreView({ version: 1, zoom: 0.04, panX: 0, panY: 0 });
+    });
+    await waitForNextFrame(page, beforePixelFrame);
+    expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+      lod: "pixel",
+      borderCssPixels: 0,
+      drawnCells: 1,
+      frontierCells: 0,
+      frontierEdges: 0,
+    });
+  }
+
+  const beforeSeamFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.evaluate((opened) => {
+    const api = window.__infiniteMines;
+    api.newGame("beginner", "square");
+    api.model.store.clear();
+    api.model.store.set(63, 0, opened);
+    api.renderer.restoreView({ version: 1, zoom: 1, panX: -63 * 25, panY: 0 });
+  }, CellState.Opened1);
+  await waitForNextFrame(page, beforeSeamFrame);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frontierCells)).toBe(4);
+
+  const beforeAdvanceFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.evaluate((opened) => {
+    const api = window.__infiniteMines;
+    api.model.store.set(64, 0, opened);
+    api.renderer.requestRender({ minX: 64, minY: 0, maxX: 64, maxY: 0 });
+  }, CellState.Opened1);
+  await waitForNextFrame(page, beforeAdvanceFrame);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().frontierCells)).toBe(6);
+
+  const beforeRetractionFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.model.store.set(64, 0, 0);
+    api.renderer.requestRender({ minX: 64, minY: 0, maxX: 64, maxY: 0 });
+  });
+  await waitForNextFrame(page, beforeRetractionFrame);
+  const partial = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    const pixels = new Uint8Array(api.renderer.canvas.width * api.renderer.canvas.height * 4);
+    api.renderer.gl.readPixels(
+      0,
+      0,
+      api.renderer.canvas.width,
+      api.renderer.canvas.height,
+      api.renderer.gl.RGBA,
+      api.renderer.gl.UNSIGNED_BYTE,
+      pixels,
+    );
+    let hash = 2166136261;
+    for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+    return { hash, diagnostics: api.diagnostics() };
+  });
+  expect(partial.diagnostics.frontierCells).toBe(4);
+  expect(partial.diagnostics.redrawMode).toBe("damage");
+
+  const beforeFullFrame = partial.diagnostics.frameCount;
+  await page.evaluate(() => window.__infiniteMines.renderer.requestRender());
+  await waitForNextFrame(page, beforeFullFrame);
+  expect(
+    await page.evaluate(() => {
+      const api = window.__infiniteMines;
+      const pixels = new Uint8Array(api.renderer.canvas.width * api.renderer.canvas.height * 4);
+      api.renderer.gl.readPixels(
+        0,
+        0,
+        api.renderer.canvas.width,
+        api.renderer.canvas.height,
+        api.renderer.gl.RGBA,
+        api.renderer.gl.UNSIGNED_BYTE,
+        pixels,
+      );
+      let hash = 2166136261;
+      for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+      return hash;
+    }),
+  ).toBe(partial.hash);
+});
+
 test("R37 — v1 saved fields migrate to Square and v2 topology damage matches a full redraw", async ({ page }) => {
   await openDeterministicGame(page, 0x51a7_10a0);
   await page.evaluate(async () => {
