@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
+  MAX_CHAIN_EXPLOSIONS_PER_ACTION,
   ORIGINAL_AVAILABLE_CELL_FRACTION,
   PRESET_DENSITIES,
   THING_LARGE_RESERVED_SIDE,
@@ -581,48 +582,116 @@ describe("gameplay", () => {
         });
         expect(overFlagged.health).toBe(healthBeforeNoOp);
 
-        const connectedMines = new GameModel({
-          mode: "impossible",
-          seed: 84,
-          autoStart: false,
-          topology: topologyId,
-        });
-        connectedMines.store.set(centerX, centerY, CellState.Opened4);
-        const wrongFlags = new Set(neighbors.slice(0, 4).map(([x, y]) => `${x},${y}`));
-        const initialKeys = new Set(neighbors.map(([x, y]) => `${x},${y}`));
-        const actualMines = new Set(neighbors.slice(4, 8).map(([x, y]) => `${x},${y}`));
-        for (const [x, y] of neighbors.slice(0, 4)) connectedMines.store.set(x, y, CellState.Flagged);
-        let mineLookups = 0;
-        vi.spyOn(connectedMines, "mineAt").mockImplementation((x, y) => {
-          mineLookups += 1;
-          if (mineLookups > 2_000) throw new Error("unbounded mine-chain traversal");
-          const key = `${x},${y}`;
-          return actualMines.has(key) || ((x !== centerX || y !== centerY) && !initialKeys.has(key) && !wrongFlags.has(key));
-        });
+        const runInfiniteChain = () => {
+          const connectedMines = new GameModel({
+            mode: "impossible",
+            seed: 84,
+            autoStart: false,
+            topology: topologyId,
+          });
+          connectedMines.store.set(centerX, centerY, CellState.Opened4);
+          const wrongFlags = new Set(neighbors.slice(0, 4).map(([x, y]) => `${x},${y}`));
+          const initialKeys = new Set(neighbors.map(([x, y]) => `${x},${y}`));
+          const actualMines = new Set(neighbors.slice(4, 8).map(([x, y]) => `${x},${y}`));
+          for (const [x, y] of neighbors.slice(0, 4)) connectedMines.store.set(x, y, CellState.Flagged);
 
-        expect(connectedMines.clueAt(centerX, centerY)).toBe(4);
-        mineLookups = 0;
-        const blast = connectedMines.reveal(centerX, centerY);
-        expect(blast.exploded, `${topologyId} blast at ${centerX},${centerY}`).toBe(true);
-        expect(blast.changed).toBe(neighbors.length - 4);
-        expect(blast.healthDelta).toBe(-1);
-        expect(mineLookups).toBeLessThan(200);
-        expect(blast.damage).not.toBeNull();
-        expect(blast.damage!.minX).toBeGreaterThanOrEqual(Math.min(...neighbors.map(([x]) => x)));
-        expect(blast.damage!.maxX).toBeLessThanOrEqual(Math.max(...neighbors.map(([x]) => x)));
-        expect(blast.damage!.minY).toBeGreaterThanOrEqual(Math.min(...neighbors.map(([, y]) => y)));
-        expect(blast.damage!.maxY).toBeLessThanOrEqual(Math.max(...neighbors.map(([, y]) => y)));
+          const secondaryMarks = neighbors
+            .slice(4, 8)
+            .flatMap(([x, y]) => {
+              const secondary: Array<[number, number]> = [];
+              connectedMines.topology.forEachNeighbor(x, y, (nextX, nextY) => secondary.push([nextX, nextY]));
+              return secondary;
+            })
+            .filter(
+              ([x, y], index, cells) =>
+                (x !== centerX || y !== centerY) &&
+                !initialKeys.has(`${x},${y}`) &&
+                cells.findIndex(([otherX, otherY]) => otherX === x && otherY === y) === index,
+            )
+            .slice(0, 2);
+          expect(secondaryMarks).toHaveLength(2);
+          connectedMines.store.set(secondaryMarks[0][0], secondaryMarks[0][1], CellState.Flagged);
+          connectedMines.store.set(secondaryMarks[1][0], secondaryMarks[1][1], CellState.Question);
 
-        const secondaryMine = neighbors
-          .flatMap(([x, y]) => {
-            const secondary: Array<[number, number]> = [];
-            connectedMines.topology.forEachNeighbor(x, y, (nextX, nextY) => secondary.push([nextX, nextY]));
-            return secondary;
-          })
-          .find(([x, y]) => (x !== centerX || y !== centerY) && !initialKeys.has(`${x},${y}`));
-        expect(secondaryMine).toBeDefined();
-        expect(connectedMines.getState(secondaryMine![0], secondaryMine![1])).toBe(CellState.Covered);
-        expect(connectedMines.store.nonZeroCells).toBe(neighbors.length + 1);
+          const isMockMine = (x: number, y: number): boolean => {
+            const key = `${x},${y}`;
+            return (
+              actualMines.has(key) ||
+              ((x !== centerX || y !== centerY) && !initialKeys.has(key) && !wrongFlags.has(key))
+            );
+          };
+          const expectedQueue = neighbors.slice(4, 8).map(([x, y]) => ({ x, y }));
+          const expectedScheduled = new Set(expectedQueue.map(({ x, y }) => `${x},${y}`));
+          const expectedExploded: string[] = [];
+          while (expectedQueue.length > 0) {
+            const cell = expectedQueue.shift()!;
+            expectedExploded.push(`${cell.x},${cell.y}`);
+            connectedMines.topology.forEachNeighbor(cell.x, cell.y, (x, y) => {
+              const key = `${x},${y}`;
+              if (
+                expectedScheduled.size >= MAX_CHAIN_EXPLOSIONS_PER_ACTION ||
+                expectedScheduled.has(key) ||
+                !isMockMine(x, y)
+              ) {
+                return;
+              }
+              expectedScheduled.add(key);
+              expectedQueue.push({ x, y });
+            });
+          }
+          expectedExploded.sort();
+
+          let mineLookups = 0;
+          vi.spyOn(connectedMines, "mineAt").mockImplementation((x, y) => {
+            mineLookups += 1;
+            if (mineLookups > 10_000) throw new Error("unbounded mine-chain traversal");
+            return isMockMine(x, y);
+          });
+
+          expect(connectedMines.clueAt(centerX, centerY)).toBe(4);
+          mineLookups = 0;
+          const blast = connectedMines.reveal(centerX, centerY);
+          const explodedCells: string[] = [];
+          connectedMines.store.forEachNonZero((x, y, state) => {
+            if (state === CellState.Exploded) explodedCells.push(`${x},${y}`);
+          });
+          explodedCells.sort();
+          const overflowMine = explodedCells
+            .flatMap((key) => {
+              const [x, y] = key.split(",").map(Number);
+              const adjacent: Array<[number, number]> = [];
+              connectedMines.topology.forEachNeighbor(x, y, (nextX, nextY) => adjacent.push([nextX, nextY]));
+              return adjacent;
+            })
+            .find(([x, y]) => connectedMines.getState(x, y) === CellState.Covered && connectedMines.mineAt(x, y));
+          return {
+            blast,
+            expectedExploded,
+            explodedCells,
+            health: connectedMines.health,
+            mineLookups,
+            overflowMine,
+            secondaryStates: secondaryMarks.map(([x, y]) => connectedMines.getState(x, y)),
+            packedBytes: connectedMines.createSnapshot().cells.byteLength,
+            storedCells: connectedMines.store.nonZeroCells,
+          };
+        };
+
+        const first = runInfiniteChain();
+        const second = runInfiniteChain();
+        expect(first.blast.exploded, `${topologyId} blast at ${centerX},${centerY}`).toBe(true);
+        expect(first.blast.changed).toBe(MAX_CHAIN_EXPLOSIONS_PER_ACTION + neighbors.length - 8);
+        expect(first.blast.healthDelta).toBe(-1);
+        expect(first.health).toBe(2);
+        expect(first.explodedCells).toHaveLength(MAX_CHAIN_EXPLOSIONS_PER_ACTION);
+        expect(first.explodedCells).toEqual(first.expectedExploded);
+        expect(first.secondaryStates).toEqual([CellState.Exploded, CellState.Exploded]);
+        expect(first.overflowMine).toBeDefined();
+        expect(first.mineLookups).toBeLessThan(MAX_CHAIN_EXPLOSIONS_PER_ACTION * TOPOLOGIES[topologyId].maxNeighbors + 500);
+        expect(first.blast.damage).not.toBeNull();
+        expect(first.packedBytes).toBe(first.storedCells * 9);
+        expect(second.blast).toEqual(first.blast);
+        expect(second.explodedCells).toEqual(first.explodedCells);
       }
     }
   });

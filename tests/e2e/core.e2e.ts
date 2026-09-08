@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { CellState } from "../../src/model";
+import { CellState, MAX_CHAIN_EXPLOSIONS_PER_ACTION } from "../../src/model";
 import { openDeterministicGame, worldPoint } from "./helpers";
 
 test("R01/R03 — the LAN host serves the Infinite-only WebGL app", async ({ page, request }) => {
@@ -390,7 +390,7 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
   const chordPoint = await worldPoint(page, reproduction.center);
   await page.mouse.click(chordPoint.x, chordPoint.y);
 
-  const completed = await page.evaluate(({ initialMines, secondaryMine }) => {
+  const completed = await page.evaluate(({ initialMines, secondaryMine, explodedState }) => {
     const api = window.__infiniteMines;
     const auditWindow = window as typeof window & {
       __r42Actions: Array<{
@@ -399,6 +399,7 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
         durationMs: number;
         result: {
           changed: number;
+          scoreDelta: number;
           exploded: boolean;
           healthDelta: number;
           damage: { minX: number; minY: number; maxX: number; maxY: number } | null;
@@ -410,25 +411,55 @@ test("R42 — invalid negative-coordinate chords and mine chains remain bounded"
       health: api.model.health,
       initialMineStates: initialMines.map(({ x, y }) => api.model.getState(x, y)),
       secondaryMineState: api.model.getState(secondaryMine.x, secondaryMine.y),
+      explodedMines: (() => {
+        let count = 0;
+        api.model.store.forEachNonZero((_x, _y, state) => {
+          if (state === explodedState) count += 1;
+        });
+        return count;
+      })(),
       packedBytes: api.model.createSnapshot().cells.byteLength,
       storedCells: api.model.store.nonZeroCells,
     };
-  }, reproduction);
+  }, { ...reproduction, explodedState: CellState.Exploded });
   expect(completed.action).toMatchObject({
     x: -7,
     y: -1,
-    result: { exploded: true, healthDelta: -1 },
+    result: { exploded: true },
   });
   expect(completed.action!.durationMs).toBeLessThan(100);
-  expect(completed.action!.result.changed).toBeGreaterThanOrEqual(4);
-  expect(completed.action!.result.changed).toBeLessThan(256);
+  expect(completed.action!.result.changed).toBeGreaterThan(reproduction.initialMines.length);
   expect(completed.action!.result.damage).not.toBeNull();
-  expect(completed.action!.result.damage!.maxX - completed.action!.result.damage!.minX).toBeLessThan(32);
-  expect(completed.action!.result.damage!.maxY - completed.action!.result.damage!.minY).toBeLessThan(32);
-  expect(completed.health).toBe(2);
+  expect(completed.action!.result.healthDelta).toBe(Math.floor(completed.action!.result.scoreDelta / 1_000) - 1);
+  expect(completed.health).toBe(3 + completed.action!.result.healthDelta);
   expect(completed.initialMineStates).toEqual(Array(4).fill(CellState.Exploded));
-  expect(completed.secondaryMineState).toBe(CellState.Covered);
+  expect(completed.secondaryMineState).toBe(CellState.Exploded);
+  expect(completed.explodedMines).toBeGreaterThan(reproduction.initialMines.length);
+  expect(completed.explodedMines).toBeLessThanOrEqual(MAX_CHAIN_EXPLOSIONS_PER_ACTION);
   expect(completed.packedBytes).toBe(completed.storedCells * 9);
+
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("saved");
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.model.topologyId)).toBe("triangular");
+  const restored = await page.evaluate(({ secondaryMine, explodedState }) => {
+    const api = window.__infiniteMines;
+    let explodedMines = 0;
+    api.model.store.forEachNonZero((_x, _y, state) => {
+      if (state === explodedState) explodedMines += 1;
+    });
+    return {
+      mode: api.model.mode,
+      health: api.model.health,
+      explodedMines,
+      secondaryMineState: api.model.getState(secondaryMine.x, secondaryMine.y),
+    };
+  }, { secondaryMine: reproduction.secondaryMine, explodedState: CellState.Exploded });
+  expect(restored).toEqual({
+    mode: "impossible",
+    health: completed.health,
+    explodedMines: completed.explodedMines,
+    secondaryMineState: CellState.Exploded,
+  });
 });
 
 test("R02/R27 — eligible fields can cheat death with a persisted, conditional run counter", async ({ page }) => {

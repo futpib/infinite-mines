@@ -245,6 +245,7 @@ export const THING_ZONE_SIZE = 24;
 export const THING_SMALL_RESERVED_SIDE = 5;
 export const THING_LARGE_RESERVED_SIDE = 6;
 export const THING_SMALL_PROBABILITY = 5 / 6;
+export const MAX_CHAIN_EXPLOSIONS_PER_ACTION = 256;
 export const thingReservedSideForRoll = (
   roll: number,
 ): typeof THING_SMALL_RESERVED_SIDE | typeof THING_LARGE_RESERVED_SIDE =>
@@ -933,27 +934,27 @@ export class GameModel {
   private openCascade(initial: number[]): ActionResult {
     if (initial.length === 0) return EMPTY_RESULT();
 
-    let queue = new Int32Array(Math.max(128, initial.length * 2));
+    let queue = new Int32Array(Math.max(192, Math.ceil(initial.length / 2) * 3));
     let head = 0;
     let tail = 0;
-    const enqueue = (x: number, y: number): void => {
+    let scheduledMines = 0;
+    const enqueue = (x: number, y: number, knownMine?: boolean, allowFlaggedMine = false): void => {
       const state = this.store.get(x, y);
-      if (
-        isOpened(state) ||
-        state === CellState.Exploded ||
-        state === CellState.Flagged ||
-        state === CellState.Queued
-      ) {
-        return;
-      }
+      if (isOpened(state) || state === CellState.Exploded || state === CellState.Queued) return;
+      if (state === CellState.Flagged && !allowFlaggedMine) return;
+      const mine = knownMine ?? this.mineAt(x, y);
+      if (state === CellState.Flagged && !mine) return;
+      if (mine && scheduledMines >= MAX_CHAIN_EXPLOSIONS_PER_ACTION) return;
       this.store.set(x, y, CellState.Queued);
-      if (tail + 2 > queue.length) {
+      if (tail + 3 > queue.length) {
         const expanded = new Int32Array(queue.length * 2);
         expanded.set(queue);
         queue = expanded;
       }
       queue[tail++] = x;
       queue[tail++] = y;
+      queue[tail++] = mine ? 1 : 0;
+      if (mine) scheduledMines += 1;
     };
 
     for (let index = 0; index < initial.length; index += 2) enqueue(initial[index], initial[index + 1]);
@@ -966,6 +967,7 @@ export class GameModel {
     while (head < tail) {
       const x = queue[head++];
       const y = queue[head++];
+      const mine = queue[head++] === 1;
       if (damage === null) damage = { minX: x, minY: y, maxX: x, maxY: y };
       else {
         damage.minX = Math.min(damage.minX, x);
@@ -974,29 +976,26 @@ export class GameModel {
         damage.maxY = Math.max(damage.maxY, y);
       }
 
-      if (this.mineAt(x, y)) {
+      if (mine) {
         this.store.set(x, y, CellState.Exploded);
         this.extendBounds(x, y);
         exploded = true;
         changed += 1;
-        // A blast opens its immediately touching safe cells, but covered mines
-        // are barriers. Recursively queueing adjacent mines can walk an
-        // unbounded mine component on an infinite high-degree topology and
-        // monopolize the main thread forever. Mines explicitly included in the
-        // original reveal/chord still detonate because they were queued before
-        // the cascade began.
+        // Blast propagation is breadth-first and counts every directly selected
+        // or recursively reached mine against one hard per-action budget. This
+        // preserves a visible chain reaction without allowing an infinite mine
+        // component to monopolize the main thread.
         this.forEachNeighbor(x, y, (neighborX, neighborY) => {
           const neighborState = this.store.get(neighborX, neighborY);
           if (
             isOpened(neighborState) ||
             neighborState === CellState.Exploded ||
-            neighborState === CellState.Flagged ||
-            neighborState === CellState.Queued ||
-            this.mineAt(neighborX, neighborY)
+            neighborState === CellState.Queued
           ) {
             return;
           }
-          enqueue(neighborX, neighborY);
+          const neighborMine = this.mineAt(neighborX, neighborY);
+          enqueue(neighborX, neighborY, neighborMine, neighborMine);
         });
         continue;
       }
@@ -1007,7 +1006,9 @@ export class GameModel {
       changed += 1;
       scoreDelta += clue;
       if (clue === 0 && this.artifactAt(x, y)) thingsDelta += 1;
-      if (clue === 0) this.forEachNeighbor(x, y, enqueue);
+      if (clue === 0) {
+        this.forEachNeighbor(x, y, (neighborX, neighborY) => enqueue(neighborX, neighborY, false));
+      }
     }
 
     const previousHealth = this.health;
