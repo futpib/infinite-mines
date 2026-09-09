@@ -214,7 +214,10 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBe(0);
     await page.waitForTimeout(470);
     await expect(page.locator("#touch-preview")).toBeVisible();
-    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
+    await expect(page.locator("#touch-preview-action > span")).toHaveText([
+      "RELEASE TO REVEAL",
+      "DRAG TO CANCEL",
+    ]);
     expect(await page.evaluate(() => window.__infiniteMines.diagnostics().touchPreview)).toMatchObject({
       ...heldCell,
       action: "reveal",
@@ -259,7 +262,10 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
     await expect(page.locator("#touch-preview")).toBeHidden();
     await page.waitForTimeout(470);
     await expect(page.locator("#touch-preview")).toBeVisible();
-    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
+    await expect(page.locator("#touch-preview-action > span")).toHaveText([
+      "RELEASE TO REVEAL",
+      "DRAG TO CANCEL",
+    ]);
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(11);
     await touchEnd();
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), markedMine)).toBe(12);

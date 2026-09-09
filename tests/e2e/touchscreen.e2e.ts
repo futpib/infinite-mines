@@ -10,7 +10,7 @@ const touchPoint = (id: number, x: number, y: number) => ({
   force: 1,
 });
 
-test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-zone panning", async ({ browser }) => {
+test("R22/R47 — coarse-pointer touch makes drag cancellation explicit and preserves dead-zone panning", async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 2,
@@ -56,7 +56,10 @@ test("R22 — coarse-pointer laptops expose touch controls and one-finger dead-z
     expect(initialPreview.x + initialPreview.width).toBeLessThanOrEqual(1188);
     expect(initialPreview.y + initialPreview.height).toBeLessThan(startY - 30);
     await expect(page.locator("#touch-preview-coordinate")).toHaveCount(0);
-    await expect(page.locator("#touch-preview-action")).toHaveText("RELEASE TO REVEAL");
+    await expect(page.locator("#touch-preview-action > span")).toHaveText([
+      "RELEASE TO REVEAL",
+      "DRAG TO CANCEL",
+    ]);
     const previewLayout = await page.locator(".touch-preview-card").evaluate((card) => {
       const neighborhood = card.querySelector<HTMLElement>("#touch-preview-neighborhood");
       const viewport = card.querySelector<HTMLElement>("#touch-preview-viewport");

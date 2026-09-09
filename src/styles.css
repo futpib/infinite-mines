@@ -424,10 +424,11 @@ a:focus-visible {
   position: relative;
   z-index: 2;
   display: grid;
-  min-height: 16px;
+  min-height: 24px;
   padding: 0 2px;
   border-radius: 999px;
   place-items: center;
+  row-gap: 1px;
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 94%, transparent);
   font-family: "SFMono-Regular", Consolas, monospace;
@@ -437,6 +438,8 @@ a:focus-visible {
   line-height: 1;
   text-align: center;
 }
+
+.touch-preview-cancel { color: var(--ink); }
 
 .touch-preview[data-action="reveal"] .touch-preview-action {
   color: var(--danger);

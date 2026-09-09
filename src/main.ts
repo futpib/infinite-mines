@@ -79,7 +79,6 @@ const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neig
 const touchPreviewTargetOverlay = element<SVGSVGElement>("#touch-preview-target-overlay");
 const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
 const touchPreviewTargetClip = element<SVGPolygonElement>("#touch-preview-target-clip-polygon");
-const touchPreviewAction = element<HTMLElement>("#touch-preview-action");
 const touchPreviewContext = (() => {
   const context = touchPreviewNeighborhood.getContext("2d", { alpha: false });
   if (!context) throw new Error("2D canvas is required for the touch preview");
@@ -647,7 +646,6 @@ function showTouchPreview(
     .join(" ");
   touchPreviewTarget.setAttribute("points", targetPoints);
   touchPreviewTargetClip.setAttribute("points", targetPoints);
-  touchPreviewAction.textContent = "RELEASE TO REVEAL";
   positionTouchPreview(screenX, screenY);
 }
 
