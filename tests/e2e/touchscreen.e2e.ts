@@ -10,7 +10,7 @@ const touchPoint = (id: number, x: number, y: number) => ({
   force: 1,
 });
 
-test("R22/R47 — coarse-pointer touch makes drag cancellation explicit and preserves dead-zone panning", async ({ browser }) => {
+test("R22/R47 — armed reveal has a live cancel zone without panning while pre-arm drag still pans", async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 2,
@@ -60,6 +60,16 @@ test("R22/R47 — coarse-pointer touch makes drag cancellation explicit and pres
       "RELEASE TO REVEAL",
       "DRAG TO CANCEL",
     ]);
+    await expect(page.locator("#touch-preview")).toHaveAttribute("data-release", "reveal");
+    const revealVisual = await page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
+      const action = document.querySelector<HTMLElement>("#touch-preview-action");
+      if (!viewport || !action) throw new Error("Missing armed preview");
+      return {
+        shadow: getComputedStyle(viewport).boxShadow,
+        actionColor: getComputedStyle(action).color,
+      };
+    });
     const previewLayout = await page.locator(".touch-preview-card").evaluate((card) => {
       const neighborhood = card.querySelector<HTMLElement>("#touch-preview-neighborhood");
       const viewport = card.querySelector<HTMLElement>("#touch-preview-viewport");
@@ -105,28 +115,97 @@ test("R22/R47 — coarse-pointer touch makes drag cancellation explicit and pres
       type: "touchMove",
       touchPoints: [touchPoint(1, startX + 80, startY + 30)],
     });
-    await expect(page.locator("#touch-preview")).toBeHidden();
+    await expect(page.locator("#touch-preview")).toBeVisible();
+    await expect(page.locator("#touch-preview")).toHaveAttribute("data-release", "cancel");
+    await expect(page.locator("#touch-preview-action > span")).toHaveText([
+      "RELEASE TO CANCEL",
+      "DRAG BACK TO REVEAL",
+    ]);
+    const cancelVisual = await page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
+      const action = document.querySelector<HTMLElement>("#touch-preview-action");
+      if (!viewport || !action) throw new Error("Missing cancelled preview");
+      return {
+        shadow: getComputedStyle(viewport).boxShadow,
+        actionColor: getComputedStyle(action).color,
+        view: window.__infiniteMines.renderer.createViewSnapshot(),
+      };
+    });
+    expect(cancelVisual.shadow).not.toBe(revealVisual.shadow);
+    expect(cancelVisual.actionColor).not.toBe(revealVisual.actionColor);
+    expect(cancelVisual.view).toEqual(before.view);
+
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [touchPoint(1, startX + 4, startY + 4)],
+    });
+    await expect(page.locator("#touch-preview")).toHaveAttribute("data-release", "reveal");
+    await expect(page.locator("#touch-preview-action > span")).toHaveText([
+      "RELEASE TO REVEAL",
+      "DRAG TO CANCEL",
+    ]);
+    const returnedVisual = await page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>("#touch-preview-viewport");
+      const action = document.querySelector<HTMLElement>("#touch-preview-action");
+      if (!viewport || !action) throw new Error("Missing re-armed preview");
+      return {
+        shadow: getComputedStyle(viewport).boxShadow,
+        actionColor: getComputedStyle(action).color,
+        view: window.__infiniteMines.renderer.createViewSnapshot(),
+      };
+    });
+    expect(returnedVisual.shadow).toBe(revealVisual.shadow);
+    expect(returnedVisual.actionColor).toBe(revealVisual.actionColor);
+    expect(returnedVisual.view).toEqual(before.view);
+
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [touchPoint(1, startX + 80, startY + 30)],
+    });
+    await expect(page.locator("#touch-preview")).toHaveAttribute("data-release", "cancel");
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
     await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.locator("#touch-preview")).toBeHidden();
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
-    const after = await page.evaluate(() => ({
+    const afterCancel = await page.evaluate(() => ({
       view: window.__infiniteMines.renderer.createViewSnapshot(),
       openedCells: window.__infiniteMines.diagnostics().openedCells,
       score: window.__infiniteMines.diagnostics().score,
       storeVersion: window.__infiniteMines.model.store.version,
     }));
-    expect(after.view.panX).toBeCloseTo(before.view.panX + 80, 5);
-    expect(after.view.panY).toBeCloseTo(before.view.panY + 30, 5);
-    expect(after.view.zoom).toBe(before.view.zoom);
-    expect(after.openedCells).toBe(before.openedCells);
-    expect(after.score).toBe(before.score);
-    expect(after.storeVersion).toBe(before.storeVersion);
+    expect(afterCancel.view).toEqual(before.view);
+    expect(afterCancel.openedCells).toBe(before.openedCells);
+    expect(afterCancel.score).toBe(before.score);
+    expect(afterCancel.storeVersion).toBe(before.storeVersion);
+
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [touchPoint(2, startX, startY)],
+    });
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [touchPoint(2, startX + 80, startY + 30)],
+    });
+    await expect(page.locator("#touch-preview")).toBeHidden();
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const afterPan = await page.evaluate(() => ({
+      view: window.__infiniteMines.renderer.createViewSnapshot(),
+      openedCells: window.__infiniteMines.diagnostics().openedCells,
+      score: window.__infiniteMines.diagnostics().score,
+      storeVersion: window.__infiniteMines.model.store.version,
+    }));
+    expect(afterPan.view.panX).toBeCloseTo(before.view.panX + 80, 5);
+    expect(afterPan.view.panY).toBeCloseTo(before.view.panY + 30, 5);
+    expect(afterPan.view.zoom).toBe(before.view.zoom);
+    expect(afterPan.openedCells).toBe(before.openedCells);
+    expect(afterPan.score).toBe(before.score);
+    expect(afterPan.storeVersion).toBe(before.storeVersion);
 
     const edgeX = bounds.x + bounds.width / 2;
     const edgeY = bounds.y + 100;
     await session.send("Input.dispatchTouchEvent", {
       type: "touchStart",
-      touchPoints: [touchPoint(2, edgeX, edgeY)],
+      touchPoints: [touchPoint(3, edgeX, edgeY)],
     });
     await expect(page.locator("#touch-preview")).toBeHidden();
     await page.waitForTimeout(470);

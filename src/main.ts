@@ -79,6 +79,8 @@ const touchPreviewNeighborhood = element<HTMLCanvasElement>("#touch-preview-neig
 const touchPreviewTargetOverlay = element<SVGSVGElement>("#touch-preview-target-overlay");
 const touchPreviewTarget = element<SVGPolygonElement>("#touch-preview-target");
 const touchPreviewTargetClip = element<SVGPolygonElement>("#touch-preview-target-clip-polygon");
+const touchPreviewPrimary = element<HTMLElement>("#touch-preview-primary");
+const touchPreviewSecondary = element<HTMLElement>("#touch-preview-secondary");
 const touchPreviewContext = (() => {
   const context = touchPreviewNeighborhood.getContext("2d", { alpha: false });
   if (!context) throw new Error("2D canvas is required for the touch preview");
@@ -566,6 +568,13 @@ function hideTouchPreview(): void {
   touchPreview.dataset.armed = "false";
 }
 
+function setTouchPreviewRelease(release: "reveal" | "cancel"): void {
+  if (touchPreview.dataset.release === release) return;
+  touchPreview.dataset.release = release;
+  touchPreviewPrimary.textContent = release === "reveal" ? "RELEASE TO REVEAL" : "RELEASE TO CANCEL";
+  touchPreviewSecondary.textContent = release === "reveal" ? "DRAG TO CANCEL" : "DRAG BACK TO REVEAL";
+}
+
 function positionTouchPreview(screenX: number, screenY: number): void {
   const margin = 12;
   const fingerClearance = 42;
@@ -632,6 +641,7 @@ function showTouchPreview(
   touchPreview.dataset.topology = model.topologyId;
   touchPreview.dataset.action = "reveal";
   touchPreview.dataset.armed = "true";
+  setTouchPreviewRelease("reveal");
   touchPreview.dataset.sourceX = sourceX.toFixed(3);
   touchPreview.dataset.sourceY = sourceY.toFixed(3);
   touchPreview.dataset.width = width.toFixed(3);
@@ -935,6 +945,7 @@ interface PointerGesture {
   moved: boolean;
   longPressed: boolean;
   longPressAction: "reveal" | "locked" | null;
+  longPressCancelled: boolean;
   mark: boolean;
   reveal: boolean;
   touch: boolean;
@@ -966,6 +977,9 @@ const activeTouches = new Map<number, TouchPoint>();
 const localPoint = (event: PointerEvent | WheelEvent): { x: number; y: number } => {
   return { x: event.offsetX, y: event.offsetY };
 };
+
+const outsideGestureDeadZone = (activeGesture: PointerGesture, clientX: number, clientY: number): boolean =>
+  (clientX - activeGesture.startClientX) ** 2 + (clientY - activeGesture.startClientY) ** 2 > DRAG_THRESHOLD_PX ** 2;
 
 const beginPinch = (): void => {
   const touches = [...activeTouches.entries()].slice(0, 2);
@@ -1059,6 +1073,7 @@ canvas.addEventListener("pointerdown", (event) => {
     moved: false,
     longPressed: false,
     longPressAction: null,
+    longPressCancelled: false,
     mark,
     reveal,
     touch,
@@ -1100,9 +1115,16 @@ canvas.addEventListener("pointermove", (event) => {
     return;
   }
   if (gesture.id !== event.pointerId) return;
-  if (event.pointerType === "touch" && !touchPreview.hidden) positionTouchPreview(point.x, point.y);
   const deltaFromStartX = event.clientX - gesture.startClientX;
   const deltaFromStartY = event.clientY - gesture.startClientY;
+  if (gesture.touch && gesture.longPressed && gesture.longPressAction === "reveal") {
+    gesture.longPressCancelled = outsideGestureDeadZone(gesture, event.clientX, event.clientY);
+    setTouchPreviewRelease(gesture.longPressCancelled ? "cancel" : "reveal");
+    positionTouchPreview(point.x, point.y);
+    gesture.lastClientX = event.clientX;
+    gesture.lastClientY = event.clientY;
+    return;
+  }
   if (!gesture.moved && deltaFromStartX ** 2 + deltaFromStartY ** 2 > DRAG_THRESHOLD_PX ** 2) {
     gesture.moved = true;
     window.clearTimeout(gesture.timer);
@@ -1132,7 +1154,9 @@ const finishPointer = (event: PointerEvent): void => {
     return;
   }
   if (completed.longPressed) {
-    if (completed.longPressAction === "reveal") {
+    const cancelled =
+      completed.longPressAction === "reveal" && outsideGestureDeadZone(completed, event.clientX, event.clientY);
+    if (completed.longPressAction === "reveal" && !cancelled) {
       const result = revealFromTouch(completed.cellX, completed.cellY);
       applyAction(result);
       if (result.changed > 0) completeGameplayInteraction();
@@ -1412,6 +1436,7 @@ function getDiagnostics() {
           y: Number(touchPreview.dataset.y),
           action: touchPreview.dataset.action,
           armed: touchPreview.dataset.armed === "true",
+          release: touchPreview.dataset.release,
           placement: touchPreview.dataset.placement,
           sourceX: Number(touchPreview.dataset.sourceX),
           sourceY: Number(touchPreview.dataset.sourceY),

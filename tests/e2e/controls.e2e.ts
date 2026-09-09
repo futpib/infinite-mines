@@ -222,6 +222,7 @@ test("R47 — guarded touch marks on tap and reveals only after a held release",
       ...heldCell,
       action: "reveal",
       armed: true,
+      release: "reveal",
     });
     expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), heldCell)).toBe(0);
     await touchEnd();

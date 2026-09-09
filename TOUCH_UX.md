@@ -31,7 +31,7 @@ The preview must:
 - use that neighborhood itself as the callout, with no coordinate label or padding around it;
 - reproduce only the board's public appearance; it must never expose a covered mine or any other hidden state;
 - identify the exact tile and action that would commit on release;
-- place a two-line `RELEASE TO REVEAL` / `DRAG TO CANCEL` cue outside the neighborhood image so both outcomes are explicit without covering board context;
+- place a two-line action cue outside the neighborhood image so both outcomes are explicit without covering board context: inside the dead zone it says `RELEASE TO REVEAL` / `DRAG TO CANCEL`; outside it says `RELEASE TO CANCEL` / `DRAG BACK TO REVEAL`;
 - leave the neighborhood's own outer pixels unclipped, including renderer-owned shared-edge pixels beyond a tile's geometric bounds; an optional frame and shadow must paint outside that image, never inset over its boundary cells;
 - align target emphasis to the exact topology polygon in the captured image's coordinate space and clip its stroke inward so Square, Rhombille, and Triangular targets do not scale, grow beyond, or drift away from the rendered cell;
 - remain in sync with the commit target if the interaction allows the candidate to move;
@@ -43,7 +43,9 @@ Reaching the long-press threshold arms reveal and may give brief haptic feedback
 
 ## Cancellation and navigation
 
-The armed callout names both exits: releasing reveals, while dragging beyond the existing dead zone cancels the reveal and becomes a pan. A second finger beginning a pinch, pointer cancellation, or otherwise losing the valid target also cancels without a cell action. The preview disappears on commit or cancellation and as soon as panning or pinching begins.
+The armed callout creates a cancellation flow separate from panning. While the finger remains inside the existing 7 px dead zone, the callout uses the danger border and releasing reveals. Outside the dead zone, the border switches to the accent color and releasing cancels without a cell action. The player may move back inside to re-arm reveal before releasing. The preview follows the finger and remains visible throughout those state changes; the board must not pan. Movement that crosses the same threshold before the hold arms remains ordinary one-finger panning.
+
+A second finger beginning a pinch, pointer cancellation, or otherwise losing the valid target also cancels without a cell action. The preview disappears on commit, release-to-cancel, pointer cancellation, or as soon as pinching begins.
 
 Small movement inside the existing dead zone must not make the preview disagree with the tile that will receive the action. Sliding to a new candidate is allowed only if preview and commit targeting change together.
 
@@ -54,10 +56,10 @@ Fatal touch input must still stop at the game-over decision surface. Neither the
 `REQUIREMENTS.md` R47 and trusted production-browser coverage prove:
 
 1. A default short tap marks a covered safe tile and a covered mine without revealing either.
-2. A long press changes nothing at the threshold, visibly arms reveal with explicit release-to-reveal and drag-to-cancel instructions, and reveals only on a valid release.
+2. A long press changes nothing at the threshold, visibly arms reveal with explicit release-to-reveal and drag-to-cancel instructions, and reveals only when released inside the dead zone.
 3. Flags cannot be revealed directly; questions follow the deliberate-reveal rule.
-4. Pan, pinch, pointer cancellation, and release before the threshold cannot accidentally reveal.
+4. An armed drag outside the dead zone does not pan and cancels only if released there; returning inside re-arms reveal. Pre-arm pan, pinch, pointer cancellation, and release before the threshold cannot accidentally reveal.
 5. Short taps, flagged holds, opened-tile taps, and explicit-tool taps show no preview. A valid reveal hold shows the neighborhood only after the threshold.
-6. The preview has no coordinates, padding, image clipping mask, or inset frame; it contains the complete topology-neighbor ring, keeps both release/reveal and drag/cancel instructions outside the field image, stays offset and inside the viewport, matches the committed tile with an inward-clipped topology outline, uses the field's current zoom level, leaks no hidden state, and clears on every completion path. Any callout border and shadow remain outside the image.
+6. The preview has no coordinates, padding, image clipping mask, or inset frame; it contains the complete topology-neighbor ring, keeps the current release outcome and the movement instruction outside the field image, switches its outward border between reveal and cancel states, stays offset and inside the viewport, matches the committed tile with an inward-clipped topology outline, uses the field's current zoom level, leaks no hidden state, and clears on every completion path. Any callout border and shadow remain outside the image.
 7. The mapping and preview hold across Square, Rhombille, and Triangular fields, a measured detail/pixel zoom × device-pixel-ratio matrix, visible/hidden controls, and phone/desktop touch viewports. The matrix checks the final screen-space target after SVG transforms and the actual rendered footprint, including asymmetric shared-edge ownership, rather than only SVG-local or cell-geometric bounding boxes.
 8. The existing fatal-input/game-over guard and bounded interaction-performance contracts remain green.

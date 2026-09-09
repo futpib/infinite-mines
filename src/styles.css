@@ -446,6 +446,13 @@ a:focus-visible {
   background: color-mix(in srgb, var(--danger) 13%, var(--surface-raised));
 }
 
+.touch-preview[data-release="cancel"] .touch-preview-action {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 94%, var(--surface-raised));
+}
+
+.touch-preview[data-release="cancel"] .touch-preview-cancel { color: var(--accent-strong); }
+
 .touch-preview[data-action="locked"] .touch-preview-action {
   color: var(--muted);
   background: var(--surface-hover);
@@ -458,6 +465,17 @@ a:focus-visible {
 .touch-preview[data-armed="true"] .touch-preview-viewport {
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--danger) 68%, var(--line-strong)),
+    0 18px 32px rgba(24, 32, 33, 0.2),
+    0 4px 9px rgba(24, 32, 33, 0.16);
+}
+
+.touch-preview[data-release="cancel"] .touch-preview-card {
+  filter: drop-shadow(0 13px 17px color-mix(in srgb, var(--accent) 20%, transparent));
+}
+
+.touch-preview[data-release="cancel"] .touch-preview-viewport {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 72%, var(--line-strong)),
     0 18px 32px rgba(24, 32, 33, 0.2),
     0 4px 9px rgba(24, 32, 33, 0.16);
 }

@@ -21,7 +21,7 @@ npm run preview
 
 `npm test` runs the engine tests, production build, and the Playwright acceptance contract. See [REQUIREMENTS.md](./REQUIREMENTS.md) for the thread-to-test matrix. Install the bundled browser once with `npx playwright install chromium`.
 
-The guarded touch gesture and finger-offset, board-scale neighborhood preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract. Its preview keeps the complete immediate topology-neighbor ring visible inside an outward-framed callout, aligns an inward-clipped target outline to each topology, and places explicit release-to-reveal and drag-to-cancel instructions outside the unobscured field image.
+The guarded touch gesture and finger-offset, board-scale neighborhood preview convention is recorded in [TOUCH_UX.md](./TOUCH_UX.md) and enforced by the executable acceptance contract. Its preview keeps the complete immediate topology-neighbor ring visible inside an outward-framed callout, aligns an inward-clipped target outline to each topology, and places the current release outcome outside the unobscured field image. Once reveal is armed, releasing inside the 7 px dead zone reveals; moving outside switches the frame to the cancel color, blocks panning, and cancels only if released there.
 
 The optional **Fog grid** setting is off by default and persists independently of the current field. **One edge** continues every grid segment incident to an explored boundary vertex by exactly one edge; **One cell** outlines the complete first ring of covered cells touching the explored region.
 
