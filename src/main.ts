@@ -10,10 +10,14 @@ import {
   GameModel,
   Mode,
   MODES,
+  generationForThingStyle,
   isOpened,
   isValidDensity,
   openedClue,
+  thingStyleForGeneration,
+  type FieldGeneration,
   type PresetMode,
+  type ThingStyle,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
 import { WebGLRenderer, type FogFrontierMode } from "./renderer";
@@ -53,6 +57,7 @@ const hintHoverOptions = element<HTMLElement>("#hint-hover-options");
 const fogFrontierOptions = element<HTMLElement>("#fog-frontier-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const themeOptions = element<HTMLElement>("#theme-options");
+const thingStyleOptions = element<HTMLElement>("#thing-style-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
 const currentDensity = element<HTMLElement>("#current-density");
@@ -139,6 +144,8 @@ let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "afte
 type ThemeMode = "system" | "light" | "dark";
 const savedThemeMode = storageGet("infinite-mines-theme");
 let themeMode: ThemeMode = savedThemeMode === "light" || savedThemeMode === "dark" ? savedThemeMode : "system";
+const savedThingStyle = storageGet("infinite-mines-thing-style");
+let thingStyle: ThingStyle = savedThingStyle === "illustrated" ? "illustrated" : "simple";
 const browserPlatform =
   (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
 const applePlatform = /mac|iphone|ipad|ipod/i.test(browserPlatform);
@@ -153,11 +160,21 @@ const model = new GameModel({
   seed: fallbackSeed,
   autoStart: false,
   topology: initialTopology,
+  generation: generationForThingStyle(thingStyle),
 });
 const restoredGame = persistedGame !== null && model.restoreSnapshot(persistedGame.model);
 if (!restoredGame) {
-  model.reset(initialMode, fallbackSeed, true, initialTopology, initialMode === "custom" ? customDensity : undefined);
+  model.reset(
+    initialMode,
+    fallbackSeed,
+    true,
+    initialTopology,
+    initialMode === "custom" ? customDensity : undefined,
+    generationForThingStyle(thingStyle),
+  );
 } else {
+  thingStyle = thingStyleForGeneration(model.fieldGeneration);
+  storageSet("infinite-mines-thing-style", thingStyle);
   storageSet("infinite-mines-mode", model.mode);
   storageSet("infinite-mines-topology", model.topologyId);
   if (model.mode === "custom") {
@@ -231,7 +248,8 @@ const sameDensity = (first: number, second: number): boolean => Math.abs(first -
 const formatDensity = (density: number): string =>
   `${(density * 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`;
 const highScoreKey = (mode: Mode): string => {
-  const base = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
+  const topologyKey = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
+  const base = thingStyle === "illustrated" ? `${topologyKey}-illustrated` : topologyKey;
   const isNominalPreset = mode !== "custom" && sameDensity(model.density, PRESET_DENSITIES[mode]);
   return isNominalPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
 };
@@ -288,6 +306,12 @@ function updateAutoHideMode(): void {
   }
 }
 
+function updateThingStyle(): void {
+  for (const button of thingStyleOptions.querySelectorAll<HTMLButtonElement>("button[data-thing-style]")) {
+    button.ariaPressed = String(button.dataset.thingStyle === thingStyle);
+  }
+}
+
 function updateThemeMode(refreshRenderer = true): void {
   const resolvedTheme = themeMode === "system" ? (colorScheme.matches ? "dark" : "light") : themeMode;
   document.documentElement.dataset.themeMode = themeMode;
@@ -315,7 +339,7 @@ function updateTopologyOptions(): void {
     button.ariaPressed = String(button.dataset.mode === model.mode);
   }
   const densityText = formatDensity(model.density);
-  const legacyField = model.fieldGeneration !== "original-things";
+  const legacyField = model.fieldGeneration === "legacy-flat";
   currentDensity.textContent = `${densityText} CURRENT${legacyField ? " · SAVED FIELD" : ""}`;
   customDensityOption.dataset.selected = String(model.mode === "custom");
   customDensityApply.ariaPressed = String(model.mode === "custom");
@@ -830,7 +854,8 @@ function newGame(
   density: number =
     mode === "custom" ? (model.mode === "custom" ? model.density : customDensity) : DIFFICULTIES[mode].density,
 ): void {
-  model.reset(mode, randomSeed(), true, topology, density);
+  model.reset(mode, randomSeed(), true, topology, density, generationForThingStyle(thingStyle));
+  renderer.syncThingStyle();
   storageSet("infinite-mines-mode", mode);
   storageSet("infinite-mines-topology", topology);
   if (mode === "custom") {
@@ -846,12 +871,19 @@ function newGame(
   );
 }
 
-async function switchField(mode: Mode, topology: TopologyId, density?: number): Promise<void> {
+async function switchField(
+  mode: Mode,
+  topology: TopologyId,
+  density?: number,
+  generation: FieldGeneration = generationForThingStyle(thingStyle),
+): Promise<void> {
   if (fieldSwitch) await fieldSwitch;
   const requestedCustomDensity = mode === "custom" ? density : undefined;
+  const requestedThingStyle = thingStyleForGeneration(generation);
   if (
     mode === model.mode &&
     topology === model.topologyId &&
+    requestedThingStyle === thingStyleForGeneration(model.fieldGeneration) &&
     (requestedCustomDensity === undefined || sameDensity(requestedCustomDensity, model.density))
   ) {
     return;
@@ -860,7 +892,7 @@ async function switchField(mode: Mode, topology: TopologyId, density?: number): 
     mode === "custom" ? requestedCustomDensity ?? (model.mode === "custom" ? model.density : customDensity) : undefined;
   const operation = (async () => {
     await flushGameSave(true);
-    const saved = await loadGameSlot(topology, mode);
+    const saved = await loadGameSlot(topology, mode, generation);
     const savedDensity =
       saved?.model.version === 3 || saved?.model.version === 4
         ? saved.model.density
@@ -873,16 +905,21 @@ async function switchField(mode: Mode, topology: TopologyId, density?: number): 
         (savedDensity !== null && sameDensity(savedDensity, requestedCustomDensity))) &&
       model.restoreSnapshot(saved.model) &&
       model.mode === mode &&
-      model.topologyId === topology;
+      model.topologyId === topology &&
+      thingStyleForGeneration(model.fieldGeneration) === requestedThingStyle;
     storageSet("infinite-mines-mode", mode);
     storageSet("infinite-mines-topology", topology);
+    thingStyle = requestedThingStyle;
+    storageSet("infinite-mines-thing-style", thingStyle);
     if (restored && saved) {
+      renderer.syncThingStyle();
       renderer.restoreView(saved.view);
       const activated = await saveActiveGame(saved);
       lastSavedAt = saved.savedAt;
       persistenceStatus = activated ? "restored" : "unavailable";
     } else {
-      model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity);
+      model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity, generation);
+      renderer.syncThingStyle();
       renderer.home();
       await flushGameSave(true);
     }
@@ -891,6 +928,7 @@ async function switchField(mode: Mode, topology: TopologyId, density?: number): 
       storageSet("infinite-mines-custom-density", String(customDensity));
     }
     updateStats();
+    updateThingStyle();
     refreshCellLocator(true);
     showToast(
       restored
@@ -931,6 +969,7 @@ updateHoverMode();
 updateHintHoverMode();
 updateFogFrontierMode();
 updateAutoHideMode();
+updateThingStyle();
 updateTopologyOptions();
 updateFullscreenState();
 setUiHidden(false);
@@ -1297,6 +1336,15 @@ topologyOptions.addEventListener("click", (event) => {
   void switchField(model.mode, button.dataset.topology);
 });
 
+thingStyleOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-thing-style]");
+  if (!button) return;
+  const requestedThingStyle: ThingStyle = button.dataset.thingStyle === "illustrated" ? "illustrated" : "simple";
+  if (requestedThingStyle === thingStyle) return;
+  settingsDialog.close();
+  void switchField(model.mode, model.topologyId, model.mode === "custom" ? model.density : undefined, generationForThingStyle(requestedThingStyle));
+});
+
 controlOptions.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-controls]");
   if (!button) return;
@@ -1405,6 +1453,7 @@ declare global {
       reveal: (x: number, y: number) => void;
       cheatDeath: () => void;
       newGame: (mode?: Mode, topology?: TopologyId, density?: number) => void;
+      setThingStyle: (style: ThingStyle) => Promise<void>;
       flushSave: () => Promise<void>;
     };
   }
@@ -1427,6 +1476,7 @@ function getDiagnostics() {
     fogFrontierMode,
     autoHideMode,
     themeMode,
+    thingStyle,
     theme: document.documentElement.dataset.theme,
     touchTool: touchRevealTool ? "reveal" : "mark",
     touchPreview: touchPreview.hidden
@@ -1465,6 +1515,13 @@ window.__infiniteMines = {
   reveal: (x, y) => applyAction(model.reveal(x, y)),
   cheatDeath,
   newGame,
+  setThingStyle: (style) =>
+    switchField(
+      model.mode,
+      model.topologyId,
+      model.mode === "custom" ? model.density : undefined,
+      generationForThingStyle(style),
+    ),
   flushSave: () => flushGameSave(true),
 };
 

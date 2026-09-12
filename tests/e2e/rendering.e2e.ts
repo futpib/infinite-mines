@@ -214,6 +214,731 @@ test("R25 — low-zoom state colors approximate the visual average of detailed c
   );
 });
 
+test("R49 — illustrated Things embed fixed vector artwork with exact alpha into reserved topology cells", async ({ page }) => {
+  await openDeterministicGame(page, 0x5eed_1234);
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  const result = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    await renderer.waitForThingSprites();
+    const hash = (x: number, y: number, seed: number, salt: number): number => {
+      let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
+      value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
+      value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
+      return (value ^ (value >>> 16)) >>> 0;
+    };
+    let artifact: {
+      x: number;
+      y: number;
+      cells: readonly { x: number; y: number }[];
+      artCells: readonly { x: number; y: number }[];
+      reservedCells: readonly { x: number; y: number }[];
+      side: number;
+    } | null = null;
+    search: for (let y = -240; y <= 240; y += 1) {
+      for (let x = -240; x <= 240; x += 1) {
+        if (api.model.artifactAt(x, y) && hash(x, y, api.model.seed, 0x2d947f31) % 12 === 0) {
+          const visual = api.model.thingVisualAt(x, y);
+          if (visual?.side === 4) {
+            artifact = visual;
+            break search;
+          }
+        }
+      }
+    }
+    if (!artifact) throw new Error("No deterministic four-cell castle Thing found");
+    api.reveal(artifact.x, artifact.y);
+    const zoom = 2;
+    const cellSize = 25 * zoom;
+    const origin = api.model.topology.origin;
+    const visualMinX = Math.min(...artifact.cells.map((cell) => cell.x));
+    const visualMinY = Math.min(...artifact.cells.map((cell) => cell.y));
+    const visualMaxX = Math.max(...artifact.cells.map((cell) => cell.x));
+    const visualMaxY = Math.max(...artifact.cells.map((cell) => cell.y));
+    renderer.restoreView({
+      version: 1,
+      zoom,
+      panX: -((visualMinX + visualMaxX) / 2 - origin.x) * cellSize,
+      panY: -((visualMinY + visualMaxY) / 2 - origin.y) * cellSize,
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+    const gl = renderer.gl;
+    gl.finish();
+    const visualPolygon = artifact.cells.flatMap((cell) => renderer.cellScreenPolygon(cell.x, cell.y));
+    const dpr = renderer.diagnostics.pixelRatio;
+    const left = Math.ceil(Math.min(...visualPolygon.map((point) => point.x)) * dpr);
+    const right = Math.floor(Math.max(...visualPolygon.map((point) => point.x)) * dpr);
+    const top = Math.ceil(Math.min(...visualPolygon.map((point) => point.y)) * dpr);
+    const bottom = Math.floor(Math.max(...visualPolygon.map((point) => point.y)) * dpr);
+    const width = right - left;
+    const height = bottom - top;
+    const pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(left, renderer.canvas.height - bottom, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const colorful = (offset: number): boolean => {
+      const red = pixels[offset];
+      const green = pixels[offset + 1];
+      const blue = pixels[offset + 2];
+      return Math.max(red, green, blue) - Math.min(red, green, blue) > 38;
+    };
+    const colors = new Set<string>();
+    const backing = [pixels[0], pixels[1], pixels[2]];
+    let colorfulPixels = 0;
+    let colorfulMinX = width;
+    let colorfulMinY = height;
+    let colorfulMaxX = 0;
+    let colorfulMaxY = 0;
+    let subjectMinX = width;
+    let subjectMinY = height;
+    let subjectMaxX = 0;
+    let subjectMaxY = 0;
+    for (let y = 1; y < height - 1; y += 1) {
+      for (let x = 1; x < width - 1; x += 1) {
+        const offset = (y * width + x) * 4;
+        if (
+          Math.max(
+            Math.abs(pixels[offset] - backing[0]),
+            Math.abs(pixels[offset + 1] - backing[1]),
+            Math.abs(pixels[offset + 2] - backing[2]),
+          ) > 18
+        ) {
+          subjectMinX = Math.min(subjectMinX, x);
+          subjectMinY = Math.min(subjectMinY, y);
+          subjectMaxX = Math.max(subjectMaxX, x);
+          subjectMaxY = Math.max(subjectMaxY, y);
+        }
+        if (!colorful(offset)) continue;
+        colorfulPixels += 1;
+        colorfulMinX = Math.min(colorfulMinX, x);
+        colorfulMinY = Math.min(colorfulMinY, y);
+        colorfulMaxX = Math.max(colorfulMaxX, x);
+        colorfulMaxY = Math.max(colorfulMaxY, y);
+        colors.add(`${pixels[offset]},${pixels[offset + 1]},${pixels[offset + 2]}`);
+      }
+    }
+    const privateRenderer = renderer as unknown as {
+      thingEmojiAtlas: HTMLCanvasElement;
+      resources: { thingAtlasTexture: WebGLTexture };
+    };
+    const thingAtlas = privateRenderer.thingEmojiAtlas;
+    const thingContext = thingAtlas.getContext("2d");
+    if (!thingContext) throw new Error("Missing Thing atlas context");
+    const atlasPixels = thingContext.getImageData(0, 0, 512, 512).data;
+    const alphaLevels = new Set<number>();
+    const atlasColors = new Set<string>();
+    let transparentPixels = 0;
+    let partialAlphaPixels = 0;
+    let opaquePixels = 0;
+    for (let offset = 0; offset < atlasPixels.length; offset += 4) {
+      const alpha = atlasPixels[offset + 3];
+      alphaLevels.add(alpha);
+      if (alpha === 0) transparentPixels += 1;
+      else if (alpha === 255) opaquePixels += 1;
+      else partialAlphaPixels += 1;
+      if (alpha > 0) {
+        atlasColors.add(`${atlasPixels[offset]},${atlasPixels[offset + 1]},${atlasPixels[offset + 2]},${alpha}`);
+      }
+    }
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, privateRenderer.resources.thingAtlasTexture);
+    const transparentAtlas = document.createElement("canvas");
+    transparentAtlas.width = thingAtlas.width;
+    transparentAtlas.height = thingAtlas.height;
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, transparentAtlas);
+    renderer.requestRender();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    gl.finish();
+    const withoutThing = new Uint8Array(width * height * 4);
+    gl.readPixels(left, renderer.canvas.height - bottom, width, height, gl.RGBA, gl.UNSIGNED_BYTE, withoutThing);
+    let unchangedPixels = 0;
+    let changedPixels = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const difference = Math.max(
+        Math.abs(pixels[offset] - withoutThing[offset]),
+        Math.abs(pixels[offset + 1] - withoutThing[offset + 1]),
+        Math.abs(pixels[offset + 2] - withoutThing[offset + 2]),
+      );
+      if (difference === 0) unchangedPixels += 1;
+      if (difference > 2) changedPixels += 1;
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, thingAtlas);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    renderer.requestRender();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    return {
+      artifact,
+      visualCellsReserved: artifact.cells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
+      artCellsReserved: artifact.artCells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
+      reservationCellsReserved: artifact.reservedCells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
+      clue: api.model.clueAt(artifact.x, artifact.y),
+      state: api.model.getState(artifact.x, artifact.y),
+      colorfulPixels,
+      colors: colors.size,
+      atlas: {
+        width: thingAtlas.width,
+        height: thingAtlas.height,
+        transparentPixels,
+        partialAlphaPixels,
+        opaquePixels,
+        alphaLevels: alphaLevels.size,
+        colors: atlasColors.size,
+        minFilter: gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER),
+        magFilter: gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER),
+      },
+      blending: {
+        enabled: gl.isEnabled(gl.BLEND),
+        source: gl.getParameter(gl.BLEND_SRC_RGB),
+        destination: gl.getParameter(gl.BLEND_DST_RGB),
+      },
+      framebufferAlpha: {
+        unchangedPixels,
+        changedPixels,
+        totalPixels: width * height,
+      },
+      colorfulSpanCells: {
+        x: (colorfulMaxX - colorfulMinX + 1) / dpr / cellSize,
+        y: (colorfulMaxY - colorfulMinY + 1) / dpr / cellSize,
+      },
+      subjectSpanCells: {
+        x: (subjectMaxX - subjectMinX + 1) / dpr / cellSize,
+        y: (subjectMaxY - subjectMinY + 1) / dpr / cellSize,
+      },
+      diagnostics: api.diagnostics(),
+    };
+  });
+
+  expect(result.artifact.side).toBe(4);
+  expect(result.visualCellsReserved).toEqual(Array(16).fill(true));
+  expect(result.artCellsReserved).toEqual(Array(result.artifact.artCells.length).fill(true));
+  expect(result.reservationCellsReserved).toEqual(Array(36).fill(true));
+  expect(result.clue).toBe(0);
+  expect(result.state).toBe(1);
+  expect(result.colorfulPixels).toBeGreaterThan(500);
+  expect(result.colors).toBeGreaterThan(100);
+  expect(result.atlas).toMatchObject({
+    width: 4 * 512,
+    height: 3 * 512,
+    minFilter: 9729,
+    magFilter: 9729,
+  });
+  expect(result.atlas.transparentPixels).toBeGreaterThan(5_000);
+  expect(result.atlas.partialAlphaPixels).toBeGreaterThan(100);
+  expect(result.atlas.opaquePixels).toBeGreaterThan(1_000);
+  expect(result.atlas.alphaLevels).toBeGreaterThan(20);
+  expect(result.atlas.colors).toBeGreaterThan(500);
+  expect(result.blending).toEqual({ enabled: true, source: 1, destination: 771 });
+  expect(result.framebufferAlpha.unchangedPixels).toBeGreaterThan(result.framebufferAlpha.totalPixels * 0.2);
+  expect(result.framebufferAlpha.changedPixels).toBeGreaterThan(result.framebufferAlpha.totalPixels * 0.1);
+  expect(result.colorfulSpanCells.x).toBeGreaterThan(2);
+  expect(result.colorfulSpanCells.y).toBeGreaterThan(2);
+  expect(result.subjectSpanCells.x).toBeGreaterThan(3);
+  expect(result.subjectSpanCells.y).toBeGreaterThan(3);
+  expect(result.diagnostics).toMatchObject({
+    backend: "webgl2",
+    drawCalls: 1,
+    thingSprites: 12,
+    thingTexturePixels: 512,
+    thingSpritesReady: true,
+    canvasCount: 3,
+  });
+});
+
+test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its reservation", async ({ page }) => {
+  await openDeterministicGame(page, 0x5eed_1234);
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  const cases = [
+    { topology: "square", variant: 0 },
+    { topology: "triangular", variant: 3 },
+    { topology: "rhombille", variant: 9 },
+  ] as const;
+
+  for (const testCase of cases) {
+    const result = await page.evaluate(async ({ topology, variant }) => {
+      const api = window.__infiniteMines;
+      api.newGame("beginner", topology);
+      await api.renderer.waitForThingSprites();
+      const hash = (x: number, y: number, seed: number, salt: number): number => {
+        let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
+        value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
+        value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
+        return (value ^ (value >>> 16)) >>> 0;
+      };
+      let thing: ReturnType<typeof api.model.thingVisualAt> = null;
+      search: for (let y = -300; y <= 300; y += 1) {
+        for (let x = -300; x <= 300; x += 1) {
+          if (!api.model.artifactAt(x, y) || hash(x, y, api.model.seed, 0x2d947f31) % 12 !== variant) continue;
+          const candidate = api.model.thingVisualAt(x, y);
+          if (candidate?.side !== 4) continue;
+          thing = candidate;
+          break search;
+        }
+      }
+      if (!thing) throw new Error(`No ${topology} Thing for vector ${variant}`);
+      api.reveal(thing.x, thing.y);
+      const vertices = thing.cells.flatMap((cell) => api.model.topology.geometry(cell.x, cell.y).vertices);
+      const centerX = (Math.min(...vertices.map((point) => point.x)) + Math.max(...vertices.map((point) => point.x))) / 2;
+      const centerY = (Math.min(...vertices.map((point) => point.y)) + Math.max(...vertices.map((point) => point.y))) / 2;
+      const origin = api.model.topology.origin;
+      const cellSize = 50;
+      api.renderer.restoreView({
+        version: 1,
+        zoom: 2,
+        panX: -(centerX - origin.x) * cellSize,
+        panY: -(centerY - origin.y) * cellSize,
+      });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+      const renderer = api.renderer;
+      const gl = renderer.gl;
+      gl.finish();
+      const privateRenderer = renderer as unknown as {
+        thingEmojiAtlas: HTMLCanvasElement;
+        instanceCount: number;
+        range: { anchorX: number; anchorY: number };
+        genericAnchorWorldX: number;
+        genericAnchorWorldY: number;
+        resources: { instanceBuffer: WebGLBuffer; genericInstanceBuffer: WebGLBuffer };
+      };
+      const generic = topology !== "square";
+      const stride = generic ? 14 : 5;
+      gl.bindBuffer(
+        gl.ARRAY_BUFFER,
+        generic ? privateRenderer.resources.genericInstanceBuffer : privateRenderer.resources.instanceBuffer,
+      );
+      const instances = new Float32Array(privateRenderer.instanceCount * stride);
+      gl.getBufferSubData(gl.ARRAY_BUFFER, 0, instances);
+      const thingInstances: number[][] = [];
+      const underlayInstances: number[][] = [];
+      const borderInstances: number[][] = [];
+      const baseInstances: number[][] = [];
+      let lastThingOrder = -1;
+      let firstBorderOrder = Number.POSITIVE_INFINITY;
+      for (let offset = 0; offset < instances.length; offset += stride) {
+        const values = Array.from(instances.slice(offset, offset + stride));
+        const kind = values[generic ? 7 : 3];
+        if (kind === 3) {
+          thingInstances.push(values);
+          lastThingOrder = offset / stride;
+        }
+        if (kind === -1) underlayInstances.push(values);
+        if (kind < 1.5) baseInstances.push(values);
+        if (kind === 4) {
+          borderInstances.push(values);
+          firstBorderOrder = Math.min(firstBorderOrder, offset / stride);
+        }
+      }
+      if (thingInstances.length === 0) throw new Error(`No ${topology} Thing instances`);
+      const first = thingInstances[0];
+      const sprite = Math.round(first[generic ? 6 : 2]);
+      const bounds = generic
+        ? {
+            minX: first[10] + privateRenderer.genericAnchorWorldX,
+            minY: first[11] + privateRenderer.genericAnchorWorldY,
+            width: first[12],
+            height: first[13],
+          }
+        : {
+            minX: Math.min(...thing.cells.map((cell) => cell.x)),
+            minY: Math.min(...thing.cells.map((cell) => cell.y)),
+            width: thing.side,
+            height: thing.side,
+          };
+      const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+      const art = new Set(thing.artCells.map((cell) => `${cell.x},${cell.y}`));
+      const carrierKeys = new Set<string>();
+      const underlayKeys = new Set<string>();
+      const actualBorderMasks = new Map<string, number>();
+      for (const instance of thingInstances) {
+        if (generic) {
+          const worldX = instance[0] + privateRenderer.genericAnchorWorldX;
+          const worldY = instance[1] + privateRenderer.genericAnchorWorldY;
+          const cell = api.model.topology.hitTest(worldX, worldY);
+          carrierKeys.add(`${cell.x},${cell.y}`);
+        } else {
+          carrierKeys.add(
+            `${Math.round(instance[0] + privateRenderer.range.anchorX * 8)},${Math.round(instance[1] + privateRenderer.range.anchorY * 8)}`,
+          );
+        }
+      }
+      for (const instance of underlayInstances) {
+        if (generic) {
+          const worldX = instance[0] + privateRenderer.genericAnchorWorldX;
+          const worldY = instance[1] + privateRenderer.genericAnchorWorldY;
+          const cell = api.model.topology.hitTest(worldX, worldY);
+          underlayKeys.add(`${cell.x},${cell.y}`);
+        } else {
+          underlayKeys.add(
+            `${Math.round(instance[0] + privateRenderer.range.anchorX * 8)},${Math.round(instance[1] + privateRenderer.range.anchorY * 8)}`,
+          );
+        }
+      }
+      for (const instance of borderInstances) {
+        if (generic) {
+          const worldX = instance[0] + privateRenderer.genericAnchorWorldX;
+          const worldY = instance[1] + privateRenderer.genericAnchorWorldY;
+          const cell = api.model.topology.hitTest(worldX, worldY);
+          actualBorderMasks.set(`${cell.x},${cell.y}`, Math.round(instance[9]));
+        } else {
+          actualBorderMasks.set(
+            `${Math.round(instance[0] + privateRenderer.range.anchorX * 8)},${Math.round(instance[1] + privateRenderer.range.anchorY * 8)}`,
+            Math.round(instance[4]),
+          );
+        }
+      }
+      const expectedBorderMasks = new Map<string, number>();
+      let expectedBorderEdges = 0;
+      for (const cell of thing.artCells) {
+        let mask = 0;
+        if (generic) {
+          const neighbors = api.model.topology.edgeNeighbors(cell.x, cell.y);
+          for (let edge = 0; edge < neighbors.length; edge += 1) {
+            if (!art.has(`${neighbors[edge].x},${neighbors[edge].y}`)) mask |= 1 << edge;
+          }
+        } else {
+          if (!art.has(`${cell.x},${cell.y - 1}`)) mask |= 1;
+          if (!art.has(`${cell.x - 1},${cell.y}`)) mask |= 2;
+          if (!art.has(`${cell.x + 1},${cell.y}`)) mask |= 4;
+          if (!art.has(`${cell.x},${cell.y + 1}`)) mask |= 8;
+        }
+        if (mask === 0) continue;
+        expectedBorderMasks.set(`${cell.x},${cell.y}`, mask);
+        for (let bits = mask; bits > 0; bits &= bits - 1) expectedBorderEdges += 1;
+      }
+      let actualBorderEdges = 0;
+      for (const mask of actualBorderMasks.values()) {
+        for (let bits = mask; bits > 0; bits &= bits - 1) actualBorderEdges += 1;
+      }
+      let basePerimeterEdges = 0;
+      for (const instance of baseInstances) {
+        const edges = Math.round(instance[generic ? 9 : 4]);
+        if (generic) {
+          const worldX = instance[0] + privateRenderer.genericAnchorWorldX;
+          const worldY = instance[1] + privateRenderer.genericAnchorWorldY;
+          const cell = api.model.topology.hitTest(worldX, worldY);
+          const cellIsArt = art.has(`${cell.x},${cell.y}`);
+          const neighbors = api.model.topology.edgeNeighbors(cell.x, cell.y);
+          for (let edge = 0; edge < neighbors.length; edge += 1) {
+            if (cellIsArt !== art.has(`${neighbors[edge].x},${neighbors[edge].y}`) && (edges & (1 << edge)) !== 0) {
+              basePerimeterEdges += 1;
+            }
+          }
+        } else {
+          const x = Math.round(instance[0] + privateRenderer.range.anchorX * 8);
+          const y = Math.round(instance[1] + privateRenderer.range.anchorY * 8);
+          const cellIsArt = art.has(`${x},${y}`);
+          const neighbors = [
+            { x, y: y - 1, bit: 1 },
+            { x: x - 1, y, bit: 2 },
+            { x: x + 1, y, bit: 4 },
+            { x, y: y + 1, bit: 8 },
+          ];
+          for (const neighbor of neighbors) {
+            if (cellIsArt !== art.has(`${neighbor.x},${neighbor.y}`) && (edges & neighbor.bit) !== 0) {
+              basePerimeterEdges += 1;
+            }
+          }
+        }
+      }
+
+      const atlas = privateRenderer.thingEmojiAtlas;
+      const atlasContext = atlas.getContext("2d");
+      if (!atlasContext) throw new Error("Missing Thing atlas context");
+      const atlasPixels = atlasContext.getImageData((sprite % 4) * 512, Math.floor(sprite / 4) * 512, 512, 512).data;
+      let opaqueSamples = 0;
+      let outsideReservation = 0;
+      let outsideArt = 0;
+      const sampledArt = new Set<string>();
+      for (let pixelY = 0; pixelY < 512; pixelY += 2) {
+        for (let pixelX = 0; pixelX < 512; pixelX += 2) {
+          if (atlasPixels[(pixelY * 512 + pixelX) * 4 + 3] === 0) continue;
+          opaqueSamples += 1;
+          const mappedX = bounds.minX + ((pixelX + 0.5) / 512) * bounds.width;
+          const mappedY = bounds.minY + ((pixelY + 0.5) / 512) * bounds.height;
+          const cell = generic
+            ? api.model.topology.hitTest(mappedX, mappedY)
+            : api.model.topology.hitTest(mappedX - 0.5, mappedY - 0.5);
+          const key = `${cell.x},${cell.y}`;
+          sampledArt.add(key);
+          if (!reserved.has(key)) outsideReservation += 1;
+          if (!art.has(key)) outsideArt += 1;
+        }
+      }
+
+      let internalEdges = 0;
+      let emittedInternalEdges = 0;
+      if (generic) {
+        const underlayByCenter = new Map<string, number>();
+        for (const instance of underlayInstances) {
+          const center = `${(instance[0] + privateRenderer.genericAnchorWorldX).toFixed(7)},${(instance[1] + privateRenderer.genericAnchorWorldY).toFixed(7)}`;
+          underlayByCenter.set(center, Math.round(instance[9]));
+        }
+        for (const cell of thing.artCells) {
+          const geometry = api.model.topology.geometry(cell.x, cell.y);
+          const cellMinX = Math.min(...geometry.vertices.map((point) => point.x));
+          const cellMaxX = Math.max(...geometry.vertices.map((point) => point.x));
+          const cellMinY = Math.min(...geometry.vertices.map((point) => point.y));
+          const cellMaxY = Math.max(...geometry.vertices.map((point) => point.y));
+          if (
+            cellMaxX <= bounds.minX + 1e-8 ||
+            cellMinX >= bounds.minX + bounds.width - 1e-8 ||
+            cellMaxY <= bounds.minY + 1e-8 ||
+            cellMinY >= bounds.minY + bounds.height - 1e-8
+          ) {
+            continue;
+          }
+          let drawCenterX = geometry.center.x;
+          let drawCenterY = geometry.center.y;
+          if (geometry.shape === "triangle-up" || geometry.shape === "triangle-down") {
+            drawCenterX = (cellMinX + cellMaxX) / 2;
+            drawCenterY = (cellMinY + cellMaxY) / 2;
+          }
+          const edges = underlayByCenter.get(`${drawCenterX.toFixed(7)},${drawCenterY.toFixed(7)}`);
+          if (edges === undefined) continue;
+          const neighbors = api.model.topology.edgeNeighbors(cell.x, cell.y);
+          for (let edge = 0; edge < neighbors.length; edge += 1) {
+            const neighborInside = art.has(`${neighbors[edge].x},${neighbors[edge].y}`);
+            if (!neighborInside) continue;
+            internalEdges += 1;
+            if ((edges & (1 << edge)) !== 0) emittedInternalEdges += 1;
+          }
+        }
+      } else {
+        const baseByCell = new Map<string, number>();
+        for (let offset = 0; offset < instances.length; offset += stride) {
+          if (instances[offset + 3] === 3) continue;
+          const x = Math.round(instances[offset] + privateRenderer.range.anchorX * 8);
+          const y = Math.round(instances[offset + 1] + privateRenderer.range.anchorY * 8);
+          baseByCell.set(`${x},${y}`, Math.round(instances[offset + 4]));
+        }
+        for (const cell of thing.artCells) {
+          const edges = baseByCell.get(`${cell.x},${cell.y}`);
+          if (edges === undefined) continue;
+          if (art.has(`${cell.x},${cell.y - 1}`)) {
+            internalEdges += 1;
+            if ((edges & 1) !== 0) emittedInternalEdges += 1;
+          }
+          if (art.has(`${cell.x - 1},${cell.y}`)) {
+            internalEdges += 1;
+            if ((edges & 2) !== 0) emittedInternalEdges += 1;
+          }
+        }
+      }
+
+      return {
+        topology,
+        sprite,
+        carrierCells: carrierKeys.size,
+        expectedCarrierCells: art.size,
+        carriersOutsideReservation: [...carrierKeys].filter((key) => !reserved.has(key)),
+        carriersOutsideArt: [...carrierKeys].filter((key) => !art.has(key)),
+        missingArtCarriers: [...art].filter((key) => !carrierKeys.has(key)),
+        underlaysOutsideArt: [...underlayKeys].filter((key) => !art.has(key)),
+        missingArtUnderlays: [...art].filter((key) => !underlayKeys.has(key)),
+        borderMasks: [...actualBorderMasks].sort(([left], [right]) => left.localeCompare(right)),
+        expectedBorderMasks: [...expectedBorderMasks].sort(([left], [right]) => left.localeCompare(right)),
+        actualBorderEdges,
+        expectedBorderEdges,
+        borderAfterArtwork: firstBorderOrder > lastThingOrder,
+        basePerimeterEdges,
+        sampledArtOutsideFootprint: [...sampledArt].filter((key) => !art.has(key)),
+        transparentReservationCells: [...reserved].filter((key) => !art.has(key)).length,
+        opaqueSamples,
+        outsideReservation,
+        outsideArt,
+        internalEdges,
+        emittedInternalEdges,
+        underlayInstances: underlayInstances.length,
+        diagnostics: api.diagnostics(),
+      };
+    }, testCase);
+
+    expect(result.sprite, `${testCase.topology} selected vector`).toBe(testCase.variant);
+    expect(result.carrierCells, `${testCase.topology} carrier count`).toBe(result.expectedCarrierCells);
+    expect(result.carriersOutsideReservation, `${testCase.topology} carriers outside reservation`).toEqual([]);
+    expect(result.carriersOutsideArt, `${testCase.topology} carriers outside alpha footprint`).toEqual([]);
+    expect(result.missingArtCarriers, `${testCase.topology} missing alpha carriers`).toEqual([]);
+    expect(result.underlaysOutsideArt, `${testCase.topology} underlays outside alpha footprint`).toEqual([]);
+    expect(result.missingArtUnderlays, `${testCase.topology} missing glyph-suppressing underlays`).toEqual([]);
+    expect(result.borderMasks, `${testCase.topology} exact outer border masks`).toEqual(result.expectedBorderMasks);
+    expect(result.actualBorderEdges, `${testCase.topology} complete outer border`).toBe(result.expectedBorderEdges);
+    expect(result.borderAfterArtwork, `${testCase.topology} border draw order`).toBe(true);
+    expect(result.basePerimeterEdges, `${testCase.topology} single border owner`).toBe(0);
+    expect(result.sampledArtOutsideFootprint, `${testCase.topology} sampled alpha outside footprint`).toEqual([]);
+    expect(result.transparentReservationCells, `${testCase.topology} transparent-only reservation cells`).toBeGreaterThan(0);
+    expect(result.opaqueSamples, `${testCase.topology} vector samples`).toBeGreaterThan(20_000);
+    expect(result.outsideReservation, `${testCase.topology} vector alpha outside reservation`).toBe(0);
+    expect(result.outsideArt, `${testCase.topology} vector alpha outside art cells`).toBe(0);
+    expect(result.internalEdges, `${testCase.topology} audited internal edges`).toBeGreaterThan(4);
+    expect(result.emittedInternalEdges, `${testCase.topology} emitted internal edges`).toBe(0);
+    if (testCase.topology !== "square") expect(result.underlayInstances).toBeGreaterThan(4);
+    expect(result.diagnostics).toMatchObject({
+      backend: "webgl2",
+      topology: testCase.topology,
+      drawCalls: 1,
+      thingSprites: 12,
+      thingTexturePixels: 512,
+      thingSpritesReady: true,
+      canvasCount: 3,
+    });
+  }
+});
+
+test("R49 — alpha reservations match every SVG, size, topology, and orientation", async ({ page }) => {
+  test.setTimeout(45_000);
+  await openDeterministicGame(page, 0x5eed_1234);
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  const result = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    await api.renderer.waitForThingSprites();
+    const privateRenderer = api.renderer as unknown as { thingEmojiAtlas: HTMLCanvasElement };
+    const privateModel = api.model as unknown as {
+      artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
+    };
+    const atlasContext = privateRenderer.thingEmojiAtlas.getContext("2d", { willReadFrequently: true });
+    if (!atlasContext) throw new Error("Missing Thing atlas context");
+    const texturePixels = 512;
+    const alphaMasks: Uint8Array[] = [];
+    for (let sprite = 0; sprite < 12; sprite += 1) {
+      const source = atlasContext.getImageData((sprite % 4) * texturePixels, Math.floor(sprite / 4) * texturePixels, texturePixels, texturePixels).data;
+      const alpha = new Uint8Array(texturePixels * texturePixels);
+      for (let y = 0; y < texturePixels; y += 1) {
+        for (let x = 0; x < texturePixels; x += 1) {
+          if (source[(y * texturePixels + x) * 4 + 3] === 0) continue;
+          for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+            const targetY = y + offsetY;
+            if (targetY < 0 || targetY >= texturePixels) continue;
+            for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+              const targetX = x + offsetX;
+              if (targetX < 0 || targetX >= texturePixels) continue;
+              alpha[targetY * texturePixels + targetX] = 1;
+            }
+          }
+        }
+      }
+      alphaMasks.push(alpha);
+    }
+
+    const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
+    const hash = (x: number, y: number, seed: number, salt: number): number => {
+      let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
+      value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
+      value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
+      return (value ^ (value >>> 16)) >>> 0;
+    };
+    const pointInside = (x: number, y: number, vertices: readonly { x: number; y: number }[]): boolean => {
+      let sign = 0;
+      for (let index = 0; index < vertices.length; index += 1) {
+        const start = vertices[index];
+        const end = vertices[(index + 1) % vertices.length];
+        const cross = (end.x - start.x) * (y - start.y) - (end.y - start.y) * (x - start.x);
+        if (Math.abs(cross) <= 1e-9) continue;
+        const nextSign = cross < 0 ? -1 : 1;
+        if (sign !== 0 && nextSign !== sign) return false;
+        sign = nextSign;
+      }
+      return true;
+    };
+    const exemplars = new Map<
+      string,
+      NonNullable<ReturnType<typeof api.model.thingVisualAt>> & { topology: "square" | "triangular" | "rhombille"; sprite: number }
+    >();
+    const topologies = new Map<string, typeof api.model.topology>();
+    const targets = { square: 24, triangular: 48, rhombille: 72 } as const;
+    for (const topology of ["square", "triangular", "rhombille"] as const) {
+      const topologyStart = exemplars.size;
+      for (let seedOffset = 0; seedOffset < 8 && exemplars.size - topologyStart < targets[topology]; seedOffset += 1) {
+        const seed = (0x5eed_1234 + seedOffset * 0x1020_3041) >>> 0;
+        api.model.reset("beginner", seed, false, topology, undefined, "illustrated-things");
+        topologies.set(topology, api.model.topology);
+        for (let zoneY = -32; zoneY <= 32 && exemplars.size - topologyStart < targets[topology]; zoneY += 1) {
+          for (let zoneX = -32; zoneX <= 32 && exemplars.size - topologyStart < targets[topology]; zoneX += 1) {
+            const layout = privateModel.artifactForZone(zoneX, zoneY);
+            const thing = api.model.thingVisualAt(layout.x, layout.y);
+            if (!thing) throw new Error("Missing generated Thing visual");
+            const sprite = hash(thing.x, thing.y, seed, 0x2d947f31) % 12;
+            const orientation =
+              topology === "triangular"
+                ? positiveModulo(thing.x + thing.y, 2)
+                : topology === "rhombille"
+                  ? positiveModulo(thing.x, 3)
+                  : 0;
+            const key = `${topology}:${orientation}:${thing.side}:${sprite}`;
+            if (!exemplars.has(key)) exemplars.set(key, { ...thing, topology, sprite });
+          }
+        }
+      }
+      if (exemplars.size - topologyStart !== targets[topology]) {
+        throw new Error(`Missing ${topology} alpha configurations: ${exemplars.size - topologyStart}/${targets[topology]}`);
+      }
+    }
+
+    const failures: string[] = [];
+    let minArtCells = Number.POSITIVE_INFINITY;
+    let maxArtCells = 0;
+    for (const [configuration, thing] of exemplars) {
+      const topology = topologies.get(thing.topology);
+      if (!topology) throw new Error(`Missing ${thing.topology} topology`);
+      const vertices = thing.cells.flatMap((cell) => topology.geometry(cell.x, cell.y).vertices);
+      let minX = Math.min(...vertices.map((point) => point.x));
+      let minY = Math.min(...vertices.map((point) => point.y));
+      let maxX = Math.max(...vertices.map((point) => point.x));
+      let maxY = Math.max(...vertices.map((point) => point.y));
+      if (thing.topology !== "square") {
+        const fit = thing.topology === "triangular" ? 0.9 : 0.8;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const halfWidth = ((maxX - minX) * fit) / 2;
+        const halfHeight = ((maxY - minY) * fit) / 2;
+        minX = centerX - halfWidth;
+        maxX = centerX + halfWidth;
+        minY = centerY - halfHeight;
+        maxY = centerY + halfHeight;
+      }
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const art = new Set(thing.artCells.map((cell) => `${cell.x},${cell.y}`));
+      const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+      minArtCells = Math.min(minArtCells, art.size);
+      maxArtCells = Math.max(maxArtCells, art.size);
+      for (const key of art) {
+        if (!reserved.has(key)) failures.push(`${configuration}: alpha cell ${key} is not mine-free`);
+      }
+      for (const cell of thing.reservedCells) {
+        const geometry = topology.geometry(cell.x, cell.y);
+        const cellMinX = Math.min(...geometry.vertices.map((point) => point.x));
+        const cellMinY = Math.min(...geometry.vertices.map((point) => point.y));
+        const cellMaxX = Math.max(...geometry.vertices.map((point) => point.x));
+        const cellMaxY = Math.max(...geometry.vertices.map((point) => point.y));
+        const minPixelX = Math.max(0, Math.floor(((cellMinX - minX) / width) * texturePixels) - 1);
+        const minPixelY = Math.max(0, Math.floor(((cellMinY - minY) / height) * texturePixels) - 1);
+        const maxPixelX = Math.min(texturePixels - 1, Math.ceil(((cellMaxX - minX) / width) * texturePixels) + 1);
+        const maxPixelY = Math.min(texturePixels - 1, Math.ceil(((cellMaxY - minY) / height) * texturePixels) + 1);
+        let touches = false;
+        for (let pixelY = minPixelY; pixelY <= maxPixelY && !touches; pixelY += 1) {
+          for (let pixelX = minPixelX; pixelX <= maxPixelX; pixelX += 1) {
+            if (alphaMasks[thing.sprite][pixelY * texturePixels + pixelX] === 0) continue;
+            const worldX = minX + ((pixelX + 0.5) / texturePixels) * width;
+            const worldY = minY + ((pixelY + 0.5) / texturePixels) * height;
+            if (pointInside(worldX, worldY, geometry.vertices)) {
+              touches = true;
+              break;
+            }
+          }
+        }
+        const key = `${cell.x},${cell.y}`;
+        if (touches !== art.has(key)) failures.push(`${configuration}: ${key} expected ${touches} got ${art.has(key)}`);
+      }
+    }
+    return { patterns: exemplars.size, failures, minArtCells, maxArtCells };
+  });
+
+  expect(result.patterns).toBe(144);
+  expect(result.failures).toEqual([]);
+  expect(result.minArtCells).toBeGreaterThan(0);
+  expect(result.maxArtCells).toBeLessThanOrEqual(36);
+});
+
 test("R04/R12 — million-cell zoom and drag stay on one sparse GPU draw", async ({ page }) => {
   await openDeterministicGame(page);
   await page.evaluate(async () => {

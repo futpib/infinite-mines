@@ -210,6 +210,18 @@
             </button>
           </div>
         </section>
+        <section class="settings-section" aria-labelledby="thing-style-heading">
+          <p class="settings-label" id="thing-style-heading">THING ART</p>
+          <div class="control-options" id="thing-style-options" aria-labelledby="thing-style-heading">
+            <button type="button" data-thing-style="simple" aria-pressed="true">
+              <b>Simple</b><small>Keep the single-cell cyan marker</small>
+            </button>
+            <button type="button" data-thing-style="illustrated" aria-pressed="false">
+              <b>Illustrated</b><small>Embed vector scenes across safe cells</small>
+            </button>
+          </div>
+          <p class="dialog-note">Each style keeps a separate field because its mine-free Thing cells differ.</p>
+        </section>
         <section class="settings-section" aria-labelledby="controls-heading">
           <p class="settings-label" id="controls-heading">REVEAL CONTROLS</p>
           <div class="control-options" id="control-options">
@@ -281,7 +293,7 @@
               <b>Triangular</b><small>12 touching neighbors</small>
             </button>
           </div>
-          <p class="dialog-note">Each topology and density choice keeps its own field. A new pair starts with a random seed.</p>
+          <p class="dialog-note">Each topology, density, and Thing-art choice keeps its own field. A new combination starts with a random seed.</p>
         </section>
         <section class="settings-section" aria-labelledby="density-heading">
           <p class="settings-label" id="density-heading">MINE DENSITY · <span id="current-density">18% CURRENT</span></p>
@@ -358,7 +370,7 @@
           <div><b>Survive</b><p>A blast costs one life. Score milestones earn lives back.</p></div>
           <div><b>Explore</b><p>Drag the field in any direction. It is generated only as you need it.</p></div>
           <div><b>Topology</b><p>Square clues count 8 touching cells, triangular clues count 12, and rhombille clues count 10.</p></div>
-          <div><b>Collect</b><p>Rare cyan artifacts are safe. Reveal them to add to Things.</p></div>
+          <div><b>Collect</b><p>Rare Things are safe. Reveal them to add to your total.</p></div>
           <div><b>Reference</b><p>Hover a cell, then click its coordinate card to copy a reproducible debug reference.</p></div>
         </div>
       </section>

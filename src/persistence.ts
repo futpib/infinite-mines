@@ -1,5 +1,7 @@
 import {
+  FIELD_GENERATIONS,
   MODES,
+  type FieldGeneration,
   type GameSnapshotV1,
   type GameSnapshotV2,
   type GameSnapshotV3,
@@ -51,12 +53,24 @@ export interface ActiveGameSlotV1 {
   mode: Mode;
 }
 
+export interface ActiveGameSlotV2 {
+  version: 2;
+  topology: TopologyId;
+  mode: Mode;
+  generation: FieldGeneration;
+}
+
+type ActiveGameSlot = ActiveGameSlotV1 | ActiveGameSlotV2;
+
 const DATABASE_NAME = "infinite-mines";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "sessions";
 const ACTIVE_GAME_KEY = "active";
 const ACTIVE_SLOT_KEY = "active-slot";
-const slotKey = (topology: TopologyId, mode: Mode): string => `field:${topology}:${mode}`;
+const slotKey = (topology: TopologyId, mode: Mode, generation: FieldGeneration): string =>
+  generation === "illustrated-things"
+    ? `field:${topology}:${mode}:illustrated`
+    : `field:${topology}:${mode}`;
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -97,20 +111,32 @@ const isPersistedGame = (value: unknown): value is PersistedGame => {
   return version === 1 || version === 2 || version === 3 || version === 4;
 };
 
-const isActiveSlot = (value: unknown): value is ActiveGameSlotV1 => {
+const isActiveSlot = (value: unknown): value is ActiveGameSlot => {
   if (!value || typeof value !== "object") return false;
-  const pointer = value as Partial<ActiveGameSlotV1>;
-  return pointer.version === 1 && isTopologyId(pointer.topology) && MODES.includes(pointer.mode as Mode);
+  const pointer = value as {
+    version?: unknown;
+    topology?: unknown;
+    mode?: unknown;
+    generation?: unknown;
+  };
+  return (
+    (pointer.version === 1 ||
+      (pointer.version === 2 && FIELD_GENERATIONS.includes(pointer.generation as FieldGeneration))) &&
+    isTopologyId(pointer.topology) &&
+    MODES.includes(pointer.mode as Mode)
+  );
 };
 
-const slotForGame = (snapshot: PersistedGame): ActiveGameSlotV1 | null => {
+const slotForGame = (snapshot: PersistedGame): ActiveGameSlotV2 | null => {
   const topology =
     (snapshot.model.version === 2 || snapshot.model.version === 3 || snapshot.model.version === 4) &&
     isTopologyId(snapshot.model.topology)
       ? snapshot.model.topology
       : "square";
   if (!MODES.includes(snapshot.model.mode)) return null;
-  return { version: 1, topology, mode: snapshot.model.mode };
+  const generation = snapshot.model.version === 4 ? snapshot.model.generation : "legacy-flat";
+  if (!FIELD_GENERATIONS.includes(generation)) return null;
+  return { version: 2, topology, mode: snapshot.model.mode, generation };
 };
 
 export async function loadActiveGame(): Promise<PersistedGame | null> {
@@ -118,7 +144,8 @@ export async function loadActiveGame(): Promise<PersistedGame | null> {
     const database = await openDatabase();
     const pointer = await readStoredValue(database, ACTIVE_SLOT_KEY);
     if (isActiveSlot(pointer)) {
-      const active = await readStoredValue(database, slotKey(pointer.topology, pointer.mode));
+      const generation = pointer.version === 2 ? pointer.generation : "original-things";
+      const active = await readStoredValue(database, slotKey(pointer.topology, pointer.mode, generation));
       if (isPersistedGame(active)) return active;
     }
 
@@ -131,10 +158,14 @@ export async function loadActiveGame(): Promise<PersistedGame | null> {
   }
 }
 
-export async function loadGameSlot(topology: TopologyId, mode: Mode): Promise<PersistedGame | null> {
+export async function loadGameSlot(
+  topology: TopologyId,
+  mode: Mode,
+  generation: FieldGeneration = "original-things",
+): Promise<PersistedGame | null> {
   try {
     const database = await openDatabase();
-    const value = await readStoredValue(database, slotKey(topology, mode));
+    const value = await readStoredValue(database, slotKey(topology, mode, generation));
     return isPersistedGame(value) ? value : null;
   } catch {
     return null;
@@ -149,7 +180,7 @@ export async function saveActiveGame(snapshot: PersistedGame): Promise<boolean> 
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readwrite");
       const store = transaction.objectStore(STORE_NAME);
-      store.put(snapshot, slotKey(slot.topology, slot.mode));
+      store.put(snapshot, slotKey(slot.topology, slot.mode, slot.generation));
       store.put(slot, ACTIVE_SLOT_KEY);
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error ?? new Error("Saved-game write was aborted"));

@@ -1,5 +1,82 @@
 import { expect, test } from "@playwright/test";
-import { findCell, hexToRgb, openDeterministicGame, worldPoint } from "./helpers";
+import { findCell, openDeterministicGame, worldPoint } from "./helpers";
+
+test("R49 — Thing art defaults to Simple and keeps separate persisted fields per style", async ({ page }) => {
+  await openDeterministicGame(page, 0x49a7_0001);
+
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    thingStyle: "simple",
+    fieldGeneration: "original-things",
+    thingSprites: 0,
+    thingTexturePixels: 0,
+    thingSpritesReady: false,
+  });
+  expect(await page.locator('[data-thing-style="simple"]').getAttribute("aria-pressed")).toBe("true");
+  expect(
+    await page.evaluate(() => ({
+      atlasAllocated: Boolean(
+        (window.__infiniteMines.renderer as unknown as { thingEmojiAtlas: HTMLCanvasElement | null }).thingEmojiAtlas,
+      ),
+      svgRequests: performance
+        .getEntriesByType("resource")
+        .filter((entry) => entry.name.includes("emoji_u"))
+        .length,
+    })),
+  ).toEqual({ atlasAllocated: false, svgRequests: 0 });
+  expect(
+    await page.evaluate(() => {
+      const model = window.__infiniteMines.model;
+      for (let y = -24; y < 48; y += 1) {
+        for (let x = -24; x < 48; x += 1) {
+          if (model.artifactAt(x, y)) return model.thingVisualAt(x, y);
+        }
+      }
+      throw new Error("No Simple Thing found");
+    }),
+  ).toBeNull();
+
+  await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    api.model.store.set(120, 120, 10);
+    await api.flushSave();
+  });
+  await page.locator("#settings-button").click();
+  await page.locator('[data-thing-style="illustrated"]').click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingStyle)).toBe("illustrated");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things");
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
+  await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    api.model.store.set(121, 121, 11);
+    await api.flushSave();
+  });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    thingStyle: "illustrated",
+    fieldGeneration: "illustrated-things",
+  });
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
+
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("simple"));
+  await expect
+    .poll(() => page.evaluate(() => window.__infiniteMines.diagnostics()))
+    .toMatchObject({
+      thingStyle: "simple",
+      fieldGeneration: "original-things",
+      thingSprites: 0,
+      thingTexturePixels: 0,
+      thingSpritesReady: false,
+    });
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(10);
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(0);
+
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
+});
 
 test("R09 — refresh restores the exact field, progress, marks, and viewport from a compact snapshot", async ({ page }) => {
   await openDeterministicGame(page);
@@ -210,11 +287,12 @@ test("R35 — an old saved number at a current Thing migrates to rendered clue z
   const migrated = await page.evaluate(async (artifact) => {
     const api = window.__infiniteMines;
     const renderer = api.renderer;
+    const pixelCellSize = 4;
     renderer.restoreView({
       version: 1,
-      panX: -artifact.x * 25,
-      panY: -artifact.y * 25,
-      zoom: 1,
+      panX: -artifact.x * pixelCellSize,
+      panY: -artifact.y * pixelCellSize,
+      zoom: pixelCellSize / 25,
     });
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const canvas = document.querySelector<HTMLCanvasElement>("#board");
@@ -222,6 +300,7 @@ test("R35 — an old saved number at a current Thing migrates to rendered clue z
     const bounds = canvas.getBoundingClientRect();
     const dpr = canvas.width / bounds.width;
     const pixel = new Uint8Array(4);
+    const normalPixel = new Uint8Array(4);
     renderer.gl.finish();
     renderer.gl.readPixels(
       Math.floor((bounds.width / 2) * dpr),
@@ -232,18 +311,27 @@ test("R35 — an old saved number at a current Thing migrates to rendered clue z
       renderer.gl.UNSIGNED_BYTE,
       pixel,
     );
+    renderer.gl.readPixels(
+      Math.floor((bounds.width / 2 + pixelCellSize) * dpr),
+      canvas.height - 1 - Math.floor((bounds.height / 2) * dpr),
+      1,
+      1,
+      renderer.gl.RGBA,
+      renderer.gl.UNSIGNED_BYTE,
+      normalPixel,
+    );
     return {
       state: api.model.getState(artifact.x, artifact.y),
       clue: api.model.clueAt(artifact.x, artifact.y),
       artifact: api.model.artifactAt(artifact.x, artifact.y),
       pixel: Array.from(pixel.slice(0, 3)),
-      expected: getComputedStyle(document.documentElement).getPropertyValue("--board-artifact").trim(),
+      normalPixel: Array.from(normalPixel.slice(0, 3)),
     };
   }, stale);
   expect(migrated.state).toBe(1);
   expect(migrated.clue).toBe(0);
   expect(migrated.artifact).toBe(true);
-  expect(migrated.pixel).toEqual(hexToRgb(migrated.expected));
+  expect(migrated.pixel).not.toEqual(migrated.normalPixel);
 });
 
 test("R40 — every topology and difficulty restores its own field, progress, and viewport", async ({ page }) => {
@@ -311,7 +399,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
 
   const slots = await page.evaluate(
     () =>
-      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string } }>((resolve, reject) => {
+      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string; generation: string } }>((resolve, reject) => {
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
@@ -321,7 +409,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
           keys.onerror = () => reject(keys.error);
           active.onerror = () => reject(active.error);
           let resultKeys: IDBValidKey[] | null = null;
-          let resultActive: { topology: string; mode: string } | null = null;
+          let resultActive: { topology: string; mode: string; generation: string } | null = null;
           const finish = () => {
             if (resultKeys && resultActive) resolve({ keys: resultKeys, active: resultActive });
           };
@@ -345,7 +433,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
       "field:rhombille:master",
     ]),
   );
-  expect(slots.active).toEqual({ version: 1, topology: "rhombille", mode: "master" });
+  expect(slots.active).toEqual({ version: 2, topology: "rhombille", mode: "master", generation: "original-things" });
 
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");

@@ -1,4 +1,5 @@
 import { TOPOLOGIES, isTopologyId, type Topology, type TopologyId } from "./topology";
+import { thingAlphaOffsets } from "./thing-alpha-footprints";
 
 export const PRESET_MODES = ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const;
 export const MODES = [...PRESET_MODES, "custom"] as const;
@@ -202,8 +203,15 @@ export interface GameSnapshotV3 {
   cells: ArrayBuffer;
 }
 
-export const FIELD_GENERATIONS = ["legacy-flat", "original-things"] as const;
+export const FIELD_GENERATIONS = ["legacy-flat", "original-things", "illustrated-things"] as const;
 export type FieldGeneration = (typeof FIELD_GENERATIONS)[number];
+export type ThingStyle = "simple" | "illustrated";
+
+export const generationForThingStyle = (style: ThingStyle): FieldGeneration =>
+  style === "illustrated" ? "illustrated-things" : "original-things";
+
+export const thingStyleForGeneration = (generation: FieldGeneration): ThingStyle =>
+  generation === "illustrated-things" ? "illustrated" : "simple";
 
 export interface GameSnapshotV4 {
   version: 4;
@@ -245,6 +253,8 @@ export const THING_ZONE_SIZE = 24;
 export const THING_SMALL_RESERVED_SIDE = 5;
 export const THING_LARGE_RESERVED_SIDE = 6;
 export const THING_SMALL_PROBABILITY = 5 / 6;
+export const THING_SPRITE_COUNT = 12;
+export const THING_SPRITE_SALT = 0x2d947f31;
 export const MAX_CHAIN_EXPLOSIONS_PER_ACTION = 256;
 export const thingReservedSideForRoll = (
   roll: number,
@@ -254,11 +264,28 @@ const LEGACY_ARTIFACT_INTERIOR = 18;
 const LEGACY_ARTIFACT_CANDIDATE_LIMIT = 128;
 const MAX_THING_CACHE_ZONES = 4096;
 const UINT32_RANGE = 0x1_0000_0000;
+const THING_SPATIAL_TEMPLATE_CACHE = new Map<string, readonly { x: number; y: number }[]>();
 
 interface ThingLayout {
   readonly x: number;
   readonly y: number;
+  readonly spriteSide: number;
   readonly reserved: Uint32Array | null;
+  readonly visual: Uint32Array | null;
+  readonly art: Uint32Array | null;
+}
+
+export interface ThingVisual {
+  /** The collectible/discovery cell. */
+  readonly x: number;
+  readonly y: number;
+  /** Topology cells defining the intended inner artwork footprint. */
+  readonly cells: readonly { x: number; y: number }[];
+  /** Cells intersected by non-transparent artwork. */
+  readonly artCells: readonly { x: number; y: number }[];
+  /** Complete mine-free reservation available to carry any artwork overflow. */
+  readonly reservedCells: readonly { x: number; y: number }[];
+  readonly side: number;
 }
 
 const EMPTY_RESULT = (): ActionResult => ({
@@ -281,6 +308,9 @@ export function hash32(x: number, y: number, seed: number, salt = 0): number {
   value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
   return (value ^ (value >>> 16)) >>> 0;
 }
+
+export const thingSpriteFor = (x: number, y: number, seed: number): number =>
+  hash32(x, y, seed, THING_SPRITE_SALT) % THING_SPRITE_COUNT;
 
 export class CellStore {
   private readonly chunks = new Map<string, StateChunk>();
@@ -468,6 +498,7 @@ export interface GameOptions {
   seed?: number;
   autoStart?: boolean;
   topology?: TopologyId;
+  generation?: FieldGeneration;
 }
 
 export class GameModel {
@@ -493,7 +524,14 @@ export class GameModel {
     this.density = DIFFICULTIES[this.mode].density;
     this.seed = options.seed ?? 1;
     this.topologyId = options.topology ?? "square";
-    this.reset(this.mode, this.seed, options.autoStart ?? true, this.topologyId, options.density);
+    this.reset(
+      this.mode,
+      this.seed,
+      options.autoStart ?? true,
+      this.topologyId,
+      options.density,
+      options.generation,
+    );
   }
 
   get alive(): boolean {
@@ -622,11 +660,13 @@ export class GameModel {
     autoStart = true,
     topology: TopologyId = this.topologyId,
     density: number = DIFFICULTIES[mode].density,
+    generation: FieldGeneration = "original-things",
   ): ActionResult {
     if (!isValidDensity(density)) throw new RangeError(`Density must be between 12% and 50%: ${density}`);
+    if (!FIELD_GENERATIONS.includes(generation)) throw new RangeError(`Unknown field generation: ${generation}`);
     this.mode = mode;
     this.density = density;
-    this.fieldGeneration = "original-things";
+    this.fieldGeneration = generation;
     this.seed = seed >>> 0;
     this.topologyId = topology;
     this.score = 0;
@@ -676,8 +716,35 @@ export class GameModel {
     return artifact !== null && x === artifact.x && y === artifact.y;
   }
 
+  thingVisualAt(x: number, y: number): ThingVisual | null {
+    if (this.fieldGeneration !== "illustrated-things") return null;
+    const zoneX = floorDiv(x, THING_ZONE_SIZE);
+    const zoneY = floorDiv(y, THING_ZONE_SIZE);
+    const artifact = this.artifactForZone(zoneX, zoneY);
+    if (artifact === null || x !== artifact.x || y !== artifact.y) return null;
+    const decodeCells = (mask: Uint32Array | null): Array<{ x: number; y: number }> => {
+      const decoded: Array<{ x: number; y: number }> = [];
+      if (!mask) return decoded;
+      for (let index = 0; index < THING_ZONE_SIZE * THING_ZONE_SIZE; index += 1) {
+        if ((mask[index >>> 5] & (1 << (index & 31))) === 0) continue;
+        decoded.push({
+          x: zoneX * THING_ZONE_SIZE + (index % THING_ZONE_SIZE),
+          y: zoneY * THING_ZONE_SIZE + Math.floor(index / THING_ZONE_SIZE),
+        });
+      }
+      return decoded;
+    };
+    const cells = decodeCells(artifact.visual);
+    const artCells = decodeCells(artifact.art);
+    const reservedCells = decodeCells(artifact.reserved);
+    if (cells.length === 0) cells.push({ x: artifact.x, y: artifact.y });
+    if (artCells.length === 0) artCells.push(...cells);
+    if (reservedCells.length === 0) reservedCells.push(...cells);
+    return { x: artifact.x, y: artifact.y, cells, artCells, reservedCells, side: artifact.spriteSide };
+  }
+
   thingFootprintAt(x: number, y: number): boolean {
-    if (this.fieldGeneration !== "original-things") return false;
+    if (this.fieldGeneration === "legacy-flat") return false;
     const zoneX = floorDiv(x, THING_ZONE_SIZE);
     const zoneY = floorDiv(y, THING_ZONE_SIZE);
     return this.thingLayoutReservesCell(this.artifactForZone(zoneX, zoneY), zoneX, zoneY, x, y);
@@ -702,6 +769,48 @@ export class GameModel {
     return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.density;
   }
 
+  private thingSpatialTemplate(anchorX: number, anchorY: number, count: number): readonly { x: number; y: number }[] {
+    const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
+    const variant =
+      this.topologyId === "triangular"
+        ? positiveModulo(anchorX + anchorY, 2)
+        : this.topologyId === "rhombille"
+          ? positiveModulo(anchorX, 3)
+          : 0;
+    const cacheKey = `${this.topologyId}:${variant}:${count}`;
+    const cached = THING_SPATIAL_TEMPLATE_CACHE.get(cacheKey);
+    if (cached) return cached;
+
+    const anchorCenter = this.topology.geometry(anchorX, anchorY).center;
+    const frontier: Array<{ x: number; y: number; distance: number }> = [];
+    const queued = new Set<string>();
+    const enqueue = (x: number, y: number): void => {
+      const key = `${x},${y}`;
+      if (queued.has(key)) return;
+      queued.add(key);
+      const center = this.topology.geometry(x, y).center;
+      frontier.push({
+        x,
+        y,
+        distance: (center.x - anchorCenter.x) ** 2 + (center.y - anchorCenter.y) ** 2,
+      });
+    };
+    enqueue(anchorX, anchorY);
+    const cells: Array<{ x: number; y: number }> = [];
+    while (cells.length < count) {
+      frontier.sort((left, right) => {
+        const distance = left.distance - right.distance;
+        return Math.abs(distance) > 1e-12 ? distance : left.y - right.y || left.x - right.x;
+      });
+      const candidate = frontier.shift();
+      if (!candidate) throw new Error("Thing spatial template cannot reach its requested cell count");
+      cells.push({ x: candidate.x - anchorX, y: candidate.y - anchorY });
+      for (const neighbor of this.topology.edgeNeighbors(candidate.x, candidate.y)) enqueue(neighbor.x, neighbor.y);
+    }
+    THING_SPATIAL_TEMPLATE_CACHE.set(cacheKey, cells);
+    return cells;
+  }
+
   private artifactForZone(zoneX: number, zoneY: number): ThingLayout | null {
     const key = `${zoneX},${zoneY}`;
     if (this.thingCache.has(key)) {
@@ -709,9 +818,11 @@ export class GameModel {
     }
 
     const artifact =
-      this.fieldGeneration === "original-things"
-        ? this.originalThingForZone(zoneX, zoneY)
-        : this.legacyArtifactForZone(zoneX, zoneY);
+      this.fieldGeneration === "illustrated-things"
+        ? this.illustratedThingForZone(zoneX, zoneY)
+        : this.fieldGeneration === "original-things"
+          ? this.originalThingForZone(zoneX, zoneY)
+          : this.legacyArtifactForZone(zoneX, zoneY);
     this.thingCache.set(key, artifact);
     while (this.thingCache.size > MAX_THING_CACHE_ZONES) {
       const oldest = this.thingCache.keys().next().value as string | undefined;
@@ -733,11 +844,25 @@ export class GameModel {
       this.topology.forEachNeighbor(candidateX, candidateY, (neighborX, neighborY) => {
         if (zero && this.rawMineAt(neighborX, neighborY)) zero = false;
       });
-      if (zero) return { x: candidateX, y: candidateY, reserved: null };
+      if (zero) {
+        return {
+          x: candidateX,
+          y: candidateY,
+          spriteSide: 1,
+          reserved: null,
+          visual: null,
+          art: null,
+        };
+      }
     }
     return null;
   }
 
+  /**
+   * The generation used by every field created before illustrated Things.
+   * Keep this byte-for-byte equivalent to the original v4 implementation so
+   * choosing the default Simple style cannot move mines or clues in a save.
+   */
   private originalThingForZone(zoneX: number, zoneY: number): ThingLayout {
     const sizeRoll = hash32(zoneX, zoneY, this.seed, 0x71a55e31) / UINT32_RANGE;
     const reservedSide = thingReservedSideForRoll(sizeRoll);
@@ -839,7 +964,161 @@ export class GameModel {
     return {
       x: zoneX * THING_ZONE_SIZE + artifactLocalX,
       y: zoneY * THING_ZONE_SIZE + artifactLocalY,
+      spriteSide: 1,
       reserved: mask,
+      visual: null,
+      art: null,
+    };
+  }
+
+  private illustratedThingForZone(zoneX: number, zoneY: number): ThingLayout {
+    const sizeRoll = hash32(zoneX, zoneY, this.seed, 0x71a55e31) / UINT32_RANGE;
+    const reservedSide = thingReservedSideForRoll(sizeRoll);
+    const spriteSide = reservedSide - 2;
+    const positionCount = THING_ZONE_SIZE - spriteSide - 2;
+    const anchorLocalX = 1 + Math.floor((hash32(zoneX, zoneY, this.seed, 0x2f4b8d19) / UINT32_RANGE) * positionCount);
+    const anchorLocalY = 1 + Math.floor((hash32(zoneX, zoneY, this.seed, 0x5c92d047) / UINT32_RANGE) * positionCount);
+    const minLocalX = anchorLocalX - 1;
+    const minLocalY = anchorLocalY - 1;
+    const reservedCells = reservedSide * reservedSide;
+    const mask = new Uint32Array((THING_ZONE_SIZE * THING_ZONE_SIZE) >>> 5);
+    const members = new Set<number>();
+    const addLocal = (localX: number, localY: number): void => {
+      members.add(localY * THING_ZONE_SIZE + localX);
+    };
+    for (let localY = minLocalY; localY < minLocalY + reservedSide; localY += 1) {
+      for (let localX = minLocalX; localX < minLocalX + reservedSide; localX += 1) addLocal(localX, localY);
+    }
+
+    let artifactLocalX = anchorLocalX;
+    let artifactLocalY = anchorLocalY;
+    if (this.topologyId !== "square") {
+      const centerX = minLocalX + Math.floor(reservedSide / 2);
+      const centerY = minLocalY + Math.floor(reservedSide / 2);
+      let foundContainedAnchor = false;
+      for (let radius = 0; radius < THING_ZONE_SIZE && !foundContainedAnchor; radius += 1) {
+        for (let localY = centerY - radius; localY <= centerY + radius && !foundContainedAnchor; localY += 1) {
+          for (let localX = centerX - radius; localX <= centerX + radius; localX += 1) {
+            if (Math.max(Math.abs(localX - centerX), Math.abs(localY - centerY)) !== radius) continue;
+            if (localX < 0 || localX >= THING_ZONE_SIZE || localY < 0 || localY >= THING_ZONE_SIZE) continue;
+            const worldX = zoneX * THING_ZONE_SIZE + localX;
+            const worldY = zoneY * THING_ZONE_SIZE + localY;
+            const templateFits = this.thingSpatialTemplate(worldX, worldY, reservedCells).every(
+              (offset) =>
+                localX + offset.x >= 0 &&
+                localX + offset.x < THING_ZONE_SIZE &&
+                localY + offset.y >= 0 &&
+                localY + offset.y < THING_ZONE_SIZE,
+            );
+            if (!templateFits) continue;
+            let neighborsFit = true;
+            this.topology.forEachNeighbor(worldX, worldY, (neighborX, neighborY) => {
+              const neighborLocalX = neighborX - zoneX * THING_ZONE_SIZE;
+              const neighborLocalY = neighborY - zoneY * THING_ZONE_SIZE;
+              if (
+                neighborLocalX < 0 ||
+                neighborLocalX >= THING_ZONE_SIZE ||
+                neighborLocalY < 0 ||
+                neighborLocalY >= THING_ZONE_SIZE
+              ) {
+                neighborsFit = false;
+              }
+            });
+            if (!neighborsFit) continue;
+            artifactLocalX = localX;
+            artifactLocalY = localY;
+            foundContainedAnchor = true;
+            break;
+          }
+        }
+      }
+      if (!foundContainedAnchor) throw new Error("Thing cannot place its topology patch inside its zone");
+    }
+
+    const visualMembers = new Set<number>();
+    if (this.topologyId === "square") {
+      for (let localY = anchorLocalY; localY < anchorLocalY + spriteSide; localY += 1) {
+        for (let localX = anchorLocalX; localX < anchorLocalX + spriteSide; localX += 1) {
+          visualMembers.add(localY * THING_ZONE_SIZE + localX);
+        }
+      }
+    } else {
+      // Logical x/y rectangles are not physical patches in the alternate
+      // topology coordinate systems (especially Rhombille's three slots per
+      // lattice point). Choose both the artwork and its larger safe footprint
+      // by actual rendered distance from the discovery cell instead. The
+      // resulting Thing is a compact union of real triangles/rhombi.
+      const artifactX = zoneX * THING_ZONE_SIZE + artifactLocalX;
+      const artifactY = zoneY * THING_ZONE_SIZE + artifactLocalY;
+      const template = this.thingSpatialTemplate(artifactX, artifactY, reservedCells);
+      const spatiallyNearest = template.map((offset) => {
+        const localX = artifactLocalX + offset.x;
+        const localY = artifactLocalY + offset.y;
+        if (localX < 0 || localX >= THING_ZONE_SIZE || localY < 0 || localY >= THING_ZONE_SIZE) {
+          throw new Error("Thing spatial template escaped its zone");
+        }
+        return { index: localY * THING_ZONE_SIZE + localX };
+      });
+      for (let index = 0; index < spriteSide * spriteSide; index += 1) {
+        visualMembers.add(spatiallyNearest[index].index);
+      }
+      members.clear();
+      for (const visualIndex of visualMembers) members.add(visualIndex);
+
+      const protectedCells = new Set(visualMembers);
+      const artifactIndex = artifactLocalY * THING_ZONE_SIZE + artifactLocalX;
+      protectedCells.add(artifactIndex);
+      this.topology.forEachNeighbor(
+        zoneX * THING_ZONE_SIZE + artifactLocalX,
+        zoneY * THING_ZONE_SIZE + artifactLocalY,
+        (neighborX, neighborY) => {
+          const localX = neighborX - zoneX * THING_ZONE_SIZE;
+          const localY = neighborY - zoneY * THING_ZONE_SIZE;
+          if (localX < 0 || localX >= THING_ZONE_SIZE || localY < 0 || localY >= THING_ZONE_SIZE) {
+            throw new Error("Thing anchor cannot protect neighbors outside its zone");
+          }
+          protectedCells.add(localY * THING_ZONE_SIZE + localX);
+        },
+      );
+      if (protectedCells.size > reservedCells) {
+        throw new Error("Thing footprint cannot retain its visual and clue-zero cells");
+      }
+      for (const protectedIndex of protectedCells) members.add(protectedIndex);
+      for (const candidate of spatiallyNearest) {
+        if (members.size >= reservedCells) break;
+        members.add(candidate.index);
+      }
+    }
+
+    const artifactIndex = artifactLocalY * THING_ZONE_SIZE + artifactLocalX;
+    if (!members.has(artifactIndex)) throw new Error("Thing footprint must contain its discovery cell");
+    if (members.size !== reservedCells) throw new Error("Thing footprint must preserve its exact reserved-cell count");
+    const visualMask = new Uint32Array(mask.length);
+    const artMask = new Uint32Array(mask.length);
+    for (const index of members) mask[index >>> 5] |= 1 << (index & 31);
+    for (const index of visualMembers) visualMask[index >>> 5] |= 1 << (index & 31);
+    const artifactX = zoneX * THING_ZONE_SIZE + artifactLocalX;
+    const artifactY = zoneY * THING_ZONE_SIZE + artifactLocalY;
+    const sprite = thingSpriteFor(artifactX, artifactY, this.seed);
+    const artOffsets = thingAlphaOffsets(this.topologyId, artifactX, artifactY, spriteSide, sprite);
+    for (let offset = 0; offset < artOffsets.length; offset += 2) {
+      const localX = artifactLocalX + artOffsets[offset];
+      const localY = artifactLocalY + artOffsets[offset + 1];
+      const index = localY * THING_ZONE_SIZE + localX;
+      if (!members.has(index)) {
+        throw new Error(
+          `Thing alpha footprint escaped its mine-free reservation: ${this.topologyId}/${artifactX},${artifactY}/${spriteSide}/${sprite}/${artOffsets[offset]},${artOffsets[offset + 1]}`,
+        );
+      }
+      artMask[index >>> 5] |= 1 << (index & 31);
+    }
+    return {
+      x: artifactX,
+      y: artifactY,
+      spriteSide,
+      reserved: mask,
+      visual: visualMask,
+      art: artMask,
     };
   }
 

@@ -1,4 +1,13 @@
-import { CellState, GameModel, STATE_TILE_SIZE, floorDiv, isOpened, openedClue, type ExploredBounds } from "./model";
+import {
+  CellState,
+  GameModel,
+  STATE_TILE_SIZE,
+  floorDiv,
+  thingSpriteFor,
+  isOpened,
+  openedClue,
+  type ExploredBounds,
+} from "./model";
 import type { ViewSnapshotV1 } from "./persistence";
 import {
   compareCells,
@@ -14,6 +23,9 @@ export interface RenderDiagnostics {
   cellSize: number;
   borderCssPixels: 0 | 1;
   glyphs: boolean;
+  thingSprites: number;
+  thingTexturePixels: number;
+  thingSpritesReady: boolean;
   detailMix: number;
   backgroundColor: string;
   frameCount: number;
@@ -53,20 +65,60 @@ const RENDER_TILE_CELLS = STATE_TILE_SIZE;
 const CELLS_PER_TILE = RENDER_TILE_CELLS * RENDER_TILE_CELLS;
 const CACHED_CELL_FLOATS = 4;
 const INSTANCE_FLOATS = 5;
-const GENERIC_INSTANCE_FLOATS = 10;
+const GENERIC_INSTANCE_FLOATS = 14;
 const SQUARE_MAX_CLUE_SPRITE = 8;
 const SQUARE_FLAG_SPRITE = 9;
 const SQUARE_QUESTION_SPRITE = 10;
 const SQUARE_EXPLODED_SPRITE = 11;
 const SQUARE_SPRITE_COUNT = 12;
+const THING_EMOJI_NAMES = [
+  "castle",
+  "Japanese castle",
+  "moai",
+  "flying saucer",
+  "rocket",
+  "sailboat",
+  "volcano",
+  "circus tent",
+  "sauropod",
+  "dragon",
+  "palm tree",
+  "snowman",
+] as const;
+const THING_VECTOR_URLS = [
+  new URL("./assets/things/emoji_u1f3f0.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f3ef.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f5ff.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f6f8.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f680.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u26f5.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f30b.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f3aa.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f995.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f409.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u1f334.svg", import.meta.url).href,
+  new URL("./assets/things/emoji_u26c4.svg", import.meta.url).href,
+] as const;
+const SQUARE_ATLAS_SPRITE_COUNT = SQUARE_SPRITE_COUNT;
 const ARTIFACT_CELL_KIND = 1;
 const FRONTIER_CELL_KIND = 2;
+const THING_CELL_KIND = 3;
+const THING_BORDER_CELL_KIND = 4;
+const THING_UNDERLAY_CELL_KIND = -1;
+const MASKED_CELL_KIND = -2;
 const MAX_CLUE_SPRITE = 18;
 const FLAG_SPRITE = 19;
 const QUESTION_SPRITE = 20;
 const EXPLODED_SPRITE = 21;
 const SPRITE_COUNT = 22;
+const ATLAS_SPRITE_COUNT = SPRITE_COUNT;
 const SPRITE_PIXELS = 64;
+const THING_TEXTURE_PIXELS = 512;
+const THING_ATLAS_COLUMNS = 4;
+const THING_ATLAS_ROWS = Math.ceil(THING_VECTOR_URLS.length / THING_ATLAS_COLUMNS);
+const THING_TEXTURE_PADDING = 16;
+const THING_TRIANGULAR_FIT = 0.9;
+const THING_RHOMBILLE_FIT = 0.8;
 const MAX_CACHED_TILES = 2048;
 const MAX_DAMAGE_AREA_RATIO = 0.4;
 const PAN_BLIT_MIN_DETAIL_INSTANCES = 20_000;
@@ -134,11 +186,12 @@ flat out float v_cellKind;
 flat out float v_edges;
 
 void main() {
+  bool thingCell = a_cell.w > 2.5 && a_cell.w < 3.5;
   vec2 start = u_viewport * 0.5 + (a_cell.xy - u_cameraCell) * u_cellSize;
   vec2 end = u_viewport * 0.5 + (a_cell.xy - u_cameraCell + 1.0) * u_cellSize;
   vec2 startDevice = floor(start * u_dpr + 0.5);
   vec2 endDevice = floor(end * u_dpr + 0.5);
-  int edges = int(a_edges + 0.5);
+  int edges = thingCell ? 0 : int(a_edges + 0.5);
   vec2 extensionDevice = vec2(
     (edges & 4) != 0 ? u_dpr : 0.0,
     (edges & 8) != 0 ? u_dpr : 0.0
@@ -157,6 +210,7 @@ const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
 uniform sampler2D u_atlas;
+uniform sampler2D u_thingAtlas;
 uniform vec3 u_artifact;
 uniform vec3 u_artifactEdge;
 uniform vec3 u_lodArtifact;
@@ -175,15 +229,45 @@ flat in float v_cellKind;
 flat in float v_edges;
 out vec4 outColor;
 
+vec4 sampleThing(vec2 uv) {
+  float column = mod(v_sprite, float(${THING_ATLAS_COLUMNS}));
+  float row = floor(v_sprite / float(${THING_ATLAS_COLUMNS}));
+  vec2 atlasPixel = vec2(
+    column * float(${THING_TEXTURE_PIXELS}) + uv.x * float(${THING_TEXTURE_PIXELS - 1}) + 0.5,
+    row * float(${THING_TEXTURE_PIXELS}) + uv.y * float(${THING_TEXTURE_PIXELS - 1}) + 0.5
+  );
+  vec2 atlasSize = vec2(float(${THING_ATLAS_COLUMNS * THING_TEXTURE_PIXELS}), float(${THING_ATLAS_ROWS * THING_TEXTURE_PIXELS}));
+  return texture(u_thingAtlas, atlasPixel / atlasSize);
+}
+
 void main() {
-  int edges = int(v_edges + 0.5);
-  bool frontier = v_cellKind > 1.5;
+  bool thingBorder = v_cellKind > 3.5;
+  bool thingCell = v_cellKind > 2.5 && !thingBorder;
+  bool thingUnderlay = v_cellKind < -0.5;
+  int edges = thingCell ? 0 : int(v_edges + 0.5);
+  bool frontier = v_cellKind > 1.5 && !thingCell && !thingBorder;
   bool artifact = v_cellKind > 0.5 && !frontier;
   bool insideCell = v_cellUv.x >= 0.0 && v_cellUv.y >= 0.0 && v_cellUv.x < 1.0 && v_cellUv.y < 1.0;
+  if (thingCell) {
+    int packed = int(v_edges + 0.5);
+    float side = float(packed & 7);
+    vec2 fragmentOffset = vec2(float((packed >> 3) & 7), float((packed >> 6) & 7)) - 1.0;
+    vec2 thingUv = (fragmentOffset + clamp(v_cellUv, 0.0, 0.999999)) / side;
+    if (thingUv.x < 0.0 || thingUv.y < 0.0 || thingUv.x >= 1.0 || thingUv.y >= 1.0) discard;
+    vec4 glyph = sampleThing(thingUv);
+    if (glyph.a <= 0.0) discard;
+    outColor = glyph;
+    return;
+  }
+  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
+  vec2 atlasSize = vec2(float(${SQUARE_ATLAS_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
+  vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
   bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
-  vec3 fill = frontier ? u_background : (v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
+  vec3 artifactTint = mix(u_artifact, u_artifactEdge, 0.5);
+  vec3 fill = frontier ? u_background : (artifact ? mix(u_cell, artifactTint, 0.1) : (v_sprite == ${SQUARE_EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${SQUARE_FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell)));
   vec3 base = fill;
   float innerDistance = 100000.0;
+  float edgeCoverage = 0.0;
   if (u_cellSize >= 3.0) {
     vec2 pixelWidth = max(fwidth(v_cellUv), vec2(0.000001));
     vec2 edgeDistance = vec2(
@@ -193,7 +277,16 @@ void main() {
     if ((edges & 1) != 0) innerDistance = min(innerDistance, edgeDistance.x);
     if ((edges & 2) != 0) innerDistance = min(innerDistance, edgeDistance.y);
     float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, innerDistance);
+    edgeCoverage = 1.0 - fillMix;
     base = mix(u_cellBorder, fill, fillMix);
+  }
+
+  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
+  if (thingBorder) {
+    float borderAlpha = (outerBorder ? 1.0 : edgeCoverage) * detailMix;
+    if (borderAlpha <= 0.0) discard;
+    outColor = vec4(u_cellBorder * borderAlpha, borderAlpha);
+    return;
   }
 
   // Frontier instances contribute lines only. Painting their background-filled
@@ -204,21 +297,9 @@ void main() {
   int stateIndex = int(clamp(v_sprite, 0.0, ${SQUARE_EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
 
-  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
-  vec2 atlasSize = vec2(float(${SQUARE_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
-  vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
-  if (!insideCell || frontier) glyph.a = 0.0;
+  if (!insideCell || frontier || thingUnderlay) glyph.a = 0.0;
   vec4 color = vec4(mix(base, glyph.rgb, glyph.a), 1.0);
 
-  if (artifact && insideCell) {
-    vec2 centered = v_cellUv - 0.5;
-    vec2 rotated = vec2(centered.x + centered.y, centered.y - centered.x) * 0.707107;
-    float square = max(abs(rotated.x), abs(rotated.y));
-    if (square < 0.27) color = vec4(u_artifactEdge, 1.0);
-    if (square < 0.22) color = vec4(u_artifact, 1.0);
-  }
-
-  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   if (outerBorder) {
     outColor = vec4(mix(u_background, u_cellBorder, detailMix), 1.0);
     return;
@@ -233,6 +314,7 @@ layout(location = 0) in vec2 a_corner;
 layout(location = 1) in vec4 a_centerAxisU;
 layout(location = 2) in vec4 a_axisVState;
 layout(location = 3) in vec2 a_shapeEdges;
+layout(location = 4) in vec4 a_thingBounds;
 
 uniform vec2 u_viewport;
 uniform vec2 u_cameraWorld;
@@ -240,6 +322,7 @@ uniform float u_cellSize;
 
 out vec2 v_local;
 out vec2 v_spriteOffset;
+out vec2 v_thingUv;
 flat out float v_sprite;
 flat out float v_cellKind;
 flat out float v_shape;
@@ -247,7 +330,8 @@ flat out float v_edges;
 
 void main() {
   int shape = int(a_shapeEdges.x + 0.5);
-  bool frontier = a_axisVState.w > 1.5;
+  bool thingCell = a_axisVState.w > 2.5;
+  bool frontier = a_axisVState.w > 1.5 && !thingCell;
   vec2 local = a_corner * 2.0 - 1.0;
   if (shape == 3 || frontier) {
     // Polygon edges can coincide with an excluded edge of their carrier quad
@@ -262,13 +346,14 @@ void main() {
   }
   vec2 world = a_centerAxisU.xy + local.x * a_centerAxisU.zw + local.y * a_axisVState.xy;
   vec2 spriteCenter = a_centerAxisU.xy;
-  if (shape == 1) spriteCenter += a_axisVState.xy / 3.0;
-  if (shape == 2) spriteCenter -= a_axisVState.xy / 3.0;
+  if (!thingCell && shape == 1) spriteCenter += a_axisVState.xy / 3.0;
+  if (!thingCell && shape == 2) spriteCenter -= a_axisVState.xy / 3.0;
   vec2 pixel = u_viewport * 0.5 + (world - u_cameraWorld) * u_cellSize;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_local = local;
   v_spriteOffset = world - spriteCenter;
+  v_thingUv = (world - a_thingBounds.xy) / max(a_thingBounds.zw, vec2(0.000001));
   v_sprite = a_axisVState.z;
   v_cellKind = a_axisVState.w;
   v_shape = a_shapeEdges.x;
@@ -279,6 +364,7 @@ const GENERIC_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
 uniform sampler2D u_atlas;
+uniform sampler2D u_thingAtlas;
 uniform vec3 u_artifact;
 uniform vec3 u_artifactEdge;
 uniform vec3 u_lodArtifact;
@@ -293,6 +379,7 @@ uniform float u_cellSize;
 
 in vec2 v_local;
 in vec2 v_spriteOffset;
+in vec2 v_thingUv;
 flat in float v_sprite;
 flat in float v_cellKind;
 flat in float v_shape;
@@ -303,10 +390,25 @@ void includeEdge(float lineValue, int bit, int edges, inout float edgePixels) {
   if ((edges & bit) != 0) edgePixels = min(edgePixels, lineValue / max(fwidth(lineValue), 0.000001));
 }
 
+vec4 sampleThing(vec2 uv) {
+  float column = mod(v_sprite, float(${THING_ATLAS_COLUMNS}));
+  float row = floor(v_sprite / float(${THING_ATLAS_COLUMNS}));
+  vec2 atlasPixel = vec2(
+    column * float(${THING_TEXTURE_PIXELS}) + uv.x * float(${THING_TEXTURE_PIXELS - 1}) + 0.5,
+    row * float(${THING_TEXTURE_PIXELS}) + uv.y * float(${THING_TEXTURE_PIXELS - 1}) + 0.5
+  );
+  vec2 atlasSize = vec2(float(${THING_ATLAS_COLUMNS * THING_TEXTURE_PIXELS}), float(${THING_ATLAS_ROWS * THING_TEXTURE_PIXELS}));
+  return texture(u_thingAtlas, atlasPixel / atlasSize);
+}
+
 void main() {
   int shape = int(v_shape + 0.5);
   int edges = int(v_edges + 0.5);
-  bool frontier = v_cellKind > 1.5;
+  bool thingBorder = v_cellKind > 3.5;
+  bool thingCell = v_cellKind > 2.5 && !thingBorder;
+  bool frontier = v_cellKind > 1.5 && !thingCell && !thingBorder;
+  bool maskedCell = v_cellKind < -1.5;
+  bool thingUnderlay = v_cellKind < -0.5 && !maskedCell;
   bool artifact = v_cellKind > 0.5 && !frontier;
   float edgePixels = 100000.0;
   bool inside = false;
@@ -347,11 +449,13 @@ void main() {
     float edge3 = 1.0 + v_local.x - v_local.y;
     float ownershipTolerance = max(max(fwidth(edge0), fwidth(edge1)), max(fwidth(edge2), fwidth(edge3))) * 0.75;
     bool withinCoverage = min(min(edge0, edge1), min(edge2, edge3)) >= -ownershipTolerance;
-    // Draw the same centered border from both incident rhombi. Their expanded
-    // carrier quads overlap only in this narrow strip, so draw order cannot
-    // reveal the clear color at diagonal edges or six-way vertices.
-    inside = withinCoverage;
+    inside = thingCell ? min(min(edge0, edge1), min(edge2, edge3)) >= 0.0 : withinCoverage;
     if (frontier) {
+      if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(edge0) / max(fwidth(edge0), 0.000001) * 2.0);
+      if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(edge1) / max(fwidth(edge1), 0.000001) * 2.0);
+      if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(edge2) / max(fwidth(edge2), 0.000001) * 2.0);
+      if ((edges & 8) != 0) edgePixels = min(edgePixels, abs(edge3) / max(fwidth(edge3), 0.000001) * 2.0);
+    } else if (thingUnderlay || thingBorder || maskedCell) {
       if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(edge0) / max(fwidth(edge0), 0.000001) * 2.0);
       if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(edge1) / max(fwidth(edge1), 0.000001) * 2.0);
       if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(edge2) / max(fwidth(edge2), 0.000001) * 2.0);
@@ -365,12 +469,29 @@ void main() {
   }
   if (!inside) discard;
 
+  if (thingCell) {
+    if (v_thingUv.x < 0.0 || v_thingUv.y < 0.0 || v_thingUv.x >= 1.0 || v_thingUv.y >= 1.0) discard;
+    vec4 glyph = sampleThing(v_thingUv);
+    if (glyph.a <= 0.0) discard;
+    outColor = glyph;
+    return;
+  }
+
+  if (thingBorder) {
+    float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
+    float borderAlpha = (1.0 - smoothstep(u_dpr - 0.5, u_dpr + 0.5, edgePixels)) * detailMix;
+    if (borderAlpha <= 0.0) discard;
+    outColor = vec4(u_cellBorder * borderAlpha, borderAlpha);
+    return;
+  }
+
   // As above, a frontier carrier is a sparse line primitive rather than a
   // background-filled cell. This preserves the single owner of the exposed
   // boundary and prevents overlapping rhombi from erasing neighboring lines.
   if (frontier && edgePixels >= u_dpr + 0.5) discard;
 
-  vec3 fill = frontier ? u_background : (v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell));
+  vec3 artifactTint = mix(u_artifact, u_artifactEdge, 0.5);
+  vec3 fill = frontier ? u_background : (artifact ? mix(u_cell, artifactTint, 0.1) : (v_sprite == ${EXPLODED_SPRITE.toFixed(1)} ? u_exploded : (v_sprite >= ${FLAG_SPRITE.toFixed(1)} ? u_marked : u_cell)));
   vec3 detailedBase = fill;
   if (u_cellSize >= 3.0 && edgePixels < 100000.0) {
     float fillMix = smoothstep(u_dpr - 0.5, u_dpr + 0.5, edgePixels);
@@ -383,17 +504,10 @@ void main() {
   vec2 contentLocal = v_spriteOffset / contentExtent;
   vec2 uv = clamp(contentLocal + 0.5, 0.0, 1.0);
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
-  vec2 atlasSize = vec2(float(${SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
+  vec2 atlasSize = vec2(float(${ATLAS_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
-  if (frontier) glyph.a = 0.0;
+  if (frontier || thingUnderlay) glyph.a = 0.0;
   vec3 detailed = mix(detailedBase, glyph.rgb, glyph.a);
-
-  if (artifact) {
-    vec2 rotated = vec2(contentLocal.x + contentLocal.y, contentLocal.y - contentLocal.x) * 0.707107;
-    float square = max(abs(rotated.x), abs(rotated.y));
-    if (square < 0.27) detailed = u_artifactEdge;
-    if (square < 0.22) detailed = u_artifact;
-  }
 
   float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   outColor = vec4(mix(stateColor, detailed, detailMix), 1.0);
@@ -473,6 +587,7 @@ interface GlResources {
   genericInstanceBuffer: WebGLBuffer;
   atlasTexture: WebGLTexture;
   genericAtlasTexture: WebGLTexture;
+  thingAtlasTexture: WebGLTexture;
   stateTexture: WebGLTexture;
   scratchTexture: WebGLTexture;
   scratchFramebuffer: WebGLFramebuffer;
@@ -575,6 +690,9 @@ export class WebGLRenderer {
     cellSize: BASE_CELL_SIZE,
     borderCssPixels: 1,
     glyphs: true,
+    thingSprites: 0,
+    thingTexturePixels: 0,
+    thingSpritesReady: false,
     detailMix: 1,
     backgroundColor: "",
     frameCount: 0,
@@ -638,6 +756,9 @@ export class WebGLRenderer {
   private scratchHeight = 0;
   private screenCaptureRaw = new Uint8Array(0);
   private screenCaptureImage: ImageData | null = null;
+  private thingEmojiAtlas: HTMLCanvasElement | null = null;
+  private thingEmojiAtlasPromise: Promise<void> | null = null;
+  private thingEmojiAtlasReady = false;
   private fullRedraws = 0;
   private damageRedraws = 0;
   private panRedraws = 0;
@@ -660,6 +781,7 @@ export class WebGLRenderer {
     this.fogFrontierMode = fogFrontierMode;
     this.theme = this.readTheme();
     this.resources = this.createResources();
+    if (this.model.fieldGeneration === "illustrated-things") this.startThingEmojiAtlasLoad();
 
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
@@ -682,6 +804,18 @@ export class WebGLRenderer {
 
   get cellSize(): number {
     return BASE_CELL_SIZE * this.zoom;
+  }
+
+  waitForThingSprites(): Promise<void> {
+    this.startThingEmojiAtlasLoad();
+    return this.thingEmojiAtlasPromise ?? Promise.resolve();
+  }
+
+  syncThingStyle(): void {
+    if (this.model.fieldGeneration === "illustrated-things") this.startThingEmojiAtlasLoad();
+    this.resetTileCache();
+    this.retainedFrame = false;
+    this.requestRender();
   }
 
   setFrameObserver(observer: ((diagnostics: Readonly<RenderDiagnostics>) => void) | null): void {
@@ -1091,6 +1225,9 @@ export class WebGLRenderer {
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
       glyphs: detailMix > 0,
+      thingSprites: this.model.fieldGeneration === "illustrated-things" ? THING_VECTOR_URLS.length : 0,
+      thingTexturePixels: this.model.fieldGeneration === "illustrated-things" ? THING_TEXTURE_PIXELS : 0,
+      thingSpritesReady: this.model.fieldGeneration === "illustrated-things" && this.thingEmojiAtlasReady,
       detailMix,
       backgroundColor: this.theme.background,
       frameCount: this.frameCount,
@@ -1132,6 +1269,14 @@ export class WebGLRenderer {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(...this.theme.backgroundRgb, 1);
     if (pixelTexture) {
+      gl.disable(gl.BLEND);
+    } else {
+      // Premultiplied Thing texels keep antialiased edges color-correct while
+      // transparent texels leave the already-rendered field untouched.
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    if (pixelTexture) {
       gl.useProgram(resources.pixelProgram);
       gl.bindVertexArray(resources.pixelVertexArray);
       gl.uniform2f(resources.pixelViewportUniform, this.width, this.height);
@@ -1151,6 +1296,8 @@ export class WebGLRenderer {
       gl.uniform1f(resources.genericDprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, resources.genericAtlasTexture);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, resources.thingAtlasTexture);
     } else {
       gl.useProgram(resources.program);
       gl.bindVertexArray(resources.vertexArray);
@@ -1160,6 +1307,8 @@ export class WebGLRenderer {
       gl.uniform1f(resources.dprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, resources.atlasTexture);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, resources.thingAtlasTexture);
     }
 
     const fullFrame =
@@ -1533,8 +1682,62 @@ export class WebGLRenderer {
       1,
       Math.min(this.model.store.nonZeroCells, (maxX - minX + 1) * (maxY - minY + 1)),
     );
+    const thingVisuals: Array<{
+      x: number;
+      y: number;
+      cells: readonly { x: number; y: number }[];
+      artCells: readonly { x: number; y: number }[];
+      reservedCells: readonly { x: number; y: number }[];
+      side: number;
+    }> = [];
+    const collectThing = (x: number, y: number, state: CellState, frontier: boolean): void => {
+      if (!this.thingEmojiAtlasReady || frontier || state !== CellState.Opened) return;
+      const visual = this.model.thingVisualAt(x, y);
+      if (visual) thingVisuals.push(visual);
+    };
+    if (renderCells) {
+      for (const cell of renderCells.values()) collectThing(cell.x, cell.y, cell.state, cell.frontier);
+    } else {
+      this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+        collectThing(x, y, state, false);
+      });
+    }
+    const thingRenderData = thingVisuals.map((thing, thingIndex) => {
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      for (const cell of thing.cells) {
+        const geometry = topology.geometry(cell.x, cell.y);
+        for (const vertex of geometry.vertices) {
+          minX = Math.min(minX, vertex.x);
+          minY = Math.min(minY, vertex.y);
+          maxX = Math.max(maxX, vertex.x);
+          maxY = Math.max(maxY, vertex.y);
+        }
+      }
+      if (this.model.topologyId !== "square") {
+        const fit = this.model.topologyId === "triangular" ? THING_TRIANGULAR_FIT : THING_RHOMBILLE_FIT;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const halfWidth = ((maxX - minX) * fit) / 2;
+        const halfHeight = ((maxY - minY) * fit) / 2;
+        minX = centerX - halfWidth;
+        maxX = centerX + halfWidth;
+        minY = centerY - halfHeight;
+        maxY = centerY + halfHeight;
+      }
+      return { ...thing, thingIndex, minX, minY, maxX, maxY };
+    });
+    // Remove only shared edges between cells that non-transparent artwork
+    // actually intersects. Fully transparent cells retain their ordinary grid.
+    const artThingByCell = new Map<string, number>();
+    for (const thing of thingRenderData) {
+      for (const cell of thing.artCells) artThingByCell.set(cellKey(cell.x, cell.y), thing.thingIndex);
+    }
+    const thingCellCount = thingRenderData.reduce((sum, thing) => sum + thing.artCells.length * 2, 0);
     const instances = new Float32Array(
-      Math.max(1, renderCells?.size ?? storedCapacity) * GENERIC_INSTANCE_FLOATS,
+      (Math.max(1, renderCells?.size ?? storedCapacity) + thingCellCount) * GENERIC_INSTANCE_FLOATS,
     );
     let index = 0;
     let frontierCells = 0;
@@ -1560,11 +1763,14 @@ export class WebGLRenderer {
         drawCenterY = (geometryMinY + geometryMaxY) / 2;
       }
       const edgeNeighbors = topology.edgeNeighbors(x, y);
+      const artThing = artThingByCell.get(cellKey(x, y));
+      const besideArt = artThing === undefined && edgeNeighbors.some((neighbor) => artThingByCell.has(cellKey(neighbor.x, neighbor.y)));
       let edges = frontier ? (frontierEdgesByCell.get(cellKey(x, y)) ?? 0) : 0;
       if (frontier && edges === 0) return;
       if (!frontier) {
         for (let edge = 0; edge < edgeNeighbors.length; edge += 1) {
           const neighbor = edgeNeighbors[edge];
+          if (artThing !== undefined || artThingByCell.has(cellKey(neighbor.x, neighbor.y))) continue;
           if (
             compareCells({ x, y }, neighbor) < 0 ||
             !this.isRenderable(this.model.getState(neighbor.x, neighbor.y))
@@ -1583,11 +1789,17 @@ export class WebGLRenderer {
       instances[index++] = frontier ? 0 : this.spriteFor(state);
       instances[index++] = frontier
         ? FRONTIER_CELL_KIND
-        : state === CellState.Opened && this.model.artifactAt(x, y)
-          ? ARTIFACT_CELL_KIND
-          : 0;
+        : artThing === undefined
+          ? besideArt
+            ? MASKED_CELL_KIND
+            : 0
+          : THING_UNDERLAY_CELL_KIND;
       instances[index++] = shape;
       instances[index++] = edges;
+      instances[index++] = 0;
+      instances[index++] = 0;
+      instances[index++] = 0;
+      instances[index++] = 0;
       if (frontier) {
         frontierCells += 1;
         frontierEdges += this.edgeCount(edges);
@@ -1600,6 +1812,86 @@ export class WebGLRenderer {
       this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
         appendCell(x, y, state, false);
       });
+    }
+
+    for (const thing of thingRenderData) {
+      const thingWidth = thing.maxX - thing.minX;
+      const thingHeight = thing.maxY - thing.minY;
+      const sprite = this.thingSpriteFor(thing.x, thing.y);
+      for (const cell of thing.artCells) {
+        const geometry = topology.geometry(cell.x, cell.y);
+        let drawCenterX = geometry.center.x;
+        let drawCenterY = geometry.center.y;
+        if (geometry.shape === "triangle-up" || geometry.shape === "triangle-down") {
+          drawCenterX =
+            (Math.min(...geometry.vertices.map((vertex) => vertex.x)) +
+              Math.max(...geometry.vertices.map((vertex) => vertex.x))) /
+            2;
+          drawCenterY =
+            (Math.min(...geometry.vertices.map((vertex) => vertex.y)) +
+              Math.max(...geometry.vertices.map((vertex) => vertex.y))) /
+            2;
+        }
+        const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+        instances[index++] = drawCenterX - anchor.x;
+        instances[index++] = drawCenterY - anchor.y;
+        instances[index++] = geometry.axisU.x;
+        instances[index++] = geometry.axisU.y;
+        instances[index++] = geometry.axisV.x;
+        instances[index++] = geometry.axisV.y;
+        instances[index++] = sprite;
+        instances[index++] = THING_CELL_KIND;
+        instances[index++] = shape;
+        instances[index++] = 0;
+        instances[index++] = thing.minX - anchor.x;
+        instances[index++] = thing.minY - anchor.y;
+        instances[index++] = thingWidth;
+        instances[index++] = thingHeight;
+      }
+    }
+
+    // Repaint the alpha-cell union's perimeter after the artwork. The base
+    // pass intentionally omits every edge touching the union, so each border
+    // has one owner and opaque SVG pixels cannot cover it.
+    for (const thing of thingRenderData) {
+      for (const cell of thing.artCells) {
+        const geometry = topology.geometry(cell.x, cell.y);
+        const neighbors = topology.edgeNeighbors(cell.x, cell.y);
+        let edges = 0;
+        for (let edge = 0; edge < neighbors.length; edge += 1) {
+          if (!artThingByCell.has(cellKey(neighbors[edge].x, neighbors[edge].y))) {
+            edges |= 1 << edge;
+          }
+        }
+        if (edges === 0) continue;
+        let drawCenterX = geometry.center.x;
+        let drawCenterY = geometry.center.y;
+        if (geometry.shape === "triangle-up" || geometry.shape === "triangle-down") {
+          drawCenterX =
+            (Math.min(...geometry.vertices.map((vertex) => vertex.x)) +
+              Math.max(...geometry.vertices.map((vertex) => vertex.x))) /
+            2;
+          drawCenterY =
+            (Math.min(...geometry.vertices.map((vertex) => vertex.y)) +
+              Math.max(...geometry.vertices.map((vertex) => vertex.y))) /
+            2;
+        }
+        const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+        instances[index++] = drawCenterX - anchor.x;
+        instances[index++] = drawCenterY - anchor.y;
+        instances[index++] = geometry.axisU.x;
+        instances[index++] = geometry.axisU.y;
+        instances[index++] = geometry.axisV.x;
+        instances[index++] = geometry.axisV.y;
+        instances[index++] = 0;
+        instances[index++] = THING_BORDER_CELL_KIND;
+        instances[index++] = shape;
+        instances[index++] = edges;
+        instances[index++] = 0;
+        instances[index++] = 0;
+        instances[index++] = 0;
+        instances[index++] = 0;
+      }
     }
 
     const gl = this.gl;
@@ -1626,6 +1918,14 @@ export class WebGLRenderer {
   private rebuildInstances(anchorX: number, anchorY: number, minX: number, minY: number, maxX: number, maxY: number): void {
     const tileCount = (maxX - minX + 1) * (maxY - minY + 1);
     const visibleTiles: VisibleTile[] = [];
+    const thingVisuals: Array<{
+      cells: readonly { x: number; y: number }[];
+      artCells: readonly { x: number; y: number }[];
+      reservedCells: readonly { x: number; y: number }[];
+      worldX: number;
+      worldY: number;
+      side: number;
+    }> = [];
     let instanceFloats = 0;
     for (let tileY = minY; tileY <= maxY; tileY += 1) {
       for (let tileX = minX; tileX <= maxX; tileX += 1) {
@@ -1642,6 +1942,31 @@ export class WebGLRenderer {
       }
     }
 
+    for (const tile of visibleTiles) {
+      for (let source = 0; source < tile.cells.length; source += CACHED_CELL_FLOATS) {
+        if (tile.cells[source + 3] !== ARTIFACT_CELL_KIND) continue;
+        const worldX = tile.worldOriginX + tile.cells[source];
+        const worldY = tile.worldOriginY + tile.cells[source + 1];
+        if (!this.thingEmojiAtlasReady) continue;
+        const visual = this.model.thingVisualAt(worldX, worldY);
+        if (!visual) continue;
+        thingVisuals.push({
+          cells: visual.cells,
+          artCells: visual.artCells,
+          reservedCells: visual.reservedCells,
+          worldX,
+          worldY,
+          side: visual.side,
+        });
+      }
+    }
+    instanceFloats += thingVisuals.reduce((sum, thing) => sum + thing.artCells.length * INSTANCE_FLOATS * 2, 0);
+
+    const artThingByCell = new Map<string, number>();
+    for (let thingIndex = 0; thingIndex < thingVisuals.length; thingIndex += 1) {
+      for (const cell of thingVisuals[thingIndex].artCells) artThingByCell.set(`${cell.x},${cell.y}`, thingIndex);
+    }
+
     const instances = new Float32Array(instanceFloats);
     let instanceIndex = 0;
     let frontierCells = 0;
@@ -1655,19 +1980,74 @@ export class WebGLRenderer {
         const frontier = tile.cells[source + 3] === FRONTIER_CELL_KIND;
         // Every grid line belongs to the cell below/right of it. Exposed right/bottom
         // lines are therefore extended into the otherwise unrendered neighbor.
-        let edges = frontier ? this.squareFrontierEdges(worldX, worldY) : 1 | 2;
+        const artThing = artThingByCell.get(`${worldX},${worldY}`);
+        let edges = frontier ? this.squareFrontierEdges(worldX, worldY) : 0;
         if (frontier && edges === 0) continue;
-        if (!frontier && !this.isRenderable(this.model.getState(worldX + 1, worldY))) edges |= 4;
-        if (!frontier && !this.isRenderable(this.model.getState(worldX, worldY + 1))) edges |= 8;
+        if (!frontier) {
+          if (artThing === undefined && !artThingByCell.has(`${worldX},${worldY - 1}`)) edges |= 1;
+          if (artThing === undefined && !artThingByCell.has(`${worldX - 1},${worldY}`)) edges |= 2;
+          if (
+            !this.isRenderable(this.model.getState(worldX + 1, worldY)) &&
+            artThing === undefined &&
+            !artThingByCell.has(`${worldX + 1},${worldY}`)
+          ) {
+            edges |= 4;
+          }
+          if (
+            !this.isRenderable(this.model.getState(worldX, worldY + 1)) &&
+            artThing === undefined &&
+            !artThingByCell.has(`${worldX},${worldY + 1}`)
+          ) {
+            edges |= 8;
+          }
+        }
         instances[instanceIndex++] = tile.relativeOriginX + localX;
         instances[instanceIndex++] = tile.relativeOriginY + localY;
         instances[instanceIndex++] = tile.cells[source + 2];
-        instances[instanceIndex++] = tile.cells[source + 3];
+        instances[instanceIndex++] = frontier
+          ? FRONTIER_CELL_KIND
+          : artThing === undefined
+            ? tile.cells[source + 3] === ARTIFACT_CELL_KIND
+              ? 0
+              : tile.cells[source + 3]
+            : THING_UNDERLAY_CELL_KIND;
         instances[instanceIndex++] = edges;
         if (frontier) {
           frontierCells += 1;
           frontierEdges += this.edgeCount(edges);
         }
+      }
+    }
+
+    for (const thing of thingVisuals) {
+      const sprite = this.thingSpriteFor(thing.worldX, thing.worldY);
+      const minX = Math.min(...thing.cells.map((cell) => cell.x));
+      const minY = Math.min(...thing.cells.map((cell) => cell.y));
+      for (const cell of thing.artCells) {
+        const offsetX = cell.x - minX + 1;
+        const offsetY = cell.y - minY + 1;
+        instances[instanceIndex++] = cell.x - anchorX * RENDER_TILE_CELLS;
+        instances[instanceIndex++] = cell.y - anchorY * RENDER_TILE_CELLS;
+        instances[instanceIndex++] = sprite;
+        instances[instanceIndex++] = THING_CELL_KIND;
+        instances[instanceIndex++] = thing.side | (offsetX << 3) | (offsetY << 6);
+      }
+    }
+
+    for (let thingIndex = 0; thingIndex < thingVisuals.length; thingIndex += 1) {
+      const thing = thingVisuals[thingIndex];
+      for (const cell of thing.artCells) {
+        let edges = 0;
+        if (!artThingByCell.has(`${cell.x},${cell.y - 1}`)) edges |= 1;
+        if (!artThingByCell.has(`${cell.x - 1},${cell.y}`)) edges |= 2;
+        if (!artThingByCell.has(`${cell.x + 1},${cell.y}`)) edges |= 4;
+        if (!artThingByCell.has(`${cell.x},${cell.y + 1}`)) edges |= 8;
+        if (edges === 0) continue;
+        instances[instanceIndex++] = cell.x - anchorX * RENDER_TILE_CELLS;
+        instances[instanceIndex++] = cell.y - anchorY * RENDER_TILE_CELLS;
+        instances[instanceIndex++] = 0;
+        instances[instanceIndex++] = THING_BORDER_CELL_KIND;
+        instances[instanceIndex++] = edges;
       }
     }
 
@@ -1825,12 +2205,17 @@ export class WebGLRenderer {
     let index = 0;
     for (const cell of renderCells.values()) {
       if (index + CACHED_CELL_FLOATS > cells.length) break;
+      const worldX = originX + cell.localX;
+      const worldY = originY + cell.localY;
+      const artifact = !cell.frontier && cell.state === CellState.Opened && this.model.artifactAt(worldX, worldY);
       cells[index++] = cell.localX;
       cells[index++] = cell.localY;
-      cells[index++] = cell.frontier ? 0 : this.squareSpriteFor(cell.state);
+      cells[index++] = cell.frontier
+        ? 0
+        : this.squareSpriteFor(cell.state);
       cells[index++] = cell.frontier
         ? FRONTIER_CELL_KIND
-        : cell.state === CellState.Opened && this.model.artifactAt(originX + cell.localX, originY + cell.localY)
+        : artifact
           ? ARTIFACT_CELL_KIND
           : 0;
     }
@@ -1931,6 +2316,10 @@ export class WebGLRenderer {
     return EXPLODED_SPRITE;
   }
 
+  private thingSpriteFor(x: number, y: number): number {
+    return thingSpriteFor(x, y, this.model.seed);
+  }
+
   private squareSpriteFor(state: CellState): number {
     if (isOpened(state)) return Math.min(SQUARE_MAX_CLUE_SPRITE, openedClue(state));
     if (state === CellState.Flagged) return SQUARE_FLAG_SPRITE;
@@ -1975,6 +2364,7 @@ export class WebGLRenderer {
     const genericInstanceBuffer = gl.createBuffer();
     const atlasTexture = gl.createTexture();
     const genericAtlasTexture = gl.createTexture();
+    const thingAtlasTexture = gl.createTexture();
     const stateTexture = gl.createTexture();
     const scratchTexture = gl.createTexture();
     const scratchFramebuffer = gl.createFramebuffer();
@@ -1987,6 +2377,7 @@ export class WebGLRenderer {
       !genericInstanceBuffer ||
       !atlasTexture ||
       !genericAtlasTexture ||
+      !thingAtlasTexture ||
       !stateTexture ||
       !scratchTexture ||
       !scratchFramebuffer
@@ -2035,6 +2426,9 @@ export class WebGLRenderer {
     gl.enableVertexAttribArray(3);
     gl.vertexAttribPointer(3, 2, gl.FLOAT, false, genericStride, 8 * Float32Array.BYTES_PER_ELEMENT);
     gl.vertexAttribDivisor(3, 1);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, genericStride, 10 * Float32Array.BYTES_PER_ELEMENT);
+    gl.vertexAttribDivisor(4, 1);
     gl.bindVertexArray(null);
 
     gl.bindVertexArray(pixelVertexArray);
@@ -2042,6 +2436,7 @@ export class WebGLRenderer {
 
     const atlas = this.createAtlas(SQUARE_MAX_CLUE_SPRITE, SQUARE_FLAG_SPRITE, SQUARE_QUESTION_SPRITE, SQUARE_EXPLODED_SPRITE);
     const genericAtlas = this.createAtlas(MAX_CLUE_SPRITE, FLAG_SPRITE, QUESTION_SPRITE, EXPLODED_SPRITE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -2049,7 +2444,23 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.bindTexture(gl.TEXTURE_2D, thingAtlasTexture);
+    // Linear filtering must happen in premultiplied space or transparent emoji
+    // edges pick up dark RGB fringes from their clear neighboring texels.
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    if (this.thingEmojiAtlasReady && this.thingEmojiAtlas) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.thingEmojiAtlas);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+
     gl.bindTexture(gl.TEXTURE_2D, genericAtlasTexture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, genericAtlas);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -2078,8 +2489,10 @@ export class WebGLRenderer {
 
     gl.useProgram(program);
     gl.uniform1i(requireUniform(gl, program, "u_atlas"), 0);
+    gl.uniform1i(requireUniform(gl, program, "u_thingAtlas"), 2);
     gl.useProgram(genericProgram);
     gl.uniform1i(requireUniform(gl, genericProgram, "u_atlas"), 0);
+    gl.uniform1i(requireUniform(gl, genericProgram, "u_thingAtlas"), 2);
     gl.useProgram(pixelProgram);
     gl.uniform1i(requireUniform(gl, pixelProgram, "u_stateTexture"), 1);
     gl.disable(gl.BLEND);
@@ -2097,6 +2510,7 @@ export class WebGLRenderer {
       genericInstanceBuffer,
       atlasTexture,
       genericAtlasTexture,
+      thingAtlasTexture,
       stateTexture,
       scratchTexture,
       scratchFramebuffer,
@@ -2251,10 +2665,109 @@ export class WebGLRenderer {
     canvas.height = SPRITE_PIXELS;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Unable to create sprite atlas");
-    for (let sprite = 0; sprite < spriteCount; sprite += 1) {
+    for (let sprite = 0; sprite <= explodedSprite; sprite += 1) {
       this.drawSprite(context, sprite * SPRITE_PIXELS, SPRITE_PIXELS, sprite, maxClue, flagSprite, questionSprite, explodedSprite);
     }
     return canvas;
+  }
+
+  private getThingEmojiAtlas(): HTMLCanvasElement {
+    if (this.thingEmojiAtlas) return this.thingEmojiAtlas;
+    const atlas = document.createElement("canvas");
+    atlas.width = THING_ATLAS_COLUMNS * THING_TEXTURE_PIXELS;
+    atlas.height = THING_ATLAS_ROWS * THING_TEXTURE_PIXELS;
+    this.thingEmojiAtlas = atlas;
+    return atlas;
+  }
+
+  private startThingEmojiAtlasLoad(): void {
+    if (this.thingEmojiAtlasPromise) return;
+    this.thingEmojiAtlasPromise = this.populateThingEmojiAtlas().then(() => {
+      this.thingEmojiAtlasReady = true;
+      if (this.contextLost) return;
+      this.uploadThingEmojiAtlas(this.resources.thingAtlasTexture);
+      this.retainedFrame = false;
+      this.requestRender();
+    });
+  }
+
+  private async populateThingEmojiAtlas(): Promise<void> {
+    const atlas = this.getThingEmojiAtlas();
+    const context = atlas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("Unable to create Thing emoji atlas");
+    const images = await Promise.all(
+      THING_VECTOR_URLS.map((url, index) => this.loadThingVector(url, THING_EMOJI_NAMES[index])),
+    );
+    context.clearRect(0, 0, atlas.width, atlas.height);
+    for (let variant = 0; variant < images.length; variant += 1) {
+      this.drawVectorEmoji(context, variant, images[variant]);
+    }
+  }
+
+  private loadThingVector(url: string, name: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.addEventListener("load", () => resolve(image), { once: true });
+      image.addEventListener("error", () => reject(new Error(`Unable to load Thing vector: ${name}`)), { once: true });
+      image.src = url;
+    });
+  }
+
+  private drawVectorEmoji(context: CanvasRenderingContext2D, variant: number, image: HTMLImageElement): void {
+    const raster = document.createElement("canvas");
+    raster.width = THING_TEXTURE_PIXELS;
+    raster.height = THING_TEXTURE_PIXELS;
+    const rasterContext = raster.getContext("2d", { willReadFrequently: true });
+    if (!rasterContext) throw new Error("Unable to measure Thing vector");
+    rasterContext.clearRect(0, 0, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS);
+    rasterContext.drawImage(image, 0, 0, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS);
+
+    const rasterData = rasterContext.getImageData(0, 0, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS).data;
+    let minX = THING_TEXTURE_PIXELS;
+    let minY = THING_TEXTURE_PIXELS;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < THING_TEXTURE_PIXELS; y += 1) {
+      for (let x = 0; x < THING_TEXTURE_PIXELS; x += 1) {
+        if (rasterData[(y * THING_TEXTURE_PIXELS + x) * 4 + 3] === 0) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (maxX < minX || maxY < minY) throw new Error(`Unable to measure Thing vector: ${THING_EMOJI_NAMES[variant]}`);
+    const sourceWidth = maxX - minX + 1;
+    const sourceHeight = maxY - minY + 1;
+    const targetSize = THING_TEXTURE_PIXELS - THING_TEXTURE_PADDING * 2;
+    const scale = Math.min(targetSize / sourceWidth, targetSize / sourceHeight);
+    const column = variant % THING_ATLAS_COLUMNS;
+    const row = Math.floor(variant / THING_ATLAS_COLUMNS);
+    const left = column * THING_TEXTURE_PIXELS;
+    const top = row * THING_TEXTURE_PIXELS;
+    const contentCenterX = (minX + maxX + 1) / 2;
+    const contentCenterY = (minY + maxY + 1) / 2;
+    const targetX = left + THING_TEXTURE_PIXELS / 2 - contentCenterX * scale;
+    const targetY = top + THING_TEXTURE_PIXELS / 2 - contentCenterY * scale;
+    context.save();
+    context.beginPath();
+    context.rect(left, top, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS);
+    context.clip();
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    // The browser rasterizes the SVG directly at its final atlas size. The
+    // measurement pass above is never resampled into the production texture.
+    context.drawImage(image, targetX, targetY, THING_TEXTURE_PIXELS * scale, THING_TEXTURE_PIXELS * scale);
+    context.restore();
+  }
+
+  private uploadThingEmojiAtlas(texture: WebGLTexture): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.getThingEmojiAtlas());
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   }
 
   private drawSprite(

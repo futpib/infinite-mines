@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
@@ -30,6 +31,32 @@ describe("deterministic infinite field", () => {
         expect(first.mineAt(x, y)).toBe(second.mineAt(x, y));
         expect(hash32(x, y, 42)).toBe(hash32(x, y, 42));
       }
+    }
+  });
+
+  it("keeps Simple fields byte-identical to the pre-illustration generator", () => {
+    const expected = {
+      square: "7caa978d4ea79a0a736e1b1aac060adbb950960d8a76a7a5ad3cf1b4f814b08d",
+      triangular: "2764b84c4032a11b01c6b9ebe077ab01fc8b09c4baa2562da0f04055cf988ac9",
+      rhombille: "7a17e51cc77e77450b6d1ef54eaf07593262120b0c2fbc8788e6bb387f3389a8",
+    } as const;
+    for (const topology of TOPOLOGY_IDS) {
+      const game = new GameModel({ seed: 0x7120_49a7, topology, autoStart: false });
+      const parts: string[] = [];
+      for (let zoneY = -3; zoneY <= 3; zoneY += 1) {
+        for (let zoneX = -3; zoneX <= 3; zoneX += 1) {
+          for (let localY = 0; localY < THING_ZONE_SIZE; localY += 1) {
+            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
+              const x = zoneX * THING_ZONE_SIZE + localX;
+              const y = zoneY * THING_ZONE_SIZE + localY;
+              if (game.artifactAt(x, y)) parts.push(`a:${x},${y}`);
+              if (game.thingFootprintAt(x, y)) parts.push(`r:${x},${y}`);
+              if (game.mineAt(x, y)) parts.push(`m:${x},${y}`);
+            }
+          }
+        }
+      }
+      expect(createHash("sha256").update(parts.join(";")).digest("hex"), topology).toBe(expected[topology]);
     }
   });
 
@@ -120,6 +147,7 @@ describe("deterministic infinite field", () => {
       expect(maxX).toBeLessThan(THING_ZONE_SIZE - 1);
       expect(maxY).toBeLessThan(THING_ZONE_SIZE - 1);
       expect(artifacts).toEqual([{ x: minX + 1, y: minY + 1 }]);
+      expect(game.thingVisualAt(zoneX * THING_ZONE_SIZE + artifacts[0].x, artifacts[0].y)).toBeNull();
     }
   });
 
@@ -200,6 +228,16 @@ describe("topology-driven fields", () => {
     expect(restored.topologyId).toBe("rhombille");
     expect(restored.density).toBe(DIFFICULTIES.beginner.density);
     expect(restored.fieldGeneration).toBe("original-things");
+
+    const illustratedSnapshot = new GameModel({
+      seed: 99,
+      topology: "rhombille",
+      autoStart: false,
+      generation: "illustrated-things",
+    }).createSnapshot();
+    expect(illustratedSnapshot.generation).toBe("illustrated-things");
+    expect(restored.restoreSnapshot(illustratedSnapshot)).toBe(true);
+    expect(restored.fieldGeneration).toBe("illustrated-things");
 
     const oldV3 = {
       ...snapshot,
@@ -413,11 +451,17 @@ describe("gameplay", () => {
     expect(game.reveal(0, 0).damage).toBeNull();
   });
 
-  it("reserves exact deterministic Thing footprints and keeps their simple artifacts at clue zero", { timeout: 10_000 }, () => {
+  it("reserves exact deterministic Thing footprints and exposes their 3/4-cell visuals at clue zero", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
-        const game = new GameModel({ mode, seed: 712, autoStart: false, topology });
-        const matching = new GameModel({ mode, seed: 712, autoStart: false, topology });
+        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things" });
+        const matching = new GameModel({
+          mode,
+          seed: 712,
+          autoStart: false,
+          topology,
+          generation: "illustrated-things",
+        });
         let mismatches = 0;
         let reservedMines = 0;
         let nonzeroArtifacts = 0;
@@ -425,6 +469,7 @@ describe("gameplay", () => {
           for (let zoneX = -1; zoneX <= 1; zoneX += 1) {
             let artifacts = 0;
             let reserved = 0;
+            let visualSide = 0;
             for (let localY = 0; localY < THING_ZONE_SIZE; localY += 1) {
               for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
                 const x = zoneX * THING_ZONE_SIZE + localX;
@@ -437,6 +482,55 @@ describe("gameplay", () => {
                 }
                 if (!game.artifactAt(x, y)) continue;
                 artifacts += 1;
+                const visual = game.thingVisualAt(x, y);
+                visualSide = visual?.side ?? 0;
+                expect(visual).toEqual(matching.thingVisualAt(x, y));
+                if (visual) {
+                  expect(visual.cells).toHaveLength(visual.side ** 2);
+                  expect(
+                    [THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2],
+                    `${topology}/${mode} complete render-carrier reservation`,
+                  ).toContain(visual.reservedCells.length);
+                  expect(visual.artCells.length, `${topology}/${mode} non-transparent art cells`).toBeGreaterThan(0);
+                  expect(visual.artCells.length, `${topology}/${mode} alpha footprint within reservation`).toBeLessThanOrEqual(
+                    visual.reservedCells.length,
+                  );
+                  for (const cell of visual.cells) {
+                    expect(
+                      game.thingFootprintAt(cell.x, cell.y),
+                      `${topology}/${mode} visual cell ${cell.x},${cell.y} is reserved`,
+                    ).toBe(true);
+                  }
+                  for (const cell of visual.reservedCells) {
+                    expect(
+                      game.thingFootprintAt(cell.x, cell.y),
+                      `${topology}/${mode} carrier cell ${cell.x},${cell.y} is reserved`,
+                    ).toBe(true);
+                  }
+                  const reservedKeys = new Set(visual.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+                  for (const cell of visual.artCells) {
+                    expect(
+                      reservedKeys.has(`${cell.x},${cell.y}`),
+                      `${topology}/${mode} non-transparent cell ${cell.x},${cell.y} is mine-free`,
+                    ).toBe(true);
+                  }
+                  const visualKeys = new Set(visual.cells.map((cell) => `${cell.x},${cell.y}`));
+                  const visited = new Set<string>();
+                  const pending = [visual.cells[0]];
+                  while (pending.length > 0) {
+                    const cell = pending.pop();
+                    if (!cell) break;
+                    const key = `${cell.x},${cell.y}`;
+                    if (visited.has(key)) continue;
+                    visited.add(key);
+                    for (const neighbor of game.topology.edgeNeighbors(cell.x, cell.y)) {
+                      if (visualKeys.has(`${neighbor.x},${neighbor.y}`)) pending.push(neighbor);
+                    }
+                  }
+                  expect(visited.size, `${topology}/${mode} visual is one connected topology patch`).toBe(
+                    visual.cells.length,
+                  );
+                }
                 if (game.clueAt(x, y) !== 0) nonzeroArtifacts += 1;
               }
             }
@@ -445,6 +539,9 @@ describe("gameplay", () => {
               [THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2],
               `${topology}/${mode} reservation in ${zoneX},${zoneY}`,
             ).toContain(reserved);
+            expect(visualSide, `${topology}/${mode} visual side in ${zoneX},${zoneY}`).toBe(
+              Math.sqrt(reserved) - 2,
+            );
           }
         }
         expect(mismatches, `${topology}/${mode} determinism`).toBe(0);
