@@ -203,15 +203,18 @@ export interface GameSnapshotV3 {
   cells: ArrayBuffer;
 }
 
-export const FIELD_GENERATIONS = ["legacy-flat", "original-things", "illustrated-things"] as const;
+export const FIELD_GENERATIONS = ["legacy-flat", "original-things", "illustrated-things", "illustrated-things-v2"] as const;
 export type FieldGeneration = (typeof FIELD_GENERATIONS)[number];
 export type ThingStyle = "simple" | "illustrated";
 
 export const generationForThingStyle = (style: ThingStyle): FieldGeneration =>
-  style === "illustrated" ? "illustrated-things" : "original-things";
+  style === "illustrated" ? "illustrated-things-v2" : "original-things";
+
+export const isIllustratedGeneration = (generation: FieldGeneration): boolean =>
+  generation === "illustrated-things" || generation === "illustrated-things-v2";
 
 export const thingStyleForGeneration = (generation: FieldGeneration): ThingStyle =>
-  generation === "illustrated-things" ? "illustrated" : "simple";
+  isIllustratedGeneration(generation) ? "illustrated" : "simple";
 
 export interface GameSnapshotV4 {
   version: 4;
@@ -255,6 +258,17 @@ export const THING_LARGE_RESERVED_SIDE = 6;
 export const THING_SMALL_PROBABILITY = 5 / 6;
 export const THING_SPRITE_COUNT = 12;
 export const THING_SPRITE_SALT = 0x2d947f31;
+const THING_VARIETY_STEPS = [
+  [1, 3],
+  [3, 1],
+  [1, 9],
+  [9, 1],
+  [11, 3],
+  [3, 11],
+  [11, 9],
+  [9, 11],
+] as const;
+const THING_VARIETY_MULTIPLIERS = [1, 5, 7, 11] as const;
 export const MAX_CHAIN_EXPLOSIONS_PER_ACTION = 256;
 export const thingReservedSideForRoll = (
   roll: number,
@@ -286,6 +300,7 @@ export interface ThingVisual {
   /** Complete mine-free reservation available to carry any artwork overflow. */
   readonly reservedCells: readonly { x: number; y: number }[];
   readonly side: number;
+  readonly sprite: number;
 }
 
 const EMPTY_RESULT = (): ActionResult => ({
@@ -309,7 +324,26 @@ export function hash32(x: number, y: number, seed: number, salt = 0): number {
   return (value ^ (value >>> 16)) >>> 0;
 }
 
-export const thingSpriteFor = (x: number, y: number, seed: number): number =>
+const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
+
+/**
+ * Assign every 24 by 24 Thing zone one of the 12 scenes through a seeded,
+ * balanced spatial cycle. The selected steps keep every pair of zones within
+ * Chebyshev distance two distinct, so ordinary local exploration cannot show
+ * an immediate repeat without requiring discovery-order state.
+ */
+export const thingSpriteFor = (x: number, y: number, seed: number): number => {
+  const zoneX = floorDiv(x, THING_ZONE_SIZE);
+  const zoneY = floorDiv(y, THING_ZONE_SIZE);
+  const selector = hash32(0, 0, seed, THING_SPRITE_SALT);
+  const [stepX, stepY] = THING_VARIETY_STEPS[selector & (THING_VARIETY_STEPS.length - 1)];
+  const sequence = positiveModulo(stepX * zoneX + stepY * zoneY, THING_SPRITE_COUNT);
+  const multiplier = THING_VARIETY_MULTIPLIERS[(selector >>> 3) & (THING_VARIETY_MULTIPLIERS.length - 1)];
+  const offset = (selector >>> 5) % THING_SPRITE_COUNT;
+  return (sequence * multiplier + offset) % THING_SPRITE_COUNT;
+};
+
+const legacyThingSpriteFor = (x: number, y: number, seed: number): number =>
   hash32(x, y, seed, THING_SPRITE_SALT) % THING_SPRITE_COUNT;
 
 export class CellStore {
@@ -717,7 +751,7 @@ export class GameModel {
   }
 
   thingVisualAt(x: number, y: number): ThingVisual | null {
-    if (this.fieldGeneration !== "illustrated-things") return null;
+    if (!isIllustratedGeneration(this.fieldGeneration)) return null;
     const zoneX = floorDiv(x, THING_ZONE_SIZE);
     const zoneY = floorDiv(y, THING_ZONE_SIZE);
     const artifact = this.artifactForZone(zoneX, zoneY);
@@ -740,7 +774,15 @@ export class GameModel {
     if (cells.length === 0) cells.push({ x: artifact.x, y: artifact.y });
     if (artCells.length === 0) artCells.push(...cells);
     if (reservedCells.length === 0) reservedCells.push(...cells);
-    return { x: artifact.x, y: artifact.y, cells, artCells, reservedCells, side: artifact.spriteSide };
+    return {
+      x: artifact.x,
+      y: artifact.y,
+      cells,
+      artCells,
+      reservedCells,
+      side: artifact.spriteSide,
+      sprite: this.thingSpriteForGeneration(artifact.x, artifact.y),
+    };
   }
 
   thingFootprintAt(x: number, y: number): boolean {
@@ -770,7 +812,6 @@ export class GameModel {
   }
 
   private thingSpatialTemplate(anchorX: number, anchorY: number, count: number): readonly { x: number; y: number }[] {
-    const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
     const variant =
       this.topologyId === "triangular"
         ? positiveModulo(anchorX + anchorY, 2)
@@ -818,7 +859,7 @@ export class GameModel {
     }
 
     const artifact =
-      this.fieldGeneration === "illustrated-things"
+      isIllustratedGeneration(this.fieldGeneration)
         ? this.illustratedThingForZone(zoneX, zoneY)
         : this.fieldGeneration === "original-things"
           ? this.originalThingForZone(zoneX, zoneY)
@@ -972,6 +1013,7 @@ export class GameModel {
   }
 
   private illustratedThingForZone(zoneX: number, zoneY: number): ThingLayout {
+    const zeroArtClues = this.fieldGeneration === "illustrated-things-v2";
     const sizeRoll = hash32(zoneX, zoneY, this.seed, 0x71a55e31) / UINT32_RANGE;
     const reservedSide = thingReservedSideForRoll(sizeRoll);
     const spriteSide = reservedSide - 2;
@@ -1011,6 +1053,39 @@ export class GameModel {
                 localY + offset.y < THING_ZONE_SIZE,
             );
             if (!templateFits) continue;
+            if (zeroArtClues) {
+              const sprite = this.thingSpriteForGeneration(worldX, worldY);
+              let artSafetyFits = true;
+              const artOffsets = thingAlphaOffsets(this.topologyId, worldX, worldY, spriteSide, sprite);
+              for (let offset = 0; offset < artOffsets.length && artSafetyFits; offset += 2) {
+                const artX = worldX + artOffsets[offset];
+                const artY = worldY + artOffsets[offset + 1];
+                const artLocalX = artX - zoneX * THING_ZONE_SIZE;
+                const artLocalY = artY - zoneY * THING_ZONE_SIZE;
+                if (
+                  artLocalX < 0 ||
+                  artLocalX >= THING_ZONE_SIZE ||
+                  artLocalY < 0 ||
+                  artLocalY >= THING_ZONE_SIZE
+                ) {
+                  artSafetyFits = false;
+                  break;
+                }
+                this.topology.forEachNeighbor(artX, artY, (neighborX, neighborY) => {
+                  const neighborLocalX = neighborX - zoneX * THING_ZONE_SIZE;
+                  const neighborLocalY = neighborY - zoneY * THING_ZONE_SIZE;
+                  if (
+                    neighborLocalX < 0 ||
+                    neighborLocalX >= THING_ZONE_SIZE ||
+                    neighborLocalY < 0 ||
+                    neighborLocalY >= THING_ZONE_SIZE
+                  ) {
+                    artSafetyFits = false;
+                  }
+                });
+              }
+              if (!artSafetyFits) continue;
+            }
             let neighborsFit = true;
             this.topology.forEachNeighbor(worldX, worldY, (neighborX, neighborY) => {
               const neighborLocalX = neighborX - zoneX * THING_ZONE_SIZE;
@@ -1092,14 +1167,17 @@ export class GameModel {
 
     const artifactIndex = artifactLocalY * THING_ZONE_SIZE + artifactLocalX;
     if (!members.has(artifactIndex)) throw new Error("Thing footprint must contain its discovery cell");
-    if (members.size !== reservedCells) throw new Error("Thing footprint must preserve its exact reserved-cell count");
+    if (zeroArtClues) {
+      if (members.size < reservedCells) throw new Error("Thing footprint must preserve its base reserved-cell count");
+    } else if (members.size !== reservedCells) {
+      throw new Error("Thing footprint must preserve its exact reserved-cell count");
+    }
     const visualMask = new Uint32Array(mask.length);
     const artMask = new Uint32Array(mask.length);
-    for (const index of members) mask[index >>> 5] |= 1 << (index & 31);
     for (const index of visualMembers) visualMask[index >>> 5] |= 1 << (index & 31);
     const artifactX = zoneX * THING_ZONE_SIZE + artifactLocalX;
     const artifactY = zoneY * THING_ZONE_SIZE + artifactLocalY;
-    const sprite = thingSpriteFor(artifactX, artifactY, this.seed);
+    const sprite = this.thingSpriteForGeneration(artifactX, artifactY);
     const artOffsets = thingAlphaOffsets(this.topologyId, artifactX, artifactY, spriteSide, sprite);
     for (let offset = 0; offset < artOffsets.length; offset += 2) {
       const localX = artifactLocalX + artOffsets[offset];
@@ -1111,7 +1189,27 @@ export class GameModel {
         );
       }
       artMask[index >>> 5] |= 1 << (index & 31);
+      if (zeroArtClues) {
+        this.topology.forEachNeighbor(
+          artifactX + artOffsets[offset],
+          artifactY + artOffsets[offset + 1],
+          (neighborX, neighborY) => {
+            const neighborLocalX = neighborX - zoneX * THING_ZONE_SIZE;
+            const neighborLocalY = neighborY - zoneY * THING_ZONE_SIZE;
+            if (
+              neighborLocalX < 0 ||
+              neighborLocalX >= THING_ZONE_SIZE ||
+              neighborLocalY < 0 ||
+              neighborLocalY >= THING_ZONE_SIZE
+            ) {
+              throw new Error("Thing art safety ring escaped its zone");
+            }
+            members.add(neighborLocalY * THING_ZONE_SIZE + neighborLocalX);
+          },
+        );
+      }
     }
+    for (const index of members) mask[index >>> 5] |= 1 << (index & 31);
     return {
       x: artifactX,
       y: artifactY,
@@ -1120,6 +1218,12 @@ export class GameModel {
       visual: visualMask,
       art: artMask,
     };
+  }
+
+  private thingSpriteForGeneration(x: number, y: number): number {
+    return this.fieldGeneration === "illustrated-things"
+      ? legacyThingSpriteFor(x, y, this.seed)
+      : thingSpriteFor(x, y, this.seed);
   }
 
   clueAt(x: number, y: number): number {

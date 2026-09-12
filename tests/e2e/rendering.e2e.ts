@@ -221,12 +221,18 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
     const api = window.__infiniteMines;
     const renderer = api.renderer;
     await renderer.waitForThingSprites();
-    const hash = (x: number, y: number, seed: number, salt: number): number => {
-      let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
-      value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
-      value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
-      return (value ^ (value >>> 16)) >>> 0;
+    const privateModel = api.model as unknown as {
+      artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
     };
+    const nearbySprites: number[] = [];
+    for (let zoneY = -1; zoneY <= 1; zoneY += 1) {
+      for (let zoneX = -1; zoneX <= 1; zoneX += 1) {
+        const nearby = privateModel.artifactForZone(zoneX, zoneY);
+        const nearbyVisual = api.model.thingVisualAt(nearby.x, nearby.y);
+        if (!nearbyVisual) throw new Error(`Missing Thing in zone ${zoneX},${zoneY}`);
+        nearbySprites.push(nearbyVisual.sprite);
+      }
+    }
     let artifact: {
       x: number;
       y: number;
@@ -234,12 +240,13 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
       artCells: readonly { x: number; y: number }[];
       reservedCells: readonly { x: number; y: number }[];
       side: number;
+      sprite: number;
     } | null = null;
     search: for (let y = -240; y <= 240; y += 1) {
       for (let x = -240; x <= 240; x += 1) {
-        if (api.model.artifactAt(x, y) && hash(x, y, api.model.seed, 0x2d947f31) % 12 === 0) {
+        if (api.model.artifactAt(x, y)) {
           const visual = api.model.thingVisualAt(x, y);
-          if (visual?.side === 4) {
+          if (visual?.side === 4 && visual.sprite === 0) {
             artifact = visual;
             break search;
           }
@@ -371,6 +378,15 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
       visualCellsReserved: artifact.cells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
       artCellsReserved: artifact.artCells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
       reservationCellsReserved: artifact.reservedCells.map((cell) => api.model.thingFootprintAt(cell.x, cell.y)),
+      artCellClues: artifact.artCells.map((cell) => api.model.clueAt(cell.x, cell.y)),
+      artNeighborReservations: artifact.artCells.flatMap((cell) => {
+        const reservations: boolean[] = [];
+        api.model.topology.forEachNeighbor(cell.x, cell.y, (neighborX, neighborY) => {
+          reservations.push(api.model.thingFootprintAt(neighborX, neighborY));
+        });
+        return reservations;
+      }),
+      nearbySprites,
       clue: api.model.clueAt(artifact.x, artifact.y),
       state: api.model.getState(artifact.x, artifact.y),
       colorfulPixels,
@@ -412,6 +428,10 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
   expect(result.visualCellsReserved).toEqual(Array(16).fill(true));
   expect(result.artCellsReserved).toEqual(Array(result.artifact.artCells.length).fill(true));
   expect(result.reservationCellsReserved).toEqual(Array(36).fill(true));
+  expect(result.artCellClues).toEqual(Array(result.artifact.artCells.length).fill(0));
+  expect(result.artNeighborReservations).toEqual(Array(result.artNeighborReservations.length).fill(true));
+  expect(result.nearbySprites).toHaveLength(9);
+  expect(new Set(result.nearbySprites).size).toBe(9);
   expect(result.clue).toBe(0);
   expect(result.state).toBe(1);
   expect(result.colorfulPixels).toBeGreaterThan(500);
@@ -458,18 +478,12 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       const api = window.__infiniteMines;
       api.newGame("beginner", topology);
       await api.renderer.waitForThingSprites();
-      const hash = (x: number, y: number, seed: number, salt: number): number => {
-        let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
-        value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
-        value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
-        return (value ^ (value >>> 16)) >>> 0;
-      };
       let thing: ReturnType<typeof api.model.thingVisualAt> = null;
       search: for (let y = -300; y <= 300; y += 1) {
         for (let x = -300; x <= 300; x += 1) {
-          if (!api.model.artifactAt(x, y) || hash(x, y, api.model.seed, 0x2d947f31) % 12 !== variant) continue;
+          if (!api.model.artifactAt(x, y)) continue;
           const candidate = api.model.thingVisualAt(x, y);
-          if (candidate?.side !== 4) continue;
+          if (candidate?.side !== 4 || candidate.sprite !== variant) continue;
           thing = candidate;
           break search;
         }
@@ -502,6 +516,17 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       };
       const generic = topology !== "square";
       const stride = generic ? 14 : 5;
+      const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+      const art = new Set(thing.artCells.map((cell) => `${cell.x},${cell.y}`));
+      const instanceCellKey = (values: readonly number[]): string => {
+        if (generic) {
+          const worldX = values[0] + privateRenderer.genericAnchorWorldX;
+          const worldY = values[1] + privateRenderer.genericAnchorWorldY;
+          const cell = api.model.topology.hitTest(worldX, worldY);
+          return `${cell.x},${cell.y}`;
+        }
+        return `${Math.round(values[0] + privateRenderer.range.anchorX * 8)},${Math.round(values[1] + privateRenderer.range.anchorY * 8)}`;
+      };
       gl.bindBuffer(
         gl.ARRAY_BUFFER,
         generic ? privateRenderer.resources.genericInstanceBuffer : privateRenderer.resources.instanceBuffer,
@@ -517,13 +542,14 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       for (let offset = 0; offset < instances.length; offset += stride) {
         const values = Array.from(instances.slice(offset, offset + stride));
         const kind = values[generic ? 7 : 3];
-        if (kind === 3) {
+        const key = instanceCellKey(values);
+        if (kind === 3 && art.has(key)) {
           thingInstances.push(values);
           lastThingOrder = offset / stride;
         }
-        if (kind === -1) underlayInstances.push(values);
+        if (kind === -1 && art.has(key)) underlayInstances.push(values);
         if (kind < 1.5) baseInstances.push(values);
-        if (kind === 4) {
+        if (kind === 4 && art.has(key)) {
           borderInstances.push(values);
           firstBorderOrder = Math.min(firstBorderOrder, offset / stride);
         }
@@ -544,8 +570,6 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
             width: thing.side,
             height: thing.side,
           };
-      const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
-      const art = new Set(thing.artCells.map((cell) => `${cell.x},${cell.y}`));
       const carrierKeys = new Set<string>();
       const underlayKeys = new Set<string>();
       const actualBorderMasks = new Map<string, number>();
@@ -769,7 +793,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
     expect(result.opaqueSamples, `${testCase.topology} vector samples`).toBeGreaterThan(20_000);
     expect(result.outsideReservation, `${testCase.topology} vector alpha outside reservation`).toBe(0);
     expect(result.outsideArt, `${testCase.topology} vector alpha outside art cells`).toBe(0);
-    expect(result.internalEdges, `${testCase.topology} audited internal edges`).toBeGreaterThan(4);
+    expect(result.internalEdges, `${testCase.topology} audited internal edges`).toBeGreaterThan(0);
     expect(result.emittedInternalEdges, `${testCase.topology} emitted internal edges`).toBe(0);
     if (testCase.topology !== "square") expect(result.underlayInstances).toBeGreaterThan(4);
     expect(result.diagnostics).toMatchObject({
@@ -820,12 +844,6 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
     }
 
     const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
-    const hash = (x: number, y: number, seed: number, salt: number): number => {
-      let value = (seed ^ salt ^ Math.imul(x | 0, 0x9e3779b1) ^ Math.imul(y | 0, 0x85ebca77)) | 0;
-      value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
-      value = Math.imul(value ^ (value >>> 15), 0x846ca68b);
-      return (value ^ (value >>> 16)) >>> 0;
-    };
     const pointInside = (x: number, y: number, vertices: readonly { x: number; y: number }[]): boolean => {
       let sign = 0;
       for (let index = 0; index < vertices.length; index += 1) {
@@ -839,6 +857,7 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
       }
       return true;
     };
+    const failures: string[] = [];
     const exemplars = new Map<
       string,
       NonNullable<ReturnType<typeof api.model.thingVisualAt>> & { topology: "square" | "triangular" | "rhombille"; sprite: number }
@@ -849,14 +868,14 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
       const topologyStart = exemplars.size;
       for (let seedOffset = 0; seedOffset < 8 && exemplars.size - topologyStart < targets[topology]; seedOffset += 1) {
         const seed = (0x5eed_1234 + seedOffset * 0x1020_3041) >>> 0;
-        api.model.reset("beginner", seed, false, topology, undefined, "illustrated-things");
+        api.model.reset("beginner", seed, false, topology, undefined, "illustrated-things-v2");
         topologies.set(topology, api.model.topology);
         for (let zoneY = -32; zoneY <= 32 && exemplars.size - topologyStart < targets[topology]; zoneY += 1) {
           for (let zoneX = -32; zoneX <= 32 && exemplars.size - topologyStart < targets[topology]; zoneX += 1) {
             const layout = privateModel.artifactForZone(zoneX, zoneY);
             const thing = api.model.thingVisualAt(layout.x, layout.y);
             if (!thing) throw new Error("Missing generated Thing visual");
-            const sprite = hash(thing.x, thing.y, seed, 0x2d947f31) % 12;
+            const sprite = thing.sprite;
             const orientation =
               topology === "triangular"
                 ? positiveModulo(thing.x + thing.y, 2)
@@ -864,7 +883,19 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
                   ? positiveModulo(thing.x, 3)
                   : 0;
             const key = `${topology}:${orientation}:${thing.side}:${sprite}`;
-            if (!exemplars.has(key)) exemplars.set(key, { ...thing, topology, sprite });
+            if (!exemplars.has(key)) {
+              exemplars.set(key, { ...thing, topology, sprite });
+              const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+              for (const cell of thing.artCells) {
+                const clue = api.model.clueAt(cell.x, cell.y);
+                if (clue !== 0) failures.push(`${key}: art cell ${cell.x},${cell.y} has clue ${clue}`);
+                api.model.topology.forEachNeighbor(cell.x, cell.y, (neighborX, neighborY) => {
+                  if (!reserved.has(`${neighborX},${neighborY}`)) {
+                    failures.push(`${key}: art neighbor ${neighborX},${neighborY} is not reserved`);
+                  }
+                });
+              }
+            }
           }
         }
       }
@@ -873,7 +904,6 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
       }
     }
 
-    const failures: string[] = [];
     let minArtCells = Number.POSITIVE_INFINITY;
     let maxArtCells = 0;
     for (const [configuration, thing] of exemplars) {

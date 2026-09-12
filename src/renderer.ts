@@ -3,7 +3,7 @@ import {
   GameModel,
   STATE_TILE_SIZE,
   floorDiv,
-  thingSpriteFor,
+  isIllustratedGeneration,
   isOpened,
   openedClue,
   type ExploredBounds,
@@ -781,7 +781,7 @@ export class WebGLRenderer {
     this.fogFrontierMode = fogFrontierMode;
     this.theme = this.readTheme();
     this.resources = this.createResources();
-    if (this.model.fieldGeneration === "illustrated-things") this.startThingEmojiAtlasLoad();
+    if (isIllustratedGeneration(this.model.fieldGeneration)) this.startThingEmojiAtlasLoad();
 
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
@@ -812,7 +812,7 @@ export class WebGLRenderer {
   }
 
   syncThingStyle(): void {
-    if (this.model.fieldGeneration === "illustrated-things") this.startThingEmojiAtlasLoad();
+    if (isIllustratedGeneration(this.model.fieldGeneration)) this.startThingEmojiAtlasLoad();
     this.resetTileCache();
     this.retainedFrame = false;
     this.requestRender();
@@ -1225,9 +1225,9 @@ export class WebGLRenderer {
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
       glyphs: detailMix > 0,
-      thingSprites: this.model.fieldGeneration === "illustrated-things" ? THING_VECTOR_URLS.length : 0,
-      thingTexturePixels: this.model.fieldGeneration === "illustrated-things" ? THING_TEXTURE_PIXELS : 0,
-      thingSpritesReady: this.model.fieldGeneration === "illustrated-things" && this.thingEmojiAtlasReady,
+      thingSprites: isIllustratedGeneration(this.model.fieldGeneration) ? THING_VECTOR_URLS.length : 0,
+      thingTexturePixels: isIllustratedGeneration(this.model.fieldGeneration) ? THING_TEXTURE_PIXELS : 0,
+      thingSpritesReady: isIllustratedGeneration(this.model.fieldGeneration) && this.thingEmojiAtlasReady,
       detailMix,
       backgroundColor: this.theme.background,
       frameCount: this.frameCount,
@@ -1689,6 +1689,7 @@ export class WebGLRenderer {
       artCells: readonly { x: number; y: number }[];
       reservedCells: readonly { x: number; y: number }[];
       side: number;
+      sprite: number;
     }> = [];
     const collectThing = (x: number, y: number, state: CellState, frontier: boolean): void => {
       if (!this.thingEmojiAtlasReady || frontier || state !== CellState.Opened) return;
@@ -1817,7 +1818,7 @@ export class WebGLRenderer {
     for (const thing of thingRenderData) {
       const thingWidth = thing.maxX - thing.minX;
       const thingHeight = thing.maxY - thing.minY;
-      const sprite = this.thingSpriteFor(thing.x, thing.y);
+      const sprite = thing.sprite;
       for (const cell of thing.artCells) {
         const geometry = topology.geometry(cell.x, cell.y);
         let drawCenterX = geometry.center.x;
@@ -1925,6 +1926,7 @@ export class WebGLRenderer {
       worldX: number;
       worldY: number;
       side: number;
+      sprite: number;
     }> = [];
     let instanceFloats = 0;
     for (let tileY = minY; tileY <= maxY; tileY += 1) {
@@ -1957,6 +1959,7 @@ export class WebGLRenderer {
           worldX,
           worldY,
           side: visual.side,
+          sprite: visual.sprite,
         });
       }
     }
@@ -2020,7 +2023,7 @@ export class WebGLRenderer {
     }
 
     for (const thing of thingVisuals) {
-      const sprite = this.thingSpriteFor(thing.worldX, thing.worldY);
+      const sprite = thing.sprite;
       const minX = Math.min(...thing.cells.map((cell) => cell.x));
       const minY = Math.min(...thing.cells.map((cell) => cell.y));
       for (const cell of thing.artCells) {
@@ -2314,10 +2317,6 @@ export class WebGLRenderer {
     if (state === CellState.Flagged) return FLAG_SPRITE;
     if (state === CellState.Question) return QUESTION_SPRITE;
     return EXPLODED_SPRITE;
-  }
-
-  private thingSpriteFor(x: number, y: number): number {
-    return thingSpriteFor(x, y, this.model.seed);
   }
 
   private squareSpriteFor(state: CellState): number {

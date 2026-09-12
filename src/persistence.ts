@@ -70,7 +70,9 @@ const ACTIVE_SLOT_KEY = "active-slot";
 const slotKey = (topology: TopologyId, mode: Mode, generation: FieldGeneration): string =>
   generation === "illustrated-things"
     ? `field:${topology}:${mode}:illustrated`
-    : `field:${topology}:${mode}`;
+    : generation === "illustrated-things-v2"
+      ? `field:${topology}:${mode}:illustrated-v2`
+      : `field:${topology}:${mode}`;
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 

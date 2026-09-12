@@ -6,6 +6,7 @@ import {
   ORIGINAL_AVAILABLE_CELL_FRACTION,
   PRESET_DENSITIES,
   THING_LARGE_RESERVED_SIDE,
+  THING_SPRITE_COUNT,
   THING_SMALL_PROBABILITY,
   THING_SMALL_RESERVED_SIDE,
   THING_ZONE_SIZE,
@@ -19,6 +20,7 @@ import {
   isOpened,
   openedClue,
   thingReservedSideForRoll,
+  thingSpriteFor,
 } from "../src/model";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
@@ -58,6 +60,79 @@ describe("deterministic infinite field", () => {
       }
       expect(createHash("sha256").update(parts.join(";")).digest("hex"), topology).toBe(expected[topology]);
     }
+  });
+
+  it("keeps already-saved Illustrated fields on their original art and reservation rules", () => {
+    const expected = {
+      square: "56a5e497f3fa76eef379921a28bf0dae458004748ce2dce4c65e146a9ded715e",
+      triangular: "dbfeab59bcfc402f6ea97e891815b05677c716d4e9a848dd7a28eab2f83d2045",
+      rhombille: "205c7d7cac652483c85b83fd12f0a6e6e4fa03e883a12d4f1f3f4394088dff8d",
+    } as const;
+    for (const topology of TOPOLOGY_IDS) {
+      const game = new GameModel({
+        seed: 0x5eed_1234,
+        topology,
+        autoStart: false,
+        generation: "illustrated-things",
+      });
+      const parts: string[] = [];
+      for (let zoneY = -2; zoneY <= 2; zoneY += 1) {
+        for (let zoneX = -2; zoneX <= 2; zoneX += 1) {
+          let visual: ReturnType<typeof game.thingVisualAt> = null;
+          for (let localY = 0; localY < THING_ZONE_SIZE && !visual; localY += 1) {
+            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
+              const x = zoneX * THING_ZONE_SIZE + localX;
+              const y = zoneY * THING_ZONE_SIZE + localY;
+              if (!game.artifactAt(x, y)) continue;
+              visual = game.thingVisualAt(x, y);
+              break;
+            }
+          }
+          if (!visual) throw new Error(`Missing prior Illustrated Thing at ${zoneX},${zoneY}`);
+          parts.push(
+            `${visual.x},${visual.y}:${visual.side}:${visual.sprite}:` +
+              `${visual.artCells.map((cell) => `${cell.x},${cell.y}`).join(";")}:` +
+              `${visual.reservedCells.map((cell) => `${cell.x},${cell.y}`).join(";")}`,
+          );
+        }
+      }
+      expect(createHash("sha256").update(parts.join("|")).digest("hex"), topology).toBe(expected[topology]);
+    }
+  });
+
+  it("balances all 12 illustrated Things and prevents nearby repeats", () => {
+    const seeds = [0, 1, 0x5eed_1234, 0x7120_49a7, 0xffff_ffff];
+    const failures: string[] = [];
+    for (const seed of seeds) {
+      const sprites = new Map<string, number>();
+      const counts = new Uint16Array(THING_SPRITE_COUNT);
+      for (let zoneY = -6; zoneY < 6; zoneY += 1) {
+        for (let zoneX = -6; zoneX < 6; zoneX += 1) {
+          const x = zoneX * THING_ZONE_SIZE;
+          const y = zoneY * THING_ZONE_SIZE;
+          const sprite = thingSpriteFor(x, y, seed);
+          sprites.set(`${zoneX},${zoneY}`, sprite);
+          counts[sprite] += 1;
+          if (thingSpriteFor(x + THING_ZONE_SIZE - 1, y + THING_ZONE_SIZE - 1, seed) !== sprite) {
+            failures.push(`${seed}: sprite changed inside zone ${zoneX},${zoneY}`);
+          }
+        }
+      }
+      for (const [key, sprite] of sprites) {
+        const [zoneX, zoneY] = key.split(",").map(Number);
+        for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
+          for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
+            if (offsetX === 0 && offsetY === 0) continue;
+            const neighbor = sprites.get(`${zoneX + offsetX},${zoneY + offsetY}`);
+            if (neighbor === sprite) failures.push(`${seed}: ${key} repeats at ${zoneX + offsetX},${zoneY + offsetY}`);
+          }
+        }
+      }
+      expect([...counts], `seed ${seed} has a balanced 12 by 12 cycle`).toEqual(
+        Array(THING_SPRITE_COUNT).fill(THING_SPRITE_COUNT),
+      );
+    }
+    expect(failures).toEqual([]);
   });
 
   it("keeps a 5 by 5 area mine-free around the first reveal", () => {
@@ -238,6 +313,16 @@ describe("topology-driven fields", () => {
     expect(illustratedSnapshot.generation).toBe("illustrated-things");
     expect(restored.restoreSnapshot(illustratedSnapshot)).toBe(true);
     expect(restored.fieldGeneration).toBe("illustrated-things");
+
+    const currentIllustratedSnapshot = new GameModel({
+      seed: 99,
+      topology: "rhombille",
+      autoStart: false,
+      generation: "illustrated-things-v2",
+    }).createSnapshot();
+    expect(currentIllustratedSnapshot.generation).toBe("illustrated-things-v2");
+    expect(restored.restoreSnapshot(currentIllustratedSnapshot)).toBe(true);
+    expect(restored.fieldGeneration).toBe("illustrated-things-v2");
 
     const oldV3 = {
       ...snapshot,
@@ -451,20 +536,21 @@ describe("gameplay", () => {
     expect(game.reveal(0, 0).damage).toBeNull();
   });
 
-  it("reserves exact deterministic Thing footprints and exposes their 3/4-cell visuals at clue zero", { timeout: 10_000 }, () => {
+  it("reserves deterministic Thing footprints and keeps every art-covered clue at zero", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
-        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things" });
+        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things-v2" });
         const matching = new GameModel({
           mode,
           seed: 712,
           autoStart: false,
           topology,
-          generation: "illustrated-things",
+          generation: "illustrated-things-v2",
         });
         let mismatches = 0;
         let reservedMines = 0;
         let nonzeroArtifacts = 0;
+        let nonzeroArtCells = 0;
         for (let zoneY = -1; zoneY <= 1; zoneY += 1) {
           for (let zoneX = -1; zoneX <= 1; zoneX += 1) {
             let artifacts = 0;
@@ -488,9 +574,9 @@ describe("gameplay", () => {
                 if (visual) {
                   expect(visual.cells).toHaveLength(visual.side ** 2);
                   expect(
-                    [THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2],
+                    visual.reservedCells.length,
                     `${topology}/${mode} complete render-carrier reservation`,
-                  ).toContain(visual.reservedCells.length);
+                  ).toBeGreaterThanOrEqual((visual.side + 2) ** 2);
                   expect(visual.artCells.length, `${topology}/${mode} non-transparent art cells`).toBeGreaterThan(0);
                   expect(visual.artCells.length, `${topology}/${mode} alpha footprint within reservation`).toBeLessThanOrEqual(
                     visual.reservedCells.length,
@@ -513,6 +599,13 @@ describe("gameplay", () => {
                       reservedKeys.has(`${cell.x},${cell.y}`),
                       `${topology}/${mode} non-transparent cell ${cell.x},${cell.y} is mine-free`,
                     ).toBe(true);
+                    if (game.clueAt(cell.x, cell.y) !== 0) nonzeroArtCells += 1;
+                    game.topology.forEachNeighbor(cell.x, cell.y, (neighborX, neighborY) => {
+                      expect(
+                        reservedKeys.has(`${neighborX},${neighborY}`),
+                        `${topology}/${mode} art neighbor ${neighborX},${neighborY} is mine-free`,
+                      ).toBe(true);
+                    });
                   }
                   const visualKeys = new Set(visual.cells.map((cell) => `${cell.x},${cell.y}`));
                   const visited = new Set<string>();
@@ -535,18 +628,16 @@ describe("gameplay", () => {
               }
             }
             expect(artifacts, `${topology}/${mode} Thing count in ${zoneX},${zoneY}`).toBe(1);
-            expect(
-              [THING_SMALL_RESERVED_SIDE ** 2, THING_LARGE_RESERVED_SIDE ** 2],
-              `${topology}/${mode} reservation in ${zoneX},${zoneY}`,
-            ).toContain(reserved);
-            expect(visualSide, `${topology}/${mode} visual side in ${zoneX},${zoneY}`).toBe(
-              Math.sqrt(reserved) - 2,
+            expect(reserved, `${topology}/${mode} reservation in ${zoneX},${zoneY}`).toBeGreaterThanOrEqual(
+              (visualSide + 2) ** 2,
             );
+            expect([THING_SMALL_RESERVED_SIDE - 2, THING_LARGE_RESERVED_SIDE - 2]).toContain(visualSide);
           }
         }
         expect(mismatches, `${topology}/${mode} determinism`).toBe(0);
         expect(reservedMines, `${topology}/${mode} reserved mines`).toBe(0);
         expect(nonzeroArtifacts, `${topology}/${mode} numbered Things`).toBe(0);
+        expect(nonzeroArtCells, `${topology}/${mode} hidden numbered clues`).toBe(0);
 
         game.reveal(-64, -65);
         for (let y = -72; y <= -56; y += 1) {

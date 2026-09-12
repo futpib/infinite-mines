@@ -44,7 +44,7 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   await page.locator('[data-thing-style="illustrated"]').click();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingStyle)).toBe("illustrated");
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things");
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v2");
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
@@ -56,7 +56,7 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
     thingStyle: "illustrated",
-    fieldGeneration: "illustrated-things",
+    fieldGeneration: "illustrated-things-v2",
   });
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
 
@@ -76,6 +76,54 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
+
+  const priorIllustrated = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    api.model.reset("beginner", 0x49a7_0002, false, "square", undefined, "illustrated-things");
+    api.renderer.syncThingStyle();
+    let visual: ReturnType<typeof api.model.thingVisualAt> = null;
+    for (let y = 0; y < 24 && !visual; y += 1) {
+      for (let x = 0; x < 24; x += 1) {
+        if (!api.model.artifactAt(x, y)) continue;
+        visual = api.model.thingVisualAt(x, y);
+        break;
+      }
+    }
+    if (!visual) throw new Error("No prior-generation Illustrated Thing found");
+    await api.flushSave();
+    return {
+      generation: api.model.fieldGeneration,
+      seed: api.model.seed,
+      sprite: visual.sprite,
+      reservation: visual.reservedCells.map((cell) => `${cell.x},${cell.y}`),
+    };
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things");
+  expect(
+    await page.evaluate(() => {
+      const api = window.__infiniteMines;
+      let visual: ReturnType<typeof api.model.thingVisualAt> = null;
+      for (let y = 0; y < 24 && !visual; y += 1) {
+        for (let x = 0; x < 24; x += 1) {
+          if (!api.model.artifactAt(x, y)) continue;
+          visual = api.model.thingVisualAt(x, y);
+          break;
+        }
+      }
+      if (!visual) throw new Error("No restored prior-generation Illustrated Thing found");
+      return {
+        generation: api.model.fieldGeneration,
+        seed: api.model.seed,
+        sprite: visual.sprite,
+        reservation: visual.reservedCells.map((cell) => `${cell.x},${cell.y}`),
+      };
+    }),
+  ).toEqual(priorIllustrated);
+
+  await page.locator("#restart-button").click();
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v2");
 });
 
 test("R09 — refresh restores the exact field, progress, marks, and viewport from a compact snapshot", async ({ page }) => {
