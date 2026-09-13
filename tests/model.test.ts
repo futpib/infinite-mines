@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
   MAX_CHAIN_EXPLOSIONS_PER_ACTION,
   ORIGINAL_AVAILABLE_CELL_FRACTION,
   PRESET_DENSITIES,
   THING_LARGE_RESERVED_SIDE,
-  THING_SPRITE_COUNT,
   THING_SMALL_PROBABILITY,
   THING_SMALL_RESERVED_SIDE,
   THING_ZONE_SIZE,
@@ -20,9 +19,16 @@ import {
   isOpened,
   openedClue,
   thingReservedSideForRoll,
+  thingDeckPositionForZone,
   thingSpriteFor,
 } from "../src/model";
+import { loadThingCatalog } from "../src/thing-catalog";
+import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "../src/thing-catalog-meta";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
+
+beforeAll(async () => {
+  await loadThingCatalog();
+});
 
 describe("deterministic infinite field", () => {
   it("returns identical hashes and mine layouts for the same seed", () => {
@@ -100,39 +106,83 @@ describe("deterministic infinite field", () => {
     }
   });
 
-  it("balances all 12 illustrated Things and prevents nearby repeats", () => {
-    const seeds = [0, 1, 0x5eed_1234, 0x7120_49a7, 0xffff_ffff];
-    const failures: string[] = [];
-    for (const seed of seeds) {
-      const sprites = new Map<string, number>();
-      const counts = new Uint16Array(THING_SPRITE_COUNT);
-      for (let zoneY = -6; zoneY < 6; zoneY += 1) {
-        for (let zoneX = -6; zoneX < 6; zoneX += 1) {
-          const x = zoneX * THING_ZONE_SIZE;
-          const y = zoneY * THING_ZONE_SIZE;
-          const sprite = thingSpriteFor(x, y, seed);
-          sprites.set(`${zoneX},${zoneY}`, sprite);
-          counts[sprite] += 1;
-          if (thingSpriteFor(x + THING_ZONE_SIZE - 1, y + THING_ZONE_SIZE - 1, seed) !== sprite) {
-            failures.push(`${seed}: sprite changed inside zone ${zoneX},${zoneY}`);
+  it("keeps already-saved Illustrated v2 fields on their 12-scene rules", () => {
+    const expected = {
+      square: "cb3e9b1604cc26b5d78cf0022b881df9c5512261aafce462761cc26d5c3213fb",
+      triangular: "42d2e1530e6eb759dcb65a4d01664e5a708f34dc60799c82bc99453198cab61e",
+      rhombille: "b5aab2e3a11c28207a8c888af22a6a5eecd77039d2d5c50f6d0c34f45432e8a3",
+    } as const;
+    for (const topology of TOPOLOGY_IDS) {
+      const game = new GameModel({
+        seed: 0x5eed_1234,
+        topology,
+        autoStart: false,
+        generation: "illustrated-things-v2",
+      });
+      const parts: string[] = [];
+      for (let zoneY = -2; zoneY <= 2; zoneY += 1) {
+        for (let zoneX = -2; zoneX <= 2; zoneX += 1) {
+          let visual: ReturnType<typeof game.thingVisualAt> = null;
+          for (let localY = 0; localY < THING_ZONE_SIZE && !visual; localY += 1) {
+            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
+              const x = zoneX * THING_ZONE_SIZE + localX;
+              const y = zoneY * THING_ZONE_SIZE + localY;
+              if (!game.artifactAt(x, y)) continue;
+              visual = game.thingVisualAt(x, y);
+              break;
+            }
           }
+          if (!visual) throw new Error(`Missing v2 Illustrated Thing at ${zoneX},${zoneY}`);
+          parts.push(
+            `${visual.x},${visual.y}:${visual.side}:${visual.sprite}:` +
+              `${visual.artCells.map((cell) => `${cell.x},${cell.y}`).join(";")}:` +
+              `${visual.reservedCells.map((cell) => `${cell.x},${cell.y}`).join(";")}`,
+          );
         }
       }
-      for (const [key, sprite] of sprites) {
-        const [zoneX, zoneY] = key.split(",").map(Number);
-        for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
-          for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
-            if (offsetX === 0 && offsetY === 0) continue;
-            const neighbor = sprites.get(`${zoneX + offsetX},${zoneY + offsetY}`);
-            if (neighbor === sprite) failures.push(`${seed}: ${key} repeats at ${zoneX + offsetX},${zoneY + offsetY}`);
-          }
-        }
-      }
-      expect([...counts], `seed ${seed} has a balanced 12 by 12 cycle`).toEqual(
-        Array(THING_SPRITE_COUNT).fill(THING_SPRITE_COUNT),
-      );
+      expect(createHash("sha256").update(parts.join("|")).digest("hex"), topology).toBe(expected[topology]);
     }
-    expect(failures).toEqual([]);
+  });
+
+  it("deals the complete catalog once per spiral deck, with curated Things first", () => {
+    const seeds = [0, 1, 0x5eed_1234, 0x7120_49a7, 0xffff_ffff];
+    const zones: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
+    for (let ring = 1; zones.length < THING_CATALOG_COUNT; ring += 1) {
+      for (let y = -ring + 1; y <= ring && zones.length < THING_CATALOG_COUNT; y += 1) {
+        zones.push({ x: ring, y });
+      }
+      for (let x = ring - 1; x >= -ring && zones.length < THING_CATALOG_COUNT; x -= 1) {
+        zones.push({ x, y: ring });
+      }
+      for (let y = ring - 1; y >= -ring && zones.length < THING_CATALOG_COUNT; y -= 1) {
+        zones.push({ x: -ring, y });
+      }
+      for (let x = -ring + 1; x <= ring && zones.length < THING_CATALOG_COUNT; x += 1) {
+        zones.push({ x, y: -ring });
+      }
+    }
+    expect(zones).toHaveLength(THING_CATALOG_COUNT);
+    zones.forEach((zone, position) => expect(thingDeckPositionForZone(zone.x, zone.y)).toBe(position));
+
+    for (const seed of seeds) {
+      const sprites = zones.map(({ x, y }) => thingSpriteFor(x * THING_ZONE_SIZE, y * THING_ZONE_SIZE, seed));
+      expect(new Set(sprites).size, `seed ${seed} uses every Thing before repeating`).toBe(THING_CATALOG_COUNT);
+      expect([...sprites].sort((left, right) => left - right)).toEqual(
+        Array.from({ length: THING_CATALOG_COUNT }, (_, sprite) => sprite),
+      );
+      expect(sprites.slice(0, THING_CURATED_COUNT).every((sprite) => sprite < THING_CURATED_COUNT)).toBe(true);
+      expect(sprites.slice(THING_CURATED_COUNT).every((sprite) => sprite >= THING_CURATED_COUNT)).toBe(true);
+      for (let position = 0; position < THING_CURATED_COUNT; position += 1) {
+        const zone = zones[position];
+        expect(
+          thingSpriteFor(
+            zone.x * THING_ZONE_SIZE + THING_ZONE_SIZE - 1,
+            zone.y * THING_ZONE_SIZE + THING_ZONE_SIZE - 1,
+            seed,
+          ),
+        ).toBe(sprites[position]);
+      }
+    }
   });
 
   it("keeps a 5 by 5 area mine-free around the first reveal", () => {
@@ -314,15 +364,25 @@ describe("topology-driven fields", () => {
     expect(restored.restoreSnapshot(illustratedSnapshot)).toBe(true);
     expect(restored.fieldGeneration).toBe("illustrated-things");
 
-    const currentIllustratedSnapshot = new GameModel({
+    const v2IllustratedSnapshot = new GameModel({
       seed: 99,
       topology: "rhombille",
       autoStart: false,
       generation: "illustrated-things-v2",
     }).createSnapshot();
-    expect(currentIllustratedSnapshot.generation).toBe("illustrated-things-v2");
-    expect(restored.restoreSnapshot(currentIllustratedSnapshot)).toBe(true);
+    expect(v2IllustratedSnapshot.generation).toBe("illustrated-things-v2");
+    expect(restored.restoreSnapshot(v2IllustratedSnapshot)).toBe(true);
     expect(restored.fieldGeneration).toBe("illustrated-things-v2");
+
+    const currentIllustratedSnapshot = new GameModel({
+      seed: 99,
+      topology: "rhombille",
+      autoStart: false,
+      generation: "illustrated-things-v3",
+    }).createSnapshot();
+    expect(currentIllustratedSnapshot.generation).toBe("illustrated-things-v3");
+    expect(restored.restoreSnapshot(currentIllustratedSnapshot)).toBe(true);
+    expect(restored.fieldGeneration).toBe("illustrated-things-v3");
 
     const oldV3 = {
       ...snapshot,
@@ -539,13 +599,13 @@ describe("gameplay", () => {
   it("reserves deterministic Thing footprints and keeps every art-covered clue at zero", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
-        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things-v2" });
+        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things-v3" });
         const matching = new GameModel({
           mode,
           seed: 712,
           autoStart: false,
           topology,
-          generation: "illustrated-things-v2",
+          generation: "illustrated-things-v3",
         });
         let mismatches = 0;
         let reservedMines = 0;

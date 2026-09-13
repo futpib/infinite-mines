@@ -1,11 +1,60 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { THING_CATALOG_FILES, fullThingAlphaOffsets } from "../src/thing-catalog-full";
+import {
+  THING_CATALOG_COUNT,
+  THING_CATALOG_SOURCE_COMMIT,
+  THING_CURATED_COUNT,
+} from "../src/thing-catalog-meta";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string): string => readFileSync(`${root}/${path}`, "utf8");
 
 describe("reproducible CI contract", () => {
+  it("pins and ships the complete Noto SVG Thing catalog", () => {
+    const shipped = readdirSync(`${root}/public/things`)
+      .filter((name) => name.endsWith(".svg"))
+      .sort();
+    expect(THING_CATALOG_SOURCE_COMMIT).toBe("8998f5dd683424a73e2314a8c1f1e359c19e8742");
+    expect(THING_CURATED_COUNT).toBe(12);
+    expect(THING_CATALOG_COUNT).toBe(3731);
+    expect(THING_CATALOG_FILES).toHaveLength(THING_CATALOG_COUNT);
+    expect(new Set(THING_CATALOG_FILES).size).toBe(THING_CATALOG_COUNT);
+    expect([...THING_CATALOG_FILES].sort()).toEqual(shipped);
+    expect(read("public/things/LICENSE")).toContain("Apache License, Version 2.0");
+
+    let patterns = 0;
+    const variants = {
+      square: [{ x: 0, y: 0 }],
+      triangular: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+      ],
+      rhombille: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 2, y: 0 },
+      ],
+    } as const;
+    for (const [topology, anchors] of Object.entries(variants)) {
+      for (const anchor of anchors) {
+        for (const side of [3, 4]) {
+          for (let sprite = 0; sprite < THING_CATALOG_COUNT; sprite += 1) {
+            const offsets = fullThingAlphaOffsets(topology as keyof typeof variants, anchor.x, anchor.y, side, sprite);
+            expect(offsets.length).toBeGreaterThan(0);
+            expect(offsets.length % 2).toBe(0);
+            expect(new Set(Array.from({ length: offsets.length / 2 }, (_, index) => `${offsets[index * 2]},${offsets[index * 2 + 1]}`)).size).toBe(
+              offsets.length / 2,
+            );
+            patterns += 1;
+          }
+        }
+      }
+    }
+    expect(patterns).toBe(THING_CATALOG_COUNT * 12);
+  });
+
   it("pins package tools to the versions installed by the lockfile", () => {
     const packageJson = JSON.parse(read("package.json"));
     const lock = JSON.parse(read("package-lock.json"));

@@ -1,5 +1,6 @@
 import "./styles.css";
 import { requiresRevealGuard } from "./controls";
+import { loadThingCatalog } from "./thing-catalog";
 import {
   ActionResult,
   CUSTOM_DENSITY_DEFAULT,
@@ -154,6 +155,12 @@ const revealModifierName = applePlatform ? "Command (⌘)" : "Ctrl";
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0];
 const fallbackSeed = randomSeed();
 const persistedGame = await loadActiveGame();
+if (
+  thingStyle === "illustrated" ||
+  (persistedGame?.model.version === 4 && persistedGame.model.generation === "illustrated-things-v3")
+) {
+  await loadThingCatalog();
+}
 const model = new GameModel({
   mode: initialMode,
   density: initialMode === "custom" ? customDensity : undefined,
@@ -891,6 +898,7 @@ async function switchField(
   const fallbackCustomDensity =
     mode === "custom" ? requestedCustomDensity ?? (model.mode === "custom" ? model.density : customDensity) : undefined;
   const operation = (async () => {
+    if (generation === "illustrated-things-v3") await loadThingCatalog();
     await flushGameSave(true);
     const saved = await loadGameSlot(topology, mode, generation);
     const savedDensity =

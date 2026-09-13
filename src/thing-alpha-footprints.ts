@@ -155,13 +155,32 @@ const positiveModulo = (value: number, divisor: number): number => ((value % div
 export const thingTopologyVariant = (topology: TopologyId, x: number, y: number): number =>
   topology === "triangular" ? positiveModulo(x + y, 2) : topology === "rhombille" ? positiveModulo(x, 3) : 0;
 
+type ThingAlphaResolver = (
+  topology: TopologyId,
+  anchorX: number,
+  anchorY: number,
+  side: number,
+  sprite: number,
+) => readonly number[];
+
+let fullCatalogResolver: ThingAlphaResolver | null = null;
+
+export const installFullThingAlphaResolver = (resolver: ThingAlphaResolver): void => {
+  fullCatalogResolver = resolver;
+};
+
 export const thingAlphaOffsets = (
   topology: TopologyId,
   anchorX: number,
   anchorY: number,
   side: number,
   sprite: number,
+  fullCatalog = false,
 ): readonly number[] => {
+  if (fullCatalog) {
+    if (!fullCatalogResolver) throw new Error("Full Thing catalog was not loaded before field generation");
+    return fullCatalogResolver(topology, anchorX, anchorY, side, sprite);
+  }
   const key = `${topology}:${thingTopologyVariant(topology, anchorX, anchorY)}:${side}:${sprite}`;
   const offsets = THING_ALPHA_FOOTPRINTS[key];
   if (!offsets) throw new Error(`Missing Thing alpha footprint: ${key}`);

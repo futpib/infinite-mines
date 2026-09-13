@@ -44,7 +44,7 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   await page.locator('[data-thing-style="illustrated"]').click();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingStyle)).toBe("illustrated");
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v2");
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
@@ -56,7 +56,7 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
     thingStyle: "illustrated",
-    fieldGeneration: "illustrated-things-v2",
+    fieldGeneration: "illustrated-things-v3",
   });
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
 
@@ -123,7 +123,150 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   ).toEqual(priorIllustrated);
 
   await page.locator("#restart-button").click();
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v2");
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
+});
+
+test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", async ({ page }) => {
+  await openDeterministicGame(page, 0x49a7_0002);
+  expect(
+    await page.evaluate(() =>
+      performance.getEntriesByType("resource").some((entry) => entry.name.includes("thing-catalog-full")),
+    ),
+  ).toBe(false);
+
+  const result = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    await api.setThingStyle("illustrated");
+    await api.renderer.waitForThingSprites();
+    const initial = api.diagnostics();
+    const extraSprites = [12, 1000, 3730, ...Array.from({ length: 50 }, (_, index) => index + 13)];
+    for (const sprite of extraSprites) await api.renderer.waitForThingSprite(sprite);
+    const privateModel = api.model as unknown as {
+      artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
+    };
+    let nonCurated: ReturnType<typeof api.model.thingVisualAt> = null;
+    search: for (let zoneY = -32; zoneY <= 32; zoneY += 1) {
+      for (let zoneX = -32; zoneX <= 32; zoneX += 1) {
+        const anchor = privateModel.artifactForZone(zoneX, zoneY);
+        const visual = api.model.thingVisualAt(anchor.x, anchor.y);
+        if (visual?.sprite !== 1000) continue;
+        nonCurated = visual;
+        break search;
+      }
+    }
+    if (!nonCurated) throw new Error("The complete deck did not contain Thing 1000");
+    const nonCuratedArtClues = nonCurated.artCells.map((cell) => api.model.clueAt(cell.x, cell.y));
+    const nonCuratedNeighborReservations = nonCurated.artCells.flatMap((cell) => {
+      const reservations: boolean[] = [];
+      api.model.topology.forEachNeighbor(cell.x, cell.y, (x, y) => {
+        reservations.push(api.model.thingFootprintAt(x, y));
+      });
+      return reservations;
+    });
+    api.reveal(nonCurated.x, nonCurated.y);
+    const minX = Math.min(...nonCurated.cells.map((cell) => cell.x));
+    const maxX = Math.max(...nonCurated.cells.map((cell) => cell.x));
+    const minY = Math.min(...nonCurated.cells.map((cell) => cell.y));
+    const maxY = Math.max(...nonCurated.cells.map((cell) => cell.y));
+    api.renderer.restoreView({
+      version: 1,
+      zoom: 1,
+      panX: -((minX + maxX) / 2 - api.model.topology.origin.x) * 25,
+      panY: -((minY + maxY) / 2 - api.model.topology.origin.y) * 25,
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const afterFill = api.diagnostics();
+    const evictedCurated = Array.from({ length: 12 }, (_, sprite) => sprite).filter(
+      (sprite) => api.renderer.thingAtlasSlotForSprite(sprite) === null,
+    );
+    if (evictedCurated.length === 0) throw new Error("Expected the bounded atlas to evict a curated slot");
+    const requestedSlotsReady = [12, 1000, 3730, 62].map(
+      (sprite) => api.renderer.thingAtlasSlotForSprite(sprite) !== null,
+    );
+    await api.renderer.waitForThingSprite(evictedCurated[0]);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const privateRenderer = api.renderer as unknown as {
+      thingEmojiAtlas: HTMLCanvasElement;
+      instanceCount: number;
+      resources: { instanceBuffer: WebGLBuffer };
+    };
+    const loadedNonCuratedSlot = api.renderer.thingAtlasSlotForSprite(1000);
+    if (loadedNonCuratedSlot === null) throw new Error("Thing 1000 was evicted before rendering");
+    const gl = api.renderer.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, privateRenderer.resources.instanceBuffer);
+    const instances = new Float32Array(privateRenderer.instanceCount * 5);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, instances);
+    let renderedNonCuratedFragments = 0;
+    for (let offset = 0; offset < instances.length; offset += 5) {
+      if (instances[offset + 3] === 3 && Math.round(instances[offset + 2]) === loadedNonCuratedSlot) {
+        renderedNonCuratedFragments += 1;
+      }
+    }
+    return {
+      initial,
+      afterFill,
+      afterReload: api.diagnostics(),
+      requestedSlotsReady,
+      reloadedSlot: api.renderer.thingAtlasSlotForSprite(evictedCurated[0]),
+      renderedNonCuratedFragments,
+      nonCuratedArtClues,
+      nonCuratedNeighborReservations,
+      atlas: {
+        width: privateRenderer.thingEmojiAtlas.width,
+        height: privateRenderer.thingEmojiAtlas.height,
+      },
+      catalogChunk: performance
+        .getEntriesByType("resource")
+        .some((entry) => entry.name.includes("thing-catalog-full")),
+      svgRequests: new Set(
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => name.includes("/things/emoji_u") && name.endsWith(".svg")),
+      ).size,
+    };
+  });
+
+  expect(result.initial).toMatchObject({
+    fieldGeneration: "illustrated-things-v3",
+    thingSprites: 3731,
+    thingSpritesLoaded: 12,
+    thingSpritesReady: true,
+  });
+  expect(result.afterFill.thingSpritesLoaded).toBe(64);
+  expect(result.afterReload).toMatchObject({ thingSprites: 3731, thingSpritesLoaded: 64, drawCalls: 1, canvasCount: 3 });
+  expect(result.requestedSlotsReady).toEqual([true, true, true, true]);
+  expect(result.reloadedSlot).not.toBeNull();
+  expect(result.renderedNonCuratedFragments).toBeGreaterThan(0);
+  expect(result.nonCuratedArtClues).toEqual(Array(result.nonCuratedArtClues.length).fill(0));
+  expect(result.nonCuratedNeighborReservations).toEqual(Array(result.nonCuratedNeighborReservations.length).fill(true));
+  expect(result.atlas).toEqual({ width: 4096, height: 4096 });
+  expect(result.catalogChunk).toBe(true);
+  expect(result.svgRequests).toBeGreaterThanOrEqual(65);
+});
+
+test("R49 — prior 12-scene Illustrated saves restore unchanged and restart into the full catalog", async ({ page }) => {
+  await openDeterministicGame(page, 0x49a7_0003);
+  await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    await api.setThingStyle("illustrated");
+    api.model.reset("beginner", 0x49a7_0004, false, "rhombille", undefined, "illustrated-things-v2");
+    api.model.store.set(321, -123, 11);
+    api.renderer.syncThingStyle();
+    await api.flushSave();
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  expect(
+    await page.evaluate(() => ({
+      generation: window.__infiniteMines.model.fieldGeneration,
+      seed: window.__infiniteMines.model.seed,
+      state: window.__infiniteMines.model.getState(321, -123),
+    })),
+  ).toEqual({ generation: "illustrated-things-v2", seed: 0x49a7_0004, state: 11 });
+
+  await page.locator("#restart-button").click();
+  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
 });
 
 test("R09 — refresh restores the exact field, progress, marks, and viewport from a compact snapshot", async ({ page }) => {

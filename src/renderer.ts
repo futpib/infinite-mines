@@ -9,6 +9,8 @@ import {
   type ExploredBounds,
 } from "./model";
 import type { ViewSnapshotV1 } from "./persistence";
+import { loadThingCatalog, type ThingCatalog } from "./thing-catalog";
+import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 import {
   compareCells,
   type TopologyId,
@@ -24,6 +26,7 @@ export interface RenderDiagnostics {
   borderCssPixels: 0 | 1;
   glyphs: boolean;
   thingSprites: number;
+  thingSpritesLoaded: number;
   thingTexturePixels: number;
   thingSpritesReady: boolean;
   detailMix: number;
@@ -71,34 +74,6 @@ const SQUARE_FLAG_SPRITE = 9;
 const SQUARE_QUESTION_SPRITE = 10;
 const SQUARE_EXPLODED_SPRITE = 11;
 const SQUARE_SPRITE_COUNT = 12;
-const THING_EMOJI_NAMES = [
-  "castle",
-  "Japanese castle",
-  "moai",
-  "flying saucer",
-  "rocket",
-  "sailboat",
-  "volcano",
-  "circus tent",
-  "sauropod",
-  "dragon",
-  "palm tree",
-  "snowman",
-] as const;
-const THING_VECTOR_URLS = [
-  new URL("./assets/things/emoji_u1f3f0.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f3ef.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f5ff.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f6f8.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f680.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u26f5.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f30b.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f3aa.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f995.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f409.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u1f334.svg", import.meta.url).href,
-  new URL("./assets/things/emoji_u26c4.svg", import.meta.url).href,
-] as const;
 const SQUARE_ATLAS_SPRITE_COUNT = SQUARE_SPRITE_COUNT;
 const ARTIFACT_CELL_KIND = 1;
 const FRONTIER_CELL_KIND = 2;
@@ -114,8 +89,9 @@ const SPRITE_COUNT = 22;
 const ATLAS_SPRITE_COUNT = SPRITE_COUNT;
 const SPRITE_PIXELS = 64;
 const THING_TEXTURE_PIXELS = 512;
-const THING_ATLAS_COLUMNS = 4;
-const THING_ATLAS_ROWS = Math.ceil(THING_VECTOR_URLS.length / THING_ATLAS_COLUMNS);
+const THING_ATLAS_COLUMNS = 8;
+const THING_ATLAS_ROWS = 8;
+const THING_ATLAS_SLOTS = THING_ATLAS_COLUMNS * THING_ATLAS_ROWS;
 const THING_TEXTURE_PADDING = 16;
 const THING_TRIANGULAR_FIT = 0.9;
 const THING_RHOMBILLE_FIT = 0.8;
@@ -241,6 +217,7 @@ vec4 sampleThing(vec2 uv) {
 }
 
 void main() {
+  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   bool thingBorder = v_cellKind > 3.5;
   bool thingCell = v_cellKind > 2.5 && !thingBorder;
   bool thingUnderlay = v_cellKind < -0.5;
@@ -256,7 +233,7 @@ void main() {
     if (thingUv.x < 0.0 || thingUv.y < 0.0 || thingUv.x >= 1.0 || thingUv.y >= 1.0) discard;
     vec4 glyph = sampleThing(thingUv);
     if (glyph.a <= 0.0) discard;
-    outColor = glyph;
+    outColor = glyph * detailMix;
     return;
   }
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
@@ -281,7 +258,6 @@ void main() {
     base = mix(u_cellBorder, fill, fillMix);
   }
 
-  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   if (thingBorder) {
     float borderAlpha = (outerBorder ? 1.0 : edgeCoverage) * detailMix;
     if (borderAlpha <= 0.0) discard;
@@ -402,6 +378,7 @@ vec4 sampleThing(vec2 uv) {
 }
 
 void main() {
+  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   int shape = int(v_shape + 0.5);
   int edges = int(v_edges + 0.5);
   bool thingBorder = v_cellKind > 3.5;
@@ -473,12 +450,11 @@ void main() {
     if (v_thingUv.x < 0.0 || v_thingUv.y < 0.0 || v_thingUv.x >= 1.0 || v_thingUv.y >= 1.0) discard;
     vec4 glyph = sampleThing(v_thingUv);
     if (glyph.a <= 0.0) discard;
-    outColor = glyph;
+    outColor = glyph * detailMix;
     return;
   }
 
   if (thingBorder) {
-    float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
     float borderAlpha = (1.0 - smoothstep(u_dpr - 0.5, u_dpr + 0.5, edgePixels)) * detailMix;
     if (borderAlpha <= 0.0) discard;
     outColor = vec4(u_cellBorder * borderAlpha, borderAlpha);
@@ -509,7 +485,6 @@ void main() {
   if (frontier || thingUnderlay) glyph.a = 0.0;
   vec3 detailed = mix(detailedBase, glyph.rgb, glyph.a);
 
-  float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   outColor = vec4(mix(stateColor, detailed, detailMix), 1.0);
 }`;
 
@@ -639,6 +614,12 @@ interface TileRange {
   version: number;
 }
 
+interface ThingAtlasSlot {
+  sprite: number;
+  ready: boolean;
+  lastUsedFrame: number;
+}
+
 const requireShader = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader => {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Unable to create WebGL shader");
@@ -691,6 +672,7 @@ export class WebGLRenderer {
     borderCssPixels: 1,
     glyphs: true,
     thingSprites: 0,
+    thingSpritesLoaded: 0,
     thingTexturePixels: 0,
     thingSpritesReady: false,
     detailMix: 1,
@@ -759,6 +741,10 @@ export class WebGLRenderer {
   private thingEmojiAtlas: HTMLCanvasElement | null = null;
   private thingEmojiAtlasPromise: Promise<void> | null = null;
   private thingEmojiAtlasReady = false;
+  private thingCatalog: ThingCatalog | null = null;
+  private readonly thingAtlasSlots: Array<ThingAtlasSlot | null> = Array(THING_ATLAS_SLOTS).fill(null);
+  private readonly thingAtlasSlotBySprite = new Map<number, number>();
+  private readonly thingSpriteLoads = new Map<number, Promise<number>>();
   private fullRedraws = 0;
   private damageRedraws = 0;
   private panRedraws = 0;
@@ -806,9 +792,20 @@ export class WebGLRenderer {
     return BASE_CELL_SIZE * this.zoom;
   }
 
-  waitForThingSprites(): Promise<void> {
+  async waitForThingSprites(): Promise<void> {
     this.startThingEmojiAtlasLoad();
-    return this.thingEmojiAtlasPromise ?? Promise.resolve();
+    await (this.thingEmojiAtlasPromise ?? Promise.resolve());
+  }
+
+  async waitForThingSprite(sprite: number): Promise<number> {
+    this.startThingEmojiAtlasLoad();
+    await (this.thingEmojiAtlasPromise ?? Promise.resolve());
+    return this.loadThingSprite(sprite);
+  }
+
+  thingAtlasSlotForSprite(sprite: number): number | null {
+    const slot = this.thingAtlasSlotBySprite.get(sprite);
+    return slot !== undefined && this.thingAtlasSlots[slot]?.ready ? slot : null;
   }
 
   syncThingStyle(): void {
@@ -1225,7 +1222,10 @@ export class WebGLRenderer {
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
       glyphs: detailMix > 0,
-      thingSprites: isIllustratedGeneration(this.model.fieldGeneration) ? THING_VECTOR_URLS.length : 0,
+      thingSprites: isIllustratedGeneration(this.model.fieldGeneration) ? THING_CATALOG_COUNT : 0,
+      thingSpritesLoaded: isIllustratedGeneration(this.model.fieldGeneration)
+        ? this.thingAtlasSlots.filter((slot) => slot?.ready).length
+        : 0,
       thingTexturePixels: isIllustratedGeneration(this.model.fieldGeneration) ? THING_TEXTURE_PIXELS : 0,
       thingSpritesReady: isIllustratedGeneration(this.model.fieldGeneration) && this.thingEmojiAtlasReady,
       detailMix,
@@ -1694,7 +1694,9 @@ export class WebGLRenderer {
     const collectThing = (x: number, y: number, state: CellState, frontier: boolean): void => {
       if (!this.thingEmojiAtlasReady || frontier || state !== CellState.Opened) return;
       const visual = this.model.thingVisualAt(x, y);
-      if (visual) thingVisuals.push(visual);
+      if (!visual) return;
+      const slot = this.thingAtlasSlot(visual.sprite);
+      if (slot !== null) thingVisuals.push({ ...visual, sprite: slot });
     };
     if (renderCells) {
       for (const cell of renderCells.values()) collectThing(cell.x, cell.y, cell.state, cell.frontier);
@@ -1952,6 +1954,8 @@ export class WebGLRenderer {
         if (!this.thingEmojiAtlasReady) continue;
         const visual = this.model.thingVisualAt(worldX, worldY);
         if (!visual) continue;
+        const slot = this.thingAtlasSlot(visual.sprite);
+        if (slot === null) continue;
         thingVisuals.push({
           cells: visual.cells,
           artCells: visual.artCells,
@@ -1959,7 +1963,7 @@ export class WebGLRenderer {
           worldX,
           worldY,
           side: visual.side,
-          sprite: visual.sprite,
+          sprite: slot,
         });
       }
     }
@@ -2681,7 +2685,12 @@ export class WebGLRenderer {
 
   private startThingEmojiAtlasLoad(): void {
     if (this.thingEmojiAtlasPromise) return;
-    this.thingEmojiAtlasPromise = this.populateThingEmojiAtlas().then(() => {
+    this.thingEmojiAtlasPromise = loadThingCatalog().then(async (catalog) => {
+      this.thingCatalog = catalog;
+      this.getThingEmojiAtlas();
+      await Promise.all(
+        Array.from({ length: THING_CURATED_COUNT }, (_, sprite) => this.loadThingSprite(sprite)),
+      );
       this.thingEmojiAtlasReady = true;
       if (this.contextLost) return;
       this.uploadThingEmojiAtlas(this.resources.thingAtlasTexture);
@@ -2690,17 +2699,79 @@ export class WebGLRenderer {
     });
   }
 
-  private async populateThingEmojiAtlas(): Promise<void> {
-    const atlas = this.getThingEmojiAtlas();
-    const context = atlas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("Unable to create Thing emoji atlas");
-    const images = await Promise.all(
-      THING_VECTOR_URLS.map((url, index) => this.loadThingVector(url, THING_EMOJI_NAMES[index])),
-    );
-    context.clearRect(0, 0, atlas.width, atlas.height);
-    for (let variant = 0; variant < images.length; variant += 1) {
-      this.drawVectorEmoji(context, variant, images[variant]);
+  private thingVectorUrl(filename: string): string {
+    return new URL(`./things/${filename}`, document.baseURI).href;
+  }
+
+  private loadThingSprite(sprite: number): Promise<number> {
+    const existingSlot = this.thingAtlasSlotBySprite.get(sprite);
+    if (existingSlot !== undefined) {
+      const existing = this.thingAtlasSlots[existingSlot];
+      if (existing?.ready) {
+        existing.lastUsedFrame = this.frameCount;
+        return Promise.resolve(existingSlot);
+      }
+      const pending = this.thingSpriteLoads.get(sprite);
+      if (pending) return pending;
     }
+    if (!this.thingCatalog) throw new Error("Thing catalog is unavailable");
+    if (!Number.isInteger(sprite) || sprite < 0 || sprite >= this.thingCatalog.files.length) {
+      throw new RangeError(`Unknown Thing sprite: ${sprite}`);
+    }
+    let slot = this.thingAtlasSlots.findIndex((candidate) => candidate === null);
+    if (slot < 0) {
+      let oldestFrame = Number.POSITIVE_INFINITY;
+      for (let index = 0; index < this.thingAtlasSlots.length; index += 1) {
+        const candidate = this.thingAtlasSlots[index];
+        if (!candidate?.ready || candidate.lastUsedFrame >= oldestFrame) continue;
+        oldestFrame = candidate.lastUsedFrame;
+        slot = index;
+      }
+    }
+    if (slot < 0) {
+      const pending = [...this.thingSpriteLoads.values()];
+      if (pending.length === 0) throw new Error("Thing atlas has no replaceable slot");
+      return Promise.race(pending).then(() => this.loadThingSprite(sprite));
+    }
+    const replaced = this.thingAtlasSlots[slot];
+    if (replaced) this.thingAtlasSlotBySprite.delete(replaced.sprite);
+    this.thingAtlasSlots[slot] = { sprite, ready: false, lastUsedFrame: this.frameCount };
+    this.thingAtlasSlotBySprite.set(sprite, slot);
+    const filename = this.thingCatalog.files[sprite];
+    const promise = this.loadThingVector(this.thingVectorUrl(filename), filename)
+      .then((image) => {
+        const current = this.thingAtlasSlots[slot];
+        if (!current || current.sprite !== sprite) return this.loadThingSprite(sprite);
+        const slotCanvas = this.drawVectorEmoji(this.getThingEmojiAtlas(), slot, image);
+        current.ready = true;
+        current.lastUsedFrame = this.frameCount;
+        if (this.thingEmojiAtlasReady && !this.contextLost) this.uploadThingEmojiAtlasSlot(slot, slotCanvas);
+        this.resetTileCache();
+        this.retainedFrame = false;
+        this.requestRender();
+        return slot;
+      })
+      .catch((error) => {
+        if (this.thingAtlasSlots[slot]?.sprite === sprite) this.thingAtlasSlots[slot] = null;
+        if (this.thingAtlasSlotBySprite.get(sprite) === slot) this.thingAtlasSlotBySprite.delete(sprite);
+        throw error;
+      })
+      .finally(() => {
+        this.thingSpriteLoads.delete(sprite);
+      });
+    this.thingSpriteLoads.set(sprite, promise);
+    return promise;
+  }
+
+  private thingAtlasSlot(sprite: number): number | null {
+    const slot = this.thingAtlasSlotBySprite.get(sprite);
+    const entry = slot === undefined ? null : this.thingAtlasSlots[slot];
+    if (slot !== undefined && entry?.ready) {
+      entry.lastUsedFrame = this.frameCount;
+      return slot;
+    }
+    void this.loadThingSprite(sprite).catch((error) => console.error(error));
+    return null;
   }
 
   private loadThingVector(url: string, name: string): Promise<HTMLImageElement> {
@@ -2713,7 +2784,7 @@ export class WebGLRenderer {
     });
   }
 
-  private drawVectorEmoji(context: CanvasRenderingContext2D, variant: number, image: HTMLImageElement): void {
+  private drawVectorEmoji(atlas: HTMLCanvasElement, slot: number, image: HTMLImageElement): HTMLCanvasElement {
     const raster = document.createElement("canvas");
     raster.width = THING_TEXTURE_PIXELS;
     raster.height = THING_TEXTURE_PIXELS;
@@ -2736,29 +2807,34 @@ export class WebGLRenderer {
         maxY = Math.max(maxY, y);
       }
     }
-    if (maxX < minX || maxY < minY) throw new Error(`Unable to measure Thing vector: ${THING_EMOJI_NAMES[variant]}`);
+    if (maxX < minX || maxY < minY) throw new Error(`Unable to measure Thing vector in slot ${slot}`);
     const sourceWidth = maxX - minX + 1;
     const sourceHeight = maxY - minY + 1;
     const targetSize = THING_TEXTURE_PIXELS - THING_TEXTURE_PADDING * 2;
     const scale = Math.min(targetSize / sourceWidth, targetSize / sourceHeight);
-    const column = variant % THING_ATLAS_COLUMNS;
-    const row = Math.floor(variant / THING_ATLAS_COLUMNS);
+    const column = slot % THING_ATLAS_COLUMNS;
+    const row = Math.floor(slot / THING_ATLAS_COLUMNS);
     const left = column * THING_TEXTURE_PIXELS;
     const top = row * THING_TEXTURE_PIXELS;
     const contentCenterX = (minX + maxX + 1) / 2;
     const contentCenterY = (minY + maxY + 1) / 2;
-    const targetX = left + THING_TEXTURE_PIXELS / 2 - contentCenterX * scale;
-    const targetY = top + THING_TEXTURE_PIXELS / 2 - contentCenterY * scale;
-    context.save();
-    context.beginPath();
-    context.rect(left, top, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS);
-    context.clip();
+    const targetX = THING_TEXTURE_PIXELS / 2 - contentCenterX * scale;
+    const targetY = THING_TEXTURE_PIXELS / 2 - contentCenterY * scale;
+    const slotCanvas = document.createElement("canvas");
+    slotCanvas.width = THING_TEXTURE_PIXELS;
+    slotCanvas.height = THING_TEXTURE_PIXELS;
+    const context = slotCanvas.getContext("2d");
+    if (!context) throw new Error("Unable to draw Thing vector");
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     // The browser rasterizes the SVG directly at its final atlas size. The
     // measurement pass above is never resampled into the production texture.
     context.drawImage(image, targetX, targetY, THING_TEXTURE_PIXELS * scale, THING_TEXTURE_PIXELS * scale);
-    context.restore();
+    const atlasContext = atlas.getContext("2d", { willReadFrequently: true });
+    if (!atlasContext) throw new Error("Unable to create Thing emoji atlas");
+    atlasContext.clearRect(left, top, THING_TEXTURE_PIXELS, THING_TEXTURE_PIXELS);
+    atlasContext.drawImage(slotCanvas, left, top);
+    return slotCanvas;
   }
 
   private uploadThingEmojiAtlas(texture: WebGLTexture): void {
@@ -2766,6 +2842,22 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.getThingEmojiAtlas());
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  }
+
+  private uploadThingEmojiAtlasSlot(slot: number, canvas: HTMLCanvasElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.resources.thingAtlasTexture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      (slot % THING_ATLAS_COLUMNS) * THING_TEXTURE_PIXELS,
+      Math.floor(slot / THING_ATLAS_COLUMNS) * THING_TEXTURE_PIXELS,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      canvas,
+    );
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   }
 

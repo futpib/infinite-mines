@@ -72,7 +72,9 @@ const slotKey = (topology: TopologyId, mode: Mode, generation: FieldGeneration):
     ? `field:${topology}:${mode}:illustrated`
     : generation === "illustrated-things-v2"
       ? `field:${topology}:${mode}:illustrated-v2`
-      : `field:${topology}:${mode}`;
+      : generation === "illustrated-things-v3"
+        ? `field:${topology}:${mode}:illustrated-v3`
+        : `field:${topology}:${mode}`;
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 

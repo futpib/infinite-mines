@@ -1,5 +1,6 @@
 import { TOPOLOGIES, isTopologyId, type Topology, type TopologyId } from "./topology";
 import { thingAlphaOffsets } from "./thing-alpha-footprints";
+import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 
 export const PRESET_MODES = ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const;
 export const MODES = [...PRESET_MODES, "custom"] as const;
@@ -203,15 +204,23 @@ export interface GameSnapshotV3 {
   cells: ArrayBuffer;
 }
 
-export const FIELD_GENERATIONS = ["legacy-flat", "original-things", "illustrated-things", "illustrated-things-v2"] as const;
+export const FIELD_GENERATIONS = [
+  "legacy-flat",
+  "original-things",
+  "illustrated-things",
+  "illustrated-things-v2",
+  "illustrated-things-v3",
+] as const;
 export type FieldGeneration = (typeof FIELD_GENERATIONS)[number];
 export type ThingStyle = "simple" | "illustrated";
 
 export const generationForThingStyle = (style: ThingStyle): FieldGeneration =>
-  style === "illustrated" ? "illustrated-things-v2" : "original-things";
+  style === "illustrated" ? "illustrated-things-v3" : "original-things";
 
 export const isIllustratedGeneration = (generation: FieldGeneration): boolean =>
-  generation === "illustrated-things" || generation === "illustrated-things-v2";
+  generation === "illustrated-things" ||
+  generation === "illustrated-things-v2" ||
+  generation === "illustrated-things-v3";
 
 export const thingStyleForGeneration = (generation: FieldGeneration): ThingStyle =>
   isIllustratedGeneration(generation) ? "illustrated" : "simple";
@@ -256,9 +265,10 @@ export const THING_ZONE_SIZE = 24;
 export const THING_SMALL_RESERVED_SIDE = 5;
 export const THING_LARGE_RESERVED_SIDE = 6;
 export const THING_SMALL_PROBABILITY = 5 / 6;
-export const THING_SPRITE_COUNT = 12;
+export const THING_SPRITE_COUNT = THING_CATALOG_COUNT;
 export const THING_SPRITE_SALT = 0x2d947f31;
-const THING_VARIETY_STEPS = [
+const V2_THING_SPRITE_COUNT = 12;
+const V2_THING_VARIETY_STEPS = [
   [1, 3],
   [3, 1],
   [1, 9],
@@ -268,7 +278,7 @@ const THING_VARIETY_STEPS = [
   [11, 9],
   [9, 11],
 ] as const;
-const THING_VARIETY_MULTIPLIERS = [1, 5, 7, 11] as const;
+const V2_THING_VARIETY_MULTIPLIERS = [1, 5, 7, 11] as const;
 export const MAX_CHAIN_EXPLOSIONS_PER_ACTION = 256;
 export const thingReservedSideForRoll = (
   roll: number,
@@ -326,25 +336,71 @@ export function hash32(x: number, y: number, seed: number, salt = 0): number {
 
 const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;
 
+const v2ThingSpriteFor = (x: number, y: number, seed: number): number => {
+  const zoneX = floorDiv(x, THING_ZONE_SIZE);
+  const zoneY = floorDiv(y, THING_ZONE_SIZE);
+  const selector = hash32(0, 0, seed, THING_SPRITE_SALT);
+  const [stepX, stepY] = V2_THING_VARIETY_STEPS[selector & (V2_THING_VARIETY_STEPS.length - 1)];
+  const sequence = positiveModulo(stepX * zoneX + stepY * zoneY, V2_THING_SPRITE_COUNT);
+  const multiplier =
+    V2_THING_VARIETY_MULTIPLIERS[(selector >>> 3) & (V2_THING_VARIETY_MULTIPLIERS.length - 1)];
+  const offset = (selector >>> 5) % V2_THING_SPRITE_COUNT;
+  return (sequence * multiplier + offset) % V2_THING_SPRITE_COUNT;
+};
+
+const legacyThingSpriteFor = (x: number, y: number, seed: number): number =>
+  hash32(x, y, seed, THING_SPRITE_SALT) % V2_THING_SPRITE_COUNT;
+
+const greatestCommonDivisor = (left: number, right: number): number => {
+  while (right !== 0) {
+    const next = left % right;
+    left = right;
+    right = next;
+  }
+  return Math.abs(left);
+};
+
+const coprimeMultiplier = (value: number, modulus: number): number => {
+  let candidate = positiveModulo(value, modulus);
+  if (candidate === 0) candidate = 1;
+  while (greatestCommonDivisor(candidate, modulus) !== 1) candidate = (candidate + 1) % modulus || 1;
+  return candidate;
+};
+
+/** Return a zone's zero-based position in the square spiral around the field origin, modulo the deck size. */
+export const thingDeckPositionForZone = (zoneX: number, zoneY: number): number => {
+  const ring = Math.max(Math.abs(zoneX), Math.abs(zoneY));
+  if (ring === 0) return 0;
+  const ringModulo = ring % THING_SPRITE_COUNT;
+  const sideModulo = (2 * ringModulo + 1) % THING_SPRITE_COUNT;
+  const ringEnd = positiveModulo(sideModulo * sideModulo - 1, THING_SPRITE_COUNT);
+  let distanceFromEnd: number;
+  if (zoneY === -ring) distanceFromEnd = ring - zoneX;
+  else if (zoneX === -ring) distanceFromEnd = 2 * ring + (zoneY + ring);
+  else if (zoneY === ring) distanceFromEnd = 4 * ring + (zoneX + ring);
+  else distanceFromEnd = 6 * ring + (ring - zoneY);
+  return positiveModulo(ringEnd - (distanceFromEnd % THING_SPRITE_COUNT), THING_SPRITE_COUNT);
+};
+
 /**
- * Assign every 24 by 24 Thing zone one of the 12 scenes through a seeded,
- * balanced spatial cycle. The selected steps keep every pair of zones within
- * Chebyshev distance two distinct, so ordinary local exploration cannot show
- * an immediate repeat without requiring discovery-order state.
+ * Deal one complete deterministic catalog per outward spiral. The curated deck
+ * occupies the first positions; every remaining Noto emoji follows in a
+ * seed-permuted order before the catalog can repeat.
  */
 export const thingSpriteFor = (x: number, y: number, seed: number): number => {
   const zoneX = floorDiv(x, THING_ZONE_SIZE);
   const zoneY = floorDiv(y, THING_ZONE_SIZE);
+  const position = thingDeckPositionForZone(zoneX, zoneY);
   const selector = hash32(0, 0, seed, THING_SPRITE_SALT);
-  const [stepX, stepY] = THING_VARIETY_STEPS[selector & (THING_VARIETY_STEPS.length - 1)];
-  const sequence = positiveModulo(stepX * zoneX + stepY * zoneY, THING_SPRITE_COUNT);
-  const multiplier = THING_VARIETY_MULTIPLIERS[(selector >>> 3) & (THING_VARIETY_MULTIPLIERS.length - 1)];
-  const offset = (selector >>> 5) % THING_SPRITE_COUNT;
-  return (sequence * multiplier + offset) % THING_SPRITE_COUNT;
+  if (position < THING_CURATED_COUNT) {
+    const multiplier = V2_THING_VARIETY_MULTIPLIERS[selector & 3];
+    return (position * multiplier + ((selector >>> 4) % THING_CURATED_COUNT)) % THING_CURATED_COUNT;
+  }
+  const remaining = THING_SPRITE_COUNT - THING_CURATED_COUNT;
+  const multiplier = coprimeMultiplier(selector >>> 1, remaining);
+  const offset = hash32(0, 0, seed, THING_SPRITE_SALT ^ 0x6a09e667) % remaining;
+  return THING_CURATED_COUNT + positiveModulo((position - THING_CURATED_COUNT) * multiplier + offset, remaining);
 };
-
-const legacyThingSpriteFor = (x: number, y: number, seed: number): number =>
-  hash32(x, y, seed, THING_SPRITE_SALT) % THING_SPRITE_COUNT;
 
 export class CellStore {
   private readonly chunks = new Map<string, StateChunk>();
@@ -1013,7 +1069,9 @@ export class GameModel {
   }
 
   private illustratedThingForZone(zoneX: number, zoneY: number): ThingLayout {
-    const zeroArtClues = this.fieldGeneration === "illustrated-things-v2";
+    const zeroArtClues =
+      this.fieldGeneration === "illustrated-things-v2" || this.fieldGeneration === "illustrated-things-v3";
+    const fullCatalog = this.fieldGeneration === "illustrated-things-v3";
     const sizeRoll = hash32(zoneX, zoneY, this.seed, 0x71a55e31) / UINT32_RANGE;
     const reservedSide = thingReservedSideForRoll(sizeRoll);
     const spriteSide = reservedSide - 2;
@@ -1056,7 +1114,14 @@ export class GameModel {
             if (zeroArtClues) {
               const sprite = this.thingSpriteForGeneration(worldX, worldY);
               let artSafetyFits = true;
-              const artOffsets = thingAlphaOffsets(this.topologyId, worldX, worldY, spriteSide, sprite);
+              const artOffsets = thingAlphaOffsets(
+                this.topologyId,
+                worldX,
+                worldY,
+                spriteSide,
+                sprite,
+                fullCatalog,
+              );
               for (let offset = 0; offset < artOffsets.length && artSafetyFits; offset += 2) {
                 const artX = worldX + artOffsets[offset];
                 const artY = worldY + artOffsets[offset + 1];
@@ -1178,7 +1243,14 @@ export class GameModel {
     const artifactX = zoneX * THING_ZONE_SIZE + artifactLocalX;
     const artifactY = zoneY * THING_ZONE_SIZE + artifactLocalY;
     const sprite = this.thingSpriteForGeneration(artifactX, artifactY);
-    const artOffsets = thingAlphaOffsets(this.topologyId, artifactX, artifactY, spriteSide, sprite);
+    const artOffsets = thingAlphaOffsets(
+      this.topologyId,
+      artifactX,
+      artifactY,
+      spriteSide,
+      sprite,
+      fullCatalog,
+    );
     for (let offset = 0; offset < artOffsets.length; offset += 2) {
       const localX = artifactLocalX + artOffsets[offset];
       const localY = artifactLocalY + artOffsets[offset + 1];
@@ -1223,7 +1295,9 @@ export class GameModel {
   private thingSpriteForGeneration(x: number, y: number): number {
     return this.fieldGeneration === "illustrated-things"
       ? legacyThingSpriteFor(x, y, this.seed)
-      : thingSpriteFor(x, y, this.seed);
+      : this.fieldGeneration === "illustrated-things-v2"
+        ? v2ThingSpriteFor(x, y, this.seed)
+        : thingSpriteFor(x, y, this.seed);
   }
 
   clueAt(x: number, y: number): number {

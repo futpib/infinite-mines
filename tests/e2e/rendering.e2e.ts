@@ -216,7 +216,12 @@ test("R25 — low-zoom state colors approximate the visual average of detailed c
 
 test("R49 — illustrated Things embed fixed vector artwork with exact alpha into reserved topology cells", async ({ page }) => {
   await openDeterministicGame(page, 0x5eed_1234);
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    await api.setThingStyle("illustrated");
+    api.model.reset("beginner", 0x5eed_1234, false, "square", undefined, "illustrated-things-v2");
+    api.renderer.syncThingStyle();
+  });
   const result = await page.evaluate(async () => {
     const api = window.__infiniteMines;
     const renderer = api.renderer;
@@ -242,18 +247,18 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
       side: number;
       sprite: number;
     } | null = null;
-    search: for (let y = -240; y <= 240; y += 1) {
-      for (let x = -240; x <= 240; x += 1) {
-        if (api.model.artifactAt(x, y)) {
-          const visual = api.model.thingVisualAt(x, y);
-          if (visual?.side === 4 && visual.sprite === 0) {
-            artifact = visual;
-            break search;
-          }
+    search: for (let zoneY = -50; zoneY <= 50; zoneY += 1) {
+      for (let zoneX = -50; zoneX <= 50; zoneX += 1) {
+        const anchor = privateModel.artifactForZone(zoneX, zoneY);
+        const visual = api.model.thingVisualAt(anchor.x, anchor.y);
+        if (visual?.side === 4 && visual.sprite === 0) {
+          artifact = visual;
+          break search;
         }
       }
     }
-    if (!artifact) throw new Error("No deterministic four-cell castle Thing found");
+    if (!artifact) throw new Error("No deterministic four-cell curated Thing found");
+    const atlasSlot = await renderer.waitForThingSprite(artifact.sprite);
     api.reveal(artifact.x, artifact.y);
     const zoom = 2;
     const cellSize = 25 * zoom;
@@ -330,7 +335,12 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
     const thingAtlas = privateRenderer.thingEmojiAtlas;
     const thingContext = thingAtlas.getContext("2d");
     if (!thingContext) throw new Error("Missing Thing atlas context");
-    const atlasPixels = thingContext.getImageData(0, 0, 512, 512).data;
+    const atlasPixels = thingContext.getImageData(
+      (atlasSlot % 8) * 512,
+      Math.floor(atlasSlot / 8) * 512,
+      512,
+      512,
+    ).data;
     const alphaLevels = new Set<number>();
     const atlasColors = new Set<string>();
     let transparentPixels = 0;
@@ -437,8 +447,8 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
   expect(result.colorfulPixels).toBeGreaterThan(500);
   expect(result.colors).toBeGreaterThan(100);
   expect(result.atlas).toMatchObject({
-    width: 4 * 512,
-    height: 3 * 512,
+    width: 8 * 512,
+    height: 8 * 512,
     minFilter: 9729,
     magFilter: 9729,
   });
@@ -457,7 +467,8 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
   expect(result.diagnostics).toMatchObject({
     backend: "webgl2",
     drawCalls: 1,
-    thingSprites: 12,
+    thingSprites: 3731,
+    thingSpritesLoaded: 12,
     thingTexturePixels: 512,
     thingSpritesReady: true,
     canvasCount: 3,
@@ -476,19 +487,24 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
   for (const testCase of cases) {
     const result = await page.evaluate(async ({ topology, variant }) => {
       const api = window.__infiniteMines;
-      api.newGame("beginner", topology);
+      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, "illustrated-things-v2");
+      api.renderer.syncThingStyle();
       await api.renderer.waitForThingSprites();
+      const privateModel = api.model as unknown as {
+        artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
+      };
       let thing: ReturnType<typeof api.model.thingVisualAt> = null;
-      search: for (let y = -300; y <= 300; y += 1) {
-        for (let x = -300; x <= 300; x += 1) {
-          if (!api.model.artifactAt(x, y)) continue;
-          const candidate = api.model.thingVisualAt(x, y);
+      search: for (let zoneY = -50; zoneY <= 50; zoneY += 1) {
+        for (let zoneX = -50; zoneX <= 50; zoneX += 1) {
+          const anchor = privateModel.artifactForZone(zoneX, zoneY);
+          const candidate = api.model.thingVisualAt(anchor.x, anchor.y);
           if (candidate?.side !== 4 || candidate.sprite !== variant) continue;
           thing = candidate;
           break search;
         }
       }
       if (!thing) throw new Error(`No ${topology} Thing for vector ${variant}`);
+      const atlasSlot = await api.renderer.waitForThingSprite(thing.sprite);
       api.reveal(thing.x, thing.y);
       const vertices = thing.cells.flatMap((cell) => api.model.topology.geometry(cell.x, cell.y).vertices);
       const centerX = (Math.min(...vertices.map((point) => point.x)) + Math.max(...vertices.map((point) => point.x))) / 2;
@@ -668,7 +684,12 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       const atlas = privateRenderer.thingEmojiAtlas;
       const atlasContext = atlas.getContext("2d");
       if (!atlasContext) throw new Error("Missing Thing atlas context");
-      const atlasPixels = atlasContext.getImageData((sprite % 4) * 512, Math.floor(sprite / 4) * 512, 512, 512).data;
+      const atlasPixels = atlasContext.getImageData(
+        (atlasSlot % 8) * 512,
+        Math.floor(atlasSlot / 8) * 512,
+        512,
+        512,
+      ).data;
       let opaqueSamples = 0;
       let outsideReservation = 0;
       let outsideArt = 0;
@@ -718,13 +739,12 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
             drawCenterY = (cellMinY + cellMaxY) / 2;
           }
           const edges = underlayByCenter.get(`${drawCenterX.toFixed(7)},${drawCenterY.toFixed(7)}`);
-          if (edges === undefined) continue;
           const neighbors = api.model.topology.edgeNeighbors(cell.x, cell.y);
           for (let edge = 0; edge < neighbors.length; edge += 1) {
             const neighborInside = art.has(`${neighbors[edge].x},${neighbors[edge].y}`);
             if (!neighborInside) continue;
             internalEdges += 1;
-            if ((edges & (1 << edge)) !== 0) emittedInternalEdges += 1;
+            if (edges !== undefined && (edges & (1 << edge)) !== 0) emittedInternalEdges += 1;
           }
         }
       } else {
@@ -752,6 +772,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       return {
         topology,
         sprite,
+        catalogSprite: thing.sprite,
         carrierCells: carrierKeys.size,
         expectedCarrierCells: art.size,
         carriersOutsideReservation: [...carrierKeys].filter((key) => !reserved.has(key)),
@@ -777,7 +798,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       };
     }, testCase);
 
-    expect(result.sprite, `${testCase.topology} selected vector`).toBe(testCase.variant);
+    expect(result.catalogSprite, `${testCase.topology} selected vector`).toBe(testCase.variant);
     expect(result.carrierCells, `${testCase.topology} carrier count`).toBe(result.expectedCarrierCells);
     expect(result.carriersOutsideReservation, `${testCase.topology} carriers outside reservation`).toEqual([]);
     expect(result.carriersOutsideArt, `${testCase.topology} carriers outside alpha footprint`).toEqual([]);
@@ -800,7 +821,8 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       backend: "webgl2",
       topology: testCase.topology,
       drawCalls: 1,
-      thingSprites: 12,
+      thingSprites: 3731,
+      thingSpritesLoaded: 12,
       thingTexturePixels: 512,
       thingSpritesReady: true,
       canvasCount: 3,
@@ -824,7 +846,14 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
     const texturePixels = 512;
     const alphaMasks: Uint8Array[] = [];
     for (let sprite = 0; sprite < 12; sprite += 1) {
-      const source = atlasContext.getImageData((sprite % 4) * texturePixels, Math.floor(sprite / 4) * texturePixels, texturePixels, texturePixels).data;
+      const slot = api.renderer.thingAtlasSlotForSprite(sprite);
+      if (slot === null) throw new Error(`Curated Thing ${sprite} is not loaded`);
+      const source = atlasContext.getImageData(
+        (slot % 8) * texturePixels,
+        Math.floor(slot / 8) * texturePixels,
+        texturePixels,
+        texturePixels,
+      ).data;
       const alpha = new Uint8Array(texturePixels * texturePixels);
       for (let y = 0; y < texturePixels; y += 1) {
         for (let x = 0; x < texturePixels; x += 1) {
@@ -967,6 +996,134 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
   expect(result.failures).toEqual([]);
   expect(result.minArtCells).toBeGreaterThan(0);
   expect(result.maxArtCells).toBeLessThanOrEqual(36);
+});
+
+test("R49 — illustrated Things fade continuously through the board detail transition", async ({ page }) => {
+  await openDeterministicGame(page, 0x5eed_1234);
+  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  const results = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    await renderer.waitForThingSprites();
+    const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const privateRenderer = renderer as unknown as {
+      thingEmojiAtlas: HTMLCanvasElement;
+      resources: { thingAtlasTexture: WebGLTexture };
+    };
+    const privateModel = api.model as unknown as {
+      artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
+    };
+    const gl = renderer.gl;
+    const uploadSlot = (slot: number, source: HTMLCanvasElement) => {
+      gl.bindTexture(gl.TEXTURE_2D, privateRenderer.resources.thingAtlasTexture);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        (slot % 8) * 512,
+        Math.floor(slot / 8) * 512,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        source,
+      );
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    };
+    const blank = document.createElement("canvas");
+    blank.width = 512;
+    blank.height = 512;
+    const samples: Array<{ topology: string; values: Array<{ cellSize: number; detailMix: number; difference: number }> }> = [];
+
+    for (const topology of ["square", "triangular", "rhombille"] as const) {
+      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, "illustrated-things-v2");
+      renderer.syncThingStyle();
+      let thing: ReturnType<typeof api.model.thingVisualAt> = null;
+      search: for (let zoneY = -24; zoneY <= 24; zoneY += 1) {
+        for (let zoneX = -24; zoneX <= 24; zoneX += 1) {
+          const anchor = privateModel.artifactForZone(zoneX, zoneY);
+          const candidate = api.model.thingVisualAt(anchor.x, anchor.y);
+          if (candidate?.side !== 4 || candidate.sprite !== 0) continue;
+          thing = candidate;
+          break search;
+        }
+      }
+      if (!thing) throw new Error(`No ${topology} fade-test Thing`);
+      const slot = await renderer.waitForThingSprite(thing.sprite);
+      const original = document.createElement("canvas");
+      original.width = 512;
+      original.height = 512;
+      const originalContext = original.getContext("2d");
+      if (!originalContext) throw new Error("Missing Thing slot context");
+      originalContext.drawImage(
+        privateRenderer.thingEmojiAtlas,
+        (slot % 8) * 512,
+        Math.floor(slot / 8) * 512,
+        512,
+        512,
+        0,
+        0,
+        512,
+        512,
+      );
+      api.reveal(thing.x, thing.y);
+      const vertices = thing.cells.flatMap((cell) => api.model.topology.geometry(cell.x, cell.y).vertices);
+      const centerX = (Math.min(...vertices.map((point) => point.x)) + Math.max(...vertices.map((point) => point.x))) / 2;
+      const centerY = (Math.min(...vertices.map((point) => point.y)) + Math.max(...vertices.map((point) => point.y))) / 2;
+      const origin = api.model.topology.origin;
+      const values: Array<{ cellSize: number; detailMix: number; difference: number }> = [];
+      for (const cellSize of [4, 5, 6, 7, 8]) {
+        renderer.restoreView({
+          version: 1,
+          zoom: cellSize / 25,
+          panX: -(centerX - origin.x) * cellSize,
+          panY: -(centerY - origin.y) * cellSize,
+        });
+        await settle();
+        gl.finish();
+        const polygon = thing.cells.flatMap((cell) => renderer.cellScreenPolygon(cell.x, cell.y));
+        const dpr = api.diagnostics().pixelRatio;
+        const left = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.x)) * dpr) - 2);
+        const right = Math.min(renderer.canvas.width, Math.ceil(Math.max(...polygon.map((point) => point.x)) * dpr) + 2);
+        const top = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.y)) * dpr) - 2);
+        const bottom = Math.min(renderer.canvas.height, Math.ceil(Math.max(...polygon.map((point) => point.y)) * dpr) + 2);
+        const width = right - left;
+        const height = bottom - top;
+        const rendered = new Uint8Array(width * height * 4);
+        gl.readPixels(left, renderer.canvas.height - bottom, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rendered);
+        uploadSlot(slot, blank);
+        renderer.requestRender();
+        await settle();
+        gl.finish();
+        const withoutThing = new Uint8Array(rendered.length);
+        gl.readPixels(left, renderer.canvas.height - bottom, width, height, gl.RGBA, gl.UNSIGNED_BYTE, withoutThing);
+        uploadSlot(slot, original);
+        renderer.requestRender();
+        await settle();
+        let difference = 0;
+        for (let offset = 0; offset < rendered.length; offset += 4) {
+          difference += Math.abs(rendered[offset] - withoutThing[offset]);
+          difference += Math.abs(rendered[offset + 1] - withoutThing[offset + 1]);
+          difference += Math.abs(rendered[offset + 2] - withoutThing[offset + 2]);
+        }
+        values.push({ cellSize, detailMix: api.diagnostics().detailMix, difference: difference / (width * height * 3) });
+      }
+      samples.push({ topology, values });
+    }
+    return samples;
+  });
+
+  for (const result of results) {
+    [0, 0.15625, 0.5, 0.84375, 1].forEach((expected, index) => {
+      expect(result.values[index].detailMix, `${result.topology} detail curve at ${index}`).toBeCloseTo(expected, 8);
+    });
+    expect(result.values[0].difference, `${result.topology} fully faded`).toBe(0);
+    for (let index = 1; index < result.values.length; index += 1) {
+      expect(result.values[index].difference, `${result.topology} visible at ${result.values[index].cellSize}px`).toBeGreaterThan(0);
+      expect(
+        result.values[index].difference,
+        `${result.topology} monotonic at ${result.values[index].cellSize}px`,
+      ).toBeGreaterThan(result.values[index - 1].difference);
+    }
+  }
 });
 
 test("R04/R12 — million-cell zoom and drag stay on one sparse GPU draw", async ({ page }) => {

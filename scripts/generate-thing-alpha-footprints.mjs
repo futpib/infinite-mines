@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -9,7 +9,7 @@ const TEXTURE_PIXELS = 512;
 const TEXTURE_PADDING = 16;
 const TRIANGULAR_FIT = 0.9;
 const RHOMBILLE_FIT = 0.8;
-const SPRITES = [
+const CURATED_SPRITES = [
   "emoji_u1f3f0.svg",
   "emoji_u1f3ef.svg",
   "emoji_u1f5ff.svg",
@@ -103,26 +103,7 @@ const artBounds = (topologyId, topology, visual) => {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 };
 
-const dilateAlpha = (source) => {
-  const result = new Uint8Array(source.length);
-  for (let y = 0; y < TEXTURE_PIXELS; y += 1) {
-    for (let x = 0; x < TEXTURE_PIXELS; x += 1) {
-      if (source[y * TEXTURE_PIXELS + x] === 0) continue;
-      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-        const targetY = y + offsetY;
-        if (targetY < 0 || targetY >= TEXTURE_PIXELS) continue;
-        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-          const targetX = x + offsetX;
-          if (targetX < 0 || targetX >= TEXTURE_PIXELS) continue;
-          result[targetY * TEXTURE_PIXELS + targetX] = 1;
-        }
-      }
-    }
-  }
-  return result;
-};
-
-const cellTouchesAlpha = (topology, cell, bounds, alpha) => {
+const cellPixelIndices = (topology, cell, bounds) => {
   const vertices = topology.geometry(cell.x, cell.y).vertices;
   const cellMinX = Math.min(...vertices.map((vertex) => vertex.x));
   const cellMinY = Math.min(...vertices.map((vertex) => vertex.y));
@@ -138,18 +119,18 @@ const cellTouchesAlpha = (topology, cell, bounds, alpha) => {
     TEXTURE_PIXELS - 1,
     Math.ceil(((cellMaxY - bounds.minY) / bounds.height) * TEXTURE_PIXELS) + 1,
   );
+  const indices = [];
   for (let pixelY = minPixelY; pixelY <= maxPixelY; pixelY += 1) {
     for (let pixelX = minPixelX; pixelX <= maxPixelX; pixelX += 1) {
-      if (alpha[pixelY * TEXTURE_PIXELS + pixelX] === 0) continue;
       const worldX = bounds.minX + ((pixelX + 0.5) / TEXTURE_PIXELS) * bounds.width;
       const worldY = bounds.minY + ((pixelY + 0.5) / TEXTURE_PIXELS) * bounds.height;
-      if (pointInConvexPolygon(worldX, worldY, vertices)) return true;
+      if (pointInConvexPolygon(worldX, worldY, vertices)) indices.push(pixelY * TEXTURE_PIXELS + pixelX);
     }
   }
-  return false;
+  return indices;
 };
 
-const rasterize = async (page, svg) =>
+const rasterizeMasks = async (page, svg) =>
   page.evaluate(
     async ({ svg, pixels, padding }) => {
       const source = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
@@ -200,27 +181,63 @@ const rasterize = async (page, svg) =>
         pixels * scale,
       );
       const data = context.getImageData(0, 0, pixels, pixels).data;
-      const alpha = new Array(pixels * pixels);
-      for (let index = 0; index < alpha.length; index += 1) alpha[index] = Number(data[index * 4 + 3] !== 0);
-      return alpha;
+      const alpha = new Uint8Array(pixels * pixels);
+      for (let y = 0; y < pixels; y += 1) {
+        for (let x = 0; x < pixels; x += 1) {
+          if (data[(y * pixels + x) * 4 + 3] === 0) continue;
+          for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+            const targetY = y + offsetY;
+            if (targetY < 0 || targetY >= pixels) continue;
+            for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+              const targetX = x + offsetX;
+              if (targetX >= 0 && targetX < pixels) alpha[targetY * pixels + targetX] = 1;
+            }
+          }
+        }
+      }
+      const samples = globalThis.__thingFootprintSamples;
+      if (!samples) throw new Error("Thing footprint samples were not initialized");
+      const words = [];
+      const counts = [];
+      for (const layout of samples) {
+        let low = 0;
+        let high = 0;
+        let count = 0;
+        for (let cell = 0; cell < layout.length; cell += 1) {
+          let present = false;
+          for (const index of layout[cell]) {
+            if (alpha[index] === 0) continue;
+            present = true;
+            break;
+          }
+          if (!present) continue;
+          count += 1;
+          if (cell < 32) low = (low | (1 << cell)) >>> 0;
+          else high = (high | (1 << (cell - 32))) >>> 0;
+        }
+        words.push(low, high);
+        counts.push(count);
+      }
+      return { words, counts };
     },
     { svg, pixels: TEXTURE_PIXELS, padding: TEXTURE_PADDING },
   );
 
 const main = async () => {
+  const allSprites = (await readdir(path.join(ROOT, "public/things")))
+    .filter((filename) => /^emoji_u[0-9a-f_]+\.svg$/.test(filename))
+    .sort();
+  const missingCurated = CURATED_SPRITES.filter((filename) => !allSprites.includes(filename));
+  if (missingCurated.length > 0) throw new Error(`Missing curated Thing SVGs: ${missingCurated.join(", ")}`);
+  const curated = new Set(CURATED_SPRITES);
+  const sprites = [...CURATED_SPRITES, ...allSprites.filter((filename) => !curated.has(filename))];
   const vite = await createServer({ root: ROOT, logLevel: "silent", server: { middlewareMode: true }, appType: "custom" });
   const { TOPOLOGIES } = await vite.ssrLoadModule("/src/topology.ts");
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   await page.goto("about:blank");
-  const alphaMasks = [];
-  for (const filename of SPRITES) {
-    const svg = await readFile(path.join(ROOT, "src/assets/things", filename), "utf8");
-    alphaMasks.push(dilateAlpha(Uint8Array.from(await rasterize(page, svg))));
-  }
 
-  const entries = [];
-  const counts = [];
+  const layouts = [];
   for (const topologyId of ["square", "triangular", "rhombille"]) {
     const topology = TOPOLOGIES[topologyId];
     const variants = topologyId === "square" ? 1 : topologyId === "triangular" ? 2 : 3;
@@ -244,52 +261,94 @@ const main = async () => {
               }))
             : candidates.slice(0, side ** 2);
         const bounds = artBounds(topologyId, topology, visual);
-        for (let sprite = 0; sprite < SPRITES.length; sprite += 1) {
-          const cells = candidates
-            .filter((cell) => cellTouchesAlpha(topology, cell, bounds, alphaMasks[sprite]))
-            .map((cell) => [cell.x - anchor.x, cell.y - anchor.y])
-            .sort((left, right) => left[1] - right[1] || left[0] - right[0]);
-          if (cells.length === 0) throw new Error(`Empty alpha footprint for ${topologyId}/${variant}/${side}/${sprite}`);
-          entries.push([`${topologyId}:${variant}:${side}:${sprite}`, cells.flat()]);
-          counts.push(cells.length);
-        }
+        layouts.push({ topology: topologyId, variant, side, candidates, bounds, anchor });
       }
     }
   }
 
-  const lines = [
+  const words = new Uint32Array(layouts.length * sprites.length * 2);
+  const counts = [];
+  const samples = layouts.map(({ topology, candidates, bounds }) =>
+    candidates.map((cell) => cellPixelIndices(TOPOLOGIES[topology], cell, bounds)),
+  );
+  await page.evaluate((value) => {
+    globalThis.__thingFootprintSamples = value;
+  }, samples);
+  for (let sprite = 0; sprite < sprites.length; sprite += 1) {
+    const svg = await readFile(path.join(ROOT, "public/things", sprites[sprite]), "utf8");
+    const masks = await rasterizeMasks(page, svg);
+    for (let layoutIndex = 0; layoutIndex < layouts.length; layoutIndex += 1) {
+      const { topology, variant, side } = layouts[layoutIndex];
+      if (masks.counts[layoutIndex] === 0) throw new Error(`Empty alpha footprint for ${topology}/${variant}/${side}/${sprite}`);
+      const wordIndex = (layoutIndex * sprites.length + sprite) * 2;
+      words[wordIndex] = masks.words[layoutIndex * 2];
+      words[wordIndex + 1] = masks.words[layoutIndex * 2 + 1];
+      counts.push(masks.counts[layoutIndex]);
+    }
+  }
+
+  const bytes = Buffer.allocUnsafe(words.length * 4);
+  words.forEach((word, index) => bytes.writeUInt32LE(word, index * 4));
+  const encodedWords = bytes.toString("base64");
+  const serializedLayouts = layouts.map(({ topology, variant, side, candidates, anchor }) => ({
+    topology,
+    variant,
+    side,
+    candidates: candidates.map((cell) => [cell.x - anchor.x, cell.y - anchor.y]),
+  }));
+  const fullLines = [
     "// Generated by scripts/generate-thing-alpha-footprints.mjs.",
-    "// Each pair is a topology-cell offset whose interior intersects non-zero SVG alpha.",
-    "// The one-texel dilation matches the production atlas linear-filter footprint.",
+    "// The catalog begins with the curated deck, then contains every remaining Noto SVG.",
+    "// Each two-word mask marks topology cells intersecting SVG alpha after one-texel dilation.",
     'import type { TopologyId } from "./topology";',
     "",
-    "const THING_ALPHA_FOOTPRINTS: Readonly<Record<string, readonly number[]>> = {",
-    ...entries.map(([key, offsets]) => `  ${JSON.stringify(key)}: [${offsets.join(", ")}],`),
-    "};",
+    `export const THING_CATALOG_FILES = ${JSON.stringify(sprites)} as const;`,
+    "",
+    `const LAYOUTS = ${JSON.stringify(serializedLayouts)} as const;`,
+    `const ENCODED_MASK_WORDS = ${JSON.stringify(encodedWords)};`,
+    "const encodedBytes = Uint8Array.from(atob(ENCODED_MASK_WORDS), (character) => character.charCodeAt(0));",
+    "const maskWords = new DataView(encodedBytes.buffer, encodedBytes.byteOffset, encodedBytes.byteLength);",
+    "const layoutByKey = new Map(LAYOUTS.map((layout, index) => [`${layout.topology}:${layout.variant}:${layout.side}`, index]));",
     "",
     "const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;",
     "",
-    "export const thingTopologyVariant = (topology: TopologyId, x: number, y: number): number =>",
+    "const topologyVariant = (topology: TopologyId, x: number, y: number): number =>",
     '  topology === "triangular" ? positiveModulo(x + y, 2) : topology === "rhombille" ? positiveModulo(x, 3) : 0;',
     "",
-    "export const thingAlphaOffsets = (",
+    "export const fullThingAlphaOffsets = (",
     "  topology: TopologyId,",
     "  anchorX: number,",
     "  anchorY: number,",
     "  side: number,",
     "  sprite: number,",
     "): readonly number[] => {",
-    "  const key = `${topology}:${thingTopologyVariant(topology, anchorX, anchorY)}:${side}:${sprite}`;",
-    "  const offsets = THING_ALPHA_FOOTPRINTS[key];",
-    '  if (!offsets) throw new Error(`Missing Thing alpha footprint: ${key}`);',
+    "  const key = `${topology}:${topologyVariant(topology, anchorX, anchorY)}:${side}`;",
+    "  const layoutIndex = layoutByKey.get(key);",
+    '  if (layoutIndex === undefined || sprite < 0 || sprite >= THING_CATALOG_FILES.length) throw new Error(`Missing Thing alpha footprint: ${key}:${sprite}`);',
+    "  const layout = LAYOUTS[layoutIndex];",
+    "  const wordOffset = (layoutIndex * THING_CATALOG_FILES.length + sprite) * 8;",
+    "  const low = maskWords.getUint32(wordOffset, true);",
+    "  const high = maskWords.getUint32(wordOffset + 4, true);",
+    "  const offsets: number[] = [];",
+    "  for (let index = 0; index < layout.candidates.length; index += 1) {",
+    "    const present = index < 32 ? (low & (1 << index)) !== 0 : (high & (1 << (index - 32))) !== 0;",
+    "    if (present) offsets.push(layout.candidates[index][0], layout.candidates[index][1]);",
+    "  }",
     "  return offsets;",
     "};",
   ];
-  await writeFile(path.join(ROOT, "src/thing-alpha-footprints.ts"), `${lines.join("\n")}\n`);
+  const metaLines = [
+    "// Generated by scripts/generate-thing-alpha-footprints.mjs.",
+    `export const THING_CURATED_COUNT = ${CURATED_SPRITES.length};`,
+    `export const THING_CATALOG_COUNT = ${sprites.length};`,
+    `export const THING_CATALOG_SOURCE_COMMIT = "8998f5dd683424a73e2314a8c1f1e359c19e8742";`,
+  ];
+  await writeFile(path.join(ROOT, "src/thing-catalog-full.ts"), `${fullLines.join("\n")}\n`);
+  await writeFile(path.join(ROOT, "src/thing-catalog-meta.ts"), `${metaLines.join("\n")}\n`);
   await browser.close();
   await vite.close();
   console.log(
-    JSON.stringify({ patterns: entries.length, minCells: Math.min(...counts), maxCells: Math.max(...counts), chromium: await chromium.executablePath() }),
+    JSON.stringify({ sprites: sprites.length, patterns: counts.length, maskBytes: bytes.length, minCells: Math.min(...counts), maxCells: Math.max(...counts), chromium: await chromium.executablePath() }),
   );
 };
 
