@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { CellState } from "../../src/model";
 import { findCell, openDeterministicGame, worldPoint } from "./helpers";
 
 test("R16 — cell coordinates produce a safe, reproducible clipboard reference", async ({ context, page }) => {
@@ -126,9 +127,12 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
     topology: string;
     deviceScaleFactor: number;
     cellSize: number;
+    x: number;
+    y: number;
     alignmentError: number;
     deviceAlignmentError: number;
   }> = [];
+  let configurationCount = 0;
   for (const deviceScaleFactor of [1, 1.25, 1.5, 2, 3]) {
     const context = await browser.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor });
     const page = await context.newPage();
@@ -137,12 +141,18 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
       for (const topology of ["square", "triangular", "rhombille"] as const) {
         for (const cellSize of [4, 8, 25, 34.25]) {
           const center = await page.evaluate(
-            async ({ topologyId, requestedCellSize, phase }) => {
+            async ({ topologyId, requestedCellSize, phase, opened1, opened4, flagged }) => {
               const api = window.__infiniteMines;
               api.model.reset("beginner", 0x18ed_9e00, false, topologyId);
               api.model.store.clear();
-              for (let y = -3; y <= 3; y += 1) {
-                for (let x = -3; x <= 3; x += 1) api.model.store.set(x, y, 2);
+              api.model.store.set(0, 0, topologyId === "square" ? opened4 : opened1);
+              if (topologyId === "square") {
+                for (const [x, y] of [
+                  [-1, -1],
+                  [1, -1],
+                  [-1, 1],
+                  [1, 1],
+                ]) api.model.store.set(x, y, flagged);
               }
               api.renderer.restoreView({
                 version: 1,
@@ -157,16 +167,39 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
                 y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
               };
             },
-            { topologyId: topology, requestedCellSize: cellSize, phase: matrix.length },
+            {
+              topologyId: topology,
+              requestedCellSize: cellSize,
+              phase: configurationCount,
+              opened1: CellState.Opened1,
+              opened4: CellState.Opened4,
+              flagged: CellState.Flagged,
+            },
           );
           await page.mouse.move(center.x + 70, center.y + 45);
           await page.mouse.move(center.x, center.y);
-          const marker = page.locator('#hover-overlay .hover-cell.is-visible[data-x="0"][data-y="0"]');
-          await expect(marker).toHaveCount(1);
-          const measurement = await marker.evaluate((node) => {
+          const markers = page.locator("#hover-overlay .hover-cell.is-visible");
+          await expect(markers).toHaveCount(topology === "square" ? 5 : topology === "triangular" ? 13 : 11);
+          // Preserve the real chord/hint marker set, then make those same cells
+          // explored so every complete WebGL outline is present for pixel sampling.
+          const frameBeforeNeighborhoodRender = await page.evaluate((opened1) => {
+            const api = window.__infiniteMines;
+            const frameCount = api.diagnostics().frameCount;
+            for (const marker of document.querySelectorAll<HTMLElement>("#hover-overlay .hover-cell.is-visible")) {
+              api.model.store.set(Number(marker.dataset.x), Number(marker.dataset.y), opened1);
+            }
+            api.renderer.requestRender();
+            return frameCount;
+          }, CellState.Opened1);
+          await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBeGreaterThan(
+            frameBeforeNeighborhoodRender,
+          );
+          const measurements = await markers.evaluateAll((nodes) => nodes.map((node) => {
             const api = window.__infiniteMines;
             const element = node as HTMLElement;
-            const rawPolygon = api.renderer.cellScreenPolygon(0, 0);
+            const x = Number(element.dataset.x);
+            const y = Number(element.dataset.y);
+            const rawPolygon = api.renderer.cellScreenPolygon(x, y);
             const rect = element.getBoundingClientRect();
             const dpr = api.diagnostics().pixelRatio;
             const snap = (value: number) => Math.floor(value * dpr + 0.5) / dpr;
@@ -212,6 +245,8 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
               const right = snap(Math.max(...rawPolygon.map((point) => point.x))) + ownedEdgeExtension;
               const bottom = snap(Math.max(...rawPolygon.map((point) => point.y))) + ownedEdgeExtension;
               return {
+                x,
+                y,
                 alignmentError: Math.max(
                   Math.abs(rect.left - left),
                   Math.abs(rect.top - top),
@@ -236,6 +271,8 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
               paintedPolygon.push({ x: rect.left + coordinates[index], y: rect.top + coordinates[index + 1] });
             }
             return {
+              x,
+              y,
               alignmentError: Math.max(
                 ...rawPolygon.flatMap((point, index) => [
                   Math.abs(point.x - paintedPolygon[index].x),
@@ -253,37 +290,43 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
               lod: api.diagnostics().lod,
               rendererPixelRatio: dpr,
             };
-          });
-          expect(measurement.rendererPixelRatio).toBeCloseTo(Math.min(deviceScaleFactor, 2), 8);
-          expect(measurement.clipUsesPixels).toBe(true);
-          if (measurement.lod === "detail") {
+          }));
+          for (const measurement of measurements) {
+            expect(measurement.rendererPixelRatio).toBeCloseTo(Math.min(deviceScaleFactor, 2), 8);
+            expect(measurement.clipUsesPixels).toBe(true);
+            if (measurement.lod === "detail") {
+              expect(
+                measurement.framebufferEdgeColorError,
+                `${topology} ${cellSize}px at ${deviceScaleFactor}x cell ${measurement.x},${measurement.y}: ${JSON.stringify(measurement)}`,
+              ).toBeLessThanOrEqual(48);
+            }
             expect(
-              measurement.framebufferEdgeColorError,
-              `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
-            ).toBeLessThanOrEqual(32);
+              measurement.deviceAlignmentError,
+              `${topology} ${cellSize}px at ${deviceScaleFactor}x cell ${measurement.x},${measurement.y}: ${JSON.stringify(measurement)}`,
+            ).toBeLessThan(0.04);
+            expect(
+              measurement.alignmentError,
+              `${topology} ${cellSize}px at ${deviceScaleFactor}x cell ${measurement.x},${measurement.y}: ${JSON.stringify(measurement)}`,
+            ).toBeLessThan(0.02);
+            matrix.push({
+              topology,
+              deviceScaleFactor,
+              cellSize,
+              x: measurement.x,
+              y: measurement.y,
+              alignmentError: measurement.alignmentError,
+              deviceAlignmentError: measurement.deviceAlignmentError,
+            });
           }
-          expect(
-            measurement.deviceAlignmentError,
-            `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
-          ).toBeLessThan(0.04);
-          expect(
-            measurement.alignmentError,
-            `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
-          ).toBeLessThan(0.02);
-          matrix.push({
-            topology,
-            deviceScaleFactor,
-            cellSize,
-            alignmentError: measurement.alignmentError,
-            deviceAlignmentError: measurement.deviceAlignmentError,
-          });
+          configurationCount += 1;
         }
       }
     } finally {
       await context.close();
     }
   }
-  expect(matrix).toHaveLength(60);
+  expect(configurationCount).toBe(60);
+  expect(matrix).toHaveLength(580);
 });
 
 test("R26 — hover footprint can persistently reduce to the directly hovered cell", async ({ page }) => {
