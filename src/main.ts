@@ -475,19 +475,14 @@ function updateHoverPreview(
     for (const marker of hoverMarkers) marker.classList.remove("is-visible", "is-affected", "is-hint");
     return;
   }
-  const lod = renderer.cellSize < 4 ? "pixel" : "detail";
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const visualSize = Math.max(1 / dpr, Math.round(renderer.cellSize * dpr) / dpr);
-  const key = `${model.topologyId}:${lod}:${visualSize}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
+  const lod = renderer.diagnostics.lod;
+  const dpr = renderer.diagnostics.pixelRatio;
+  const key = `${model.topologyId}:${lod}:${renderer.cellSize}:${dpr}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
     .map(({ x, y, affected, hint }) => `${x},${y},${Number(affected)},${Number(hint)}`)
     .join(";")}`;
   if (key === hoverVisualKey) return;
   hoverVisualKey = key;
   if (hoverOverlay.dataset.lod !== lod) hoverOverlay.dataset.lod = lod;
-  const sizeValue = `${visualSize}px`;
-  if (hoverOverlay.style.getPropertyValue("--hover-cell-size") !== sizeValue) {
-    hoverOverlay.style.setProperty("--hover-cell-size", sizeValue);
-  }
   for (let index = 0; index < hoverMarkers.length; index += 1) {
     const marker = hoverMarkers[index];
     const cell = cells[index];
@@ -502,15 +497,19 @@ function updateHoverPreview(
     marker.dataset.y = String(cell.y);
     marker.classList.toggle("is-affected", cell.affected);
     marker.classList.toggle("is-hint", cell.hint);
-    const polygon = renderer.cellScreenPolygon(cell.x, cell.y);
+    const polygon = renderer.cellFramebufferPolygon(cell.x, cell.y);
     const left = Math.min(...polygon.map((point) => point.x));
     const top = Math.min(...polygon.map((point) => point.y));
     const right = Math.max(...polygon.map((point) => point.x));
     const bottom = Math.max(...polygon.map((point) => point.y));
-    const snappedLeft = Math.round(left * dpr) / dpr;
-    const snappedTop = Math.round(top * dpr) / dpr;
-    const width = Math.max(1 / dpr, Math.round((right - left) * dpr) / dpr);
-    const height = Math.max(1 / dpr, Math.round((bottom - top) * dpr) / dpr);
+    // The square shader gives right/bottom grid lines to the neighboring cell,
+    // so the painted border footprint extends one CSS pixel past its snapped
+    // geometric end. Polygon topologies rasterize their unsnapped world edges.
+    const ownedEdgeExtension = model.topologyId === "square" && lod === "detail"
+      ? renderer.diagnostics.borderCssPixels
+      : 0;
+    const width = Math.max(1 / dpr, right - left + ownedEdgeExtension);
+    const height = Math.max(1 / dpr, bottom - top + ownedEdgeExtension);
     marker.style.width = `${width}px`;
     marker.style.height = `${height}px`;
     if (model.topologyId === "square") {
@@ -519,10 +518,10 @@ function updateHoverPreview(
     } else {
       marker.classList.add("is-polygon");
       marker.style.clipPath = `polygon(${polygon
-        .map((point) => `${(((point.x - left) / Math.max(right - left, 1e-6)) * 100).toFixed(3)}% ${(((point.y - top) / Math.max(bottom - top, 1e-6)) * 100).toFixed(3)}%`)
+        .map((point) => `${(point.x - left).toFixed(6)}px ${(point.y - top).toFixed(6)}px`)
         .join(",")})`;
     }
-    marker.style.transform = `translate3d(${snappedLeft}px, ${snappedTop}px, 0)`;
+    marker.style.transform = `translate3d(${left}px, ${top}px, 0)`;
     marker.classList.add("is-visible");
   }
 }

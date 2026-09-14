@@ -121,6 +121,171 @@ test("R18 — subtle compositor markers preview covered, chord, and auto-flag cl
   await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(5);
 });
 
+test("R18 — hover paint follows WebGL edges across topology, zoom, camera phase, and device scale", async ({ browser }) => {
+  const matrix: Array<{
+    topology: string;
+    deviceScaleFactor: number;
+    cellSize: number;
+    alignmentError: number;
+    deviceAlignmentError: number;
+  }> = [];
+  for (const deviceScaleFactor of [1, 1.25, 1.5, 2, 3]) {
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 }, deviceScaleFactor });
+    const page = await context.newPage();
+    try {
+      await openDeterministicGame(page);
+      for (const topology of ["square", "triangular", "rhombille"] as const) {
+        for (const cellSize of [4, 8, 25, 34.25]) {
+          const center = await page.evaluate(
+            async ({ topologyId, requestedCellSize, phase }) => {
+              const api = window.__infiniteMines;
+              api.model.reset("beginner", 0x18ed_9e00, false, topologyId);
+              api.model.store.clear();
+              for (let y = -3; y <= 3; y += 1) {
+                for (let x = -3; x <= 3; x += 1) api.model.store.set(x, y, 2);
+              }
+              api.renderer.restoreView({
+                version: 1,
+                zoom: requestedCellSize / 25,
+                panX: 0.27 + phase * 0.13,
+                panY: 0.61 - phase * 0.17,
+              });
+              await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+              const polygon = api.renderer.cellScreenPolygon(0, 0);
+              return {
+                x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
+                y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
+              };
+            },
+            { topologyId: topology, requestedCellSize: cellSize, phase: matrix.length },
+          );
+          await page.mouse.move(center.x + 70, center.y + 45);
+          await page.mouse.move(center.x, center.y);
+          const marker = page.locator('#hover-overlay .hover-cell.is-visible[data-x="0"][data-y="0"]');
+          await expect(marker).toHaveCount(1);
+          const measurement = await marker.evaluate((node) => {
+            const api = window.__infiniteMines;
+            const element = node as HTMLElement;
+            const rawPolygon = api.renderer.cellScreenPolygon(0, 0);
+            const rect = element.getBoundingClientRect();
+            const dpr = api.diagnostics().pixelRatio;
+            const snap = (value: number) => Math.floor(value * dpr + 0.5) / dpr;
+            const framebufferPolygon = api.model.topologyId === "square"
+              ? rawPolygon.map((point) => ({ x: snap(point.x), y: snap(point.y) }))
+              : rawPolygon;
+            const borderColor = getComputedStyle(document.documentElement).getPropertyValue("--board-cell-border").trim();
+            const borderRgb = [
+              Number.parseInt(borderColor.slice(1, 3), 16),
+              Number.parseInt(borderColor.slice(3, 5), 16),
+              Number.parseInt(borderColor.slice(5, 7), 16),
+            ];
+            const gl = api.renderer.gl;
+            const edgeColorErrors = framebufferPolygon.map((start, index) => {
+              const end = framebufferPolygon[(index + 1) % framebufferPolygon.length];
+              const centerX = Math.floor(((start.x + end.x) / 2) * dpr);
+              const centerY = api.renderer.canvas.height - 1 - Math.floor(((start.y + end.y) / 2) * dpr);
+              const radius = Math.ceil(dpr) + 1;
+              const left = Math.max(0, centerX - radius);
+              const bottom = Math.max(0, centerY - radius);
+              const width = Math.min(api.renderer.canvas.width - left, radius * 2 + 1);
+              const height = Math.min(api.renderer.canvas.height - bottom, radius * 2 + 1);
+              const pixels = new Uint8Array(width * height * 4);
+              gl.readPixels(left, bottom, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+              let best = Number.POSITIVE_INFINITY;
+              for (let pixel = 0; pixel < pixels.length; pixel += 4) {
+                best = Math.min(
+                  best,
+                  Math.max(
+                    Math.abs(pixels[pixel] - borderRgb[0]),
+                    Math.abs(pixels[pixel + 1] - borderRgb[1]),
+                    Math.abs(pixels[pixel + 2] - borderRgb[2]),
+                  ),
+                );
+              }
+              return best;
+            });
+            const framebufferEdgeColorError = Math.max(...edgeColorErrors);
+            if (api.model.topologyId === "square") {
+              const left = snap(Math.min(...rawPolygon.map((point) => point.x)));
+              const top = snap(Math.min(...rawPolygon.map((point) => point.y)));
+              const ownedEdgeExtension = api.diagnostics().lod === "detail" ? api.diagnostics().borderCssPixels : 0;
+              const right = snap(Math.max(...rawPolygon.map((point) => point.x))) + ownedEdgeExtension;
+              const bottom = snap(Math.max(...rawPolygon.map((point) => point.y))) + ownedEdgeExtension;
+              return {
+                alignmentError: Math.max(
+                  Math.abs(rect.left - left),
+                  Math.abs(rect.top - top),
+                  Math.abs(rect.right - right),
+                  Math.abs(rect.bottom - bottom),
+                ),
+                deviceAlignmentError: Math.max(
+                  Math.abs(rect.left - left),
+                  Math.abs(rect.top - top),
+                  Math.abs(rect.right - right),
+                  Math.abs(rect.bottom - bottom),
+                ) * dpr,
+                framebufferEdgeColorError,
+                clipUsesPixels: element.style.clipPath === "",
+                lod: api.diagnostics().lod,
+                rendererPixelRatio: dpr,
+              };
+            }
+            const coordinates = [...element.style.clipPath.matchAll(/(-?\d+(?:\.\d+)?)px/g)].map((match) => Number(match[1]));
+            const paintedPolygon: Array<{ x: number; y: number }> = [];
+            for (let index = 0; index < coordinates.length; index += 2) {
+              paintedPolygon.push({ x: rect.left + coordinates[index], y: rect.top + coordinates[index + 1] });
+            }
+            return {
+              alignmentError: Math.max(
+                ...rawPolygon.flatMap((point, index) => [
+                  Math.abs(point.x - paintedPolygon[index].x),
+                  Math.abs(point.y - paintedPolygon[index].y),
+                ]),
+              ),
+              deviceAlignmentError: Math.max(
+                ...rawPolygon.flatMap((point, index) => [
+                  Math.abs(point.x - paintedPolygon[index].x),
+                  Math.abs(point.y - paintedPolygon[index].y),
+                ]),
+              ) * dpr,
+              framebufferEdgeColorError,
+              clipUsesPixels: element.style.clipPath.includes("px"),
+              lod: api.diagnostics().lod,
+              rendererPixelRatio: dpr,
+            };
+          });
+          expect(measurement.rendererPixelRatio).toBeCloseTo(Math.min(deviceScaleFactor, 2), 8);
+          expect(measurement.clipUsesPixels).toBe(true);
+          if (measurement.lod === "detail") {
+            expect(
+              measurement.framebufferEdgeColorError,
+              `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
+            ).toBeLessThanOrEqual(32);
+          }
+          expect(
+            measurement.deviceAlignmentError,
+            `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
+          ).toBeLessThan(0.04);
+          expect(
+            measurement.alignmentError,
+            `${topology} ${cellSize}px at ${deviceScaleFactor}x: ${JSON.stringify(measurement)}`,
+          ).toBeLessThan(0.02);
+          matrix.push({
+            topology,
+            deviceScaleFactor,
+            cellSize,
+            alignmentError: measurement.alignmentError,
+            deviceAlignmentError: measurement.deviceAlignmentError,
+          });
+        }
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  expect(matrix).toHaveLength(60);
+});
+
 test("R26 — hover footprint can persistently reduce to the directly hovered cell", async ({ page }) => {
   await openDeterministicGame(page);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().hoverMode)).toBe("affected");

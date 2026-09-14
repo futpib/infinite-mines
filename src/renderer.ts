@@ -992,6 +992,18 @@ export class WebGLRenderer {
     }));
   }
 
+  cellFramebufferPolygon(x: number, y: number): WorldPoint[] {
+    const polygon = this.cellScreenPolygon(x, y);
+    if (this.model.topologyId !== "square") return polygon;
+    // Square's vertex shader snaps both ends independently to the backing
+    // lattice. Mirroring floor(value + 0.5) here keeps compositor overlays on
+    // the exact WebGL edges even when cell size or camera position is fractional.
+    return polygon.map((point) => ({
+      x: Math.floor(point.x * this.dpr + 0.5) / this.dpr,
+      y: Math.floor(point.y * this.dpr + 0.5) / this.dpr,
+    }));
+  }
+
   setHoverCells(cells: ReadonlyArray<{ x: number; y: number }>): void {
     const unique = new Map<string, { x: number; y: number }>();
     for (const cell of cells) {
