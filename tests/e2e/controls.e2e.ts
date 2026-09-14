@@ -537,7 +537,9 @@ test("R28 — fullscreen and hidden controls stay synchronized and recoverable",
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(initial.seed);
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect
+    .poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus))
+    .toBe("restored");
   await expect(page.locator("body")).not.toHaveClass(/ui-hidden/);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual(hiddenView);
 });
@@ -621,7 +623,7 @@ test("R29 — only 50 successful cell actions auto-hide controls, with a persist
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().gameplayInteractionCount)).toBe(0);
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().autoHideMode)).toBe("never");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().autoHideMode)).toBe("never");
   await expect(restart).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("infinite-mines-auto-hide-controls"))).toBe("never");
 });

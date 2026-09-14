@@ -1,4 +1,4 @@
-import { installFullThingAlphaResolver } from "./thing-alpha-footprints";
+import { installThingAlphaResolver } from "./thing-alpha-footprints";
 
 export interface ThingCatalog {
   readonly files: readonly string[];
@@ -10,7 +10,7 @@ let catalogPromise: Promise<ThingCatalog> | null = null;
 export const loadThingCatalog = (): Promise<ThingCatalog> => {
   if (!catalogPromise) {
     catalogPromise = import("./thing-catalog-full").then((module) => {
-      installFullThingAlphaResolver(module.fullThingAlphaOffsets);
+      installThingAlphaResolver(module.fullThingAlphaOffsets);
       catalog = { files: module.THING_CATALOG_FILES };
       return catalog;
     });

@@ -49,7 +49,7 @@ A second finger beginning a pinch, pointer cancellation, or otherwise losing the
 
 Small movement inside the existing dead zone must not make the preview disagree with the tile that will receive the action. Sliding to a new candidate is allowed only if preview and commit targeting change together.
 
-Fatal touch input must still stop at the game-over decision surface. Neither the release nor a synthesized compatibility click may choose Cheat death or Start a new field.
+Fatal touch input must still stop at the game-over decision surface. Neither the release nor the browser's synthesized follow-up click may choose Cheat death or Start a new field.
 
 ## Executable acceptance
 

@@ -151,10 +151,10 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
   await expect(page.locator("#topology-pill")).toHaveText("RHOMBILLE");
 });
 
-test("R48 — fog-grid modes default off, redraw immediately, migrate, and persist", async ({ page }) => {
+test("R48 — fog-grid modes default to One cell, redraw immediately, and persist", async ({ page }) => {
   await openDeterministicGame(page, 0xf09b_4800);
   expect(await page.evaluate(() => localStorage.getItem("infinite-mines-fog-frontier"))).toBeNull();
-  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().fogFrontierMode)).toBe("off");
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics().fogFrontierMode)).toBe("cell");
 
   const prepared = await page.evaluate((opened) => {
     const api = window.__infiniteMines;
@@ -167,13 +167,13 @@ test("R48 — fog-grid modes default off, redraw immediately, migrate, and persi
   }, CellState.Opened1);
   await waitForNextFrame(page, prepared.frameCount);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
-    drawnCells: 1,
-    frontierCells: 0,
-    frontierEdges: 0,
+    drawnCells: 9,
+    frontierCells: 8,
+    frontierEdges: 20,
   });
 
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="off"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="cell"]')).toHaveAttribute("aria-pressed", "true");
   const beforeEnabled = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
   await page.locator("#fog-frontier-options").getByRole("button", { name: /^One edge/ }).click();
   await waitForNextFrame(page, beforeEnabled);
@@ -185,21 +185,10 @@ test("R48 — fog-grid modes default off, redraw immediately, migrate, and persi
   });
   expect(await page.evaluate(() => JSON.stringify(window.__infiniteMines.model.createSnapshot()))).toBe(prepared.field);
 
-  const beforeCell = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
-  await page.locator("#fog-frontier-options").getByRole("button", { name: /^One cell/ }).click();
-  await waitForNextFrame(page, beforeCell);
-  expect(await page.evaluate(() => localStorage.getItem("infinite-mines-fog-frontier"))).toBe("cell");
-  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
-    fogFrontierMode: "cell",
-    frontierCells: 8,
-    frontierEdges: 20,
-  });
-  expect(await page.evaluate(() => JSON.stringify(window.__infiniteMines.model.createSnapshot()))).toBe(prepared.field);
-
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("cell");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("edge");
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="cell"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="edge"]')).toHaveAttribute("aria-pressed", "true");
   const beforeDisabled = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
   await page.locator("#fog-frontier-options").getByRole("button", { name: /^Off/ }).click();
   await waitForNextFrame(page, beforeDisabled);
@@ -213,11 +202,11 @@ test("R48 — fog-grid modes default off, redraw immediately, migrate, and persi
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("off");
 
-  await page.evaluate(() => localStorage.setItem("infinite-mines-fog-frontier", "on"));
+  await page.evaluate(() => localStorage.removeItem("infinite-mines-fog-frontier"));
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("edge");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().fogFrontierMode)).toBe("cell");
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="edge"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#fog-frontier-options button[data-fog-frontier="cell"]')).toHaveAttribute("aria-pressed", "true");
 });
 
 test("R48 — every boundary-vertex segment continues one edge into covered fog", async ({ page }) => {
@@ -800,49 +789,8 @@ test("R48 — both frontier modes stay complete across topology, zoom, and devic
   }
 });
 
-test("R37 — v1 saved fields migrate to Square and v2 topology damage matches a full redraw", async ({ page }) => {
+test("R37 — topology damage matches a full redraw", async ({ page }) => {
   await openDeterministicGame(page, 0x51a7_10a0);
-  await page.evaluate(async () => {
-    const api = window.__infiniteMines;
-    api.model.reset("beginner", 0x51a7_10a0, true, "square", 0.18);
-    const model = api.model.createSnapshot();
-    const legacyModel = { ...model, version: 1 } as Record<string, unknown>;
-    delete legacyModel.topology;
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("infinite-mines", 1);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction("sessions", "readwrite");
-      const store = transaction.objectStore("sessions");
-      store.clear();
-      store.put(
-        { version: 1, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() },
-        "active",
-      );
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
-  });
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
-  expect(await page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("square");
-  expect(
-    await page.evaluate(
-      () =>
-        new Promise<IDBValidKey[]>((resolve, reject) => {
-          const open = indexedDB.open("infinite-mines", 1);
-          open.onerror = () => reject(open.error);
-          open.onsuccess = () => {
-            const keys = open.result.transaction("sessions").objectStore("sessions").getAllKeys();
-            keys.onerror = () => reject(keys.error);
-            keys.onsuccess = () => resolve(keys.result);
-          };
-        }),
-    ),
-  ).toEqual(expect.arrayContaining(["active-slot", "field:square:beginner"]));
-
   await page.evaluate(() => window.__infiniteMines.newGame("master", "rhombille"));
   const beforePrepared = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
   await page.evaluate((opened) => {

@@ -175,7 +175,9 @@ test("R45 — original per-cell presets and a persisted custom density report th
   const customSeed = await page.evaluate(() => window.__infiniteMines.model.seed);
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect
+    .poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus))
+    .toBe("restored");
   expect(await page.evaluate(() => window.__infiniteMines.model.seed)).toBe(customSeed);
   expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.1234, 12);
   await expect(page.locator("#density-stat")).toHaveText("12.34%");
@@ -203,7 +205,10 @@ test("R45 — original per-cell presets and a persisted custom density report th
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
-          const request = open.result.transaction("sessions").objectStore("sessions").get("field:square:custom");
+          const request = open.result
+            .transaction("sessions")
+            .objectStore("sessions")
+            .get("field:square:custom:things");
           request.onerror = () => reject(request.error);
           request.onsuccess = () => resolve(request.result.model.density);
         };

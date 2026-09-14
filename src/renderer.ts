@@ -3,12 +3,11 @@ import {
   GameModel,
   STATE_TILE_SIZE,
   floorDiv,
-  isIllustratedGeneration,
   isOpened,
   openedClue,
   type ExploredBounds,
 } from "./model";
-import type { ViewSnapshotV1 } from "./persistence";
+import type { ViewSnapshot } from "./persistence";
 import { loadThingCatalog, type ThingCatalog } from "./thing-catalog";
 import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 import {
@@ -750,7 +749,7 @@ export class WebGLRenderer {
   private panRedraws = 0;
   private fogFrontierMode: FogFrontierMode;
 
-  constructor(canvas: HTMLCanvasElement, model: GameModel, fogFrontierMode: FogFrontierMode = "off") {
+  constructor(canvas: HTMLCanvasElement, model: GameModel, fogFrontierMode: FogFrontierMode = "cell") {
     const gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: false,
@@ -767,7 +766,7 @@ export class WebGLRenderer {
     this.fogFrontierMode = fogFrontierMode;
     this.theme = this.readTheme();
     this.resources = this.createResources();
-    if (isIllustratedGeneration(this.model.fieldGeneration)) this.startThingEmojiAtlasLoad();
+    if (this.model.thingsEnabled) this.startThingEmojiAtlasLoad();
 
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
@@ -808,8 +807,17 @@ export class WebGLRenderer {
     return slot !== undefined && this.thingAtlasSlots[slot]?.ready ? slot : null;
   }
 
-  syncThingStyle(): void {
-    if (isIllustratedGeneration(this.model.fieldGeneration)) this.startThingEmojiAtlasLoad();
+  syncThings(): void {
+    if (this.model.thingsEnabled) this.startThingEmojiAtlasLoad();
+    this.diagnostics = {
+      ...this.diagnostics,
+      thingSprites: this.model.thingsEnabled ? THING_CATALOG_COUNT : 0,
+      thingSpritesLoaded: this.model.thingsEnabled
+        ? this.thingAtlasSlots.filter((slot) => slot?.ready).length
+        : 0,
+      thingTexturePixels: this.model.thingsEnabled ? THING_TEXTURE_PIXELS : 0,
+      thingSpritesReady: this.model.thingsEnabled && this.thingEmojiAtlasReady,
+    };
     this.resetTileCache();
     this.retainedFrame = false;
     this.requestRender();
@@ -827,13 +835,13 @@ export class WebGLRenderer {
     this.requestRender();
   }
 
-  createViewSnapshot(): ViewSnapshotV1 {
+  createViewSnapshot(): ViewSnapshot {
     return { version: 1, panX: this.panX, panY: this.panY, zoom: this.zoom };
   }
 
   restoreView(value: unknown): boolean {
     if (!value || typeof value !== "object") return false;
-    const snapshot = value as Partial<ViewSnapshotV1>;
+    const snapshot = value as Partial<ViewSnapshot>;
     if (
       snapshot.version !== 1 ||
       !Number.isFinite(snapshot.panX) ||
@@ -1222,12 +1230,12 @@ export class WebGLRenderer {
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
       glyphs: detailMix > 0,
-      thingSprites: isIllustratedGeneration(this.model.fieldGeneration) ? THING_CATALOG_COUNT : 0,
-      thingSpritesLoaded: isIllustratedGeneration(this.model.fieldGeneration)
+      thingSprites: this.model.thingsEnabled ? THING_CATALOG_COUNT : 0,
+      thingSpritesLoaded: this.model.thingsEnabled
         ? this.thingAtlasSlots.filter((slot) => slot?.ready).length
         : 0,
-      thingTexturePixels: isIllustratedGeneration(this.model.fieldGeneration) ? THING_TEXTURE_PIXELS : 0,
-      thingSpritesReady: isIllustratedGeneration(this.model.fieldGeneration) && this.thingEmojiAtlasReady,
+      thingTexturePixels: this.model.thingsEnabled ? THING_TEXTURE_PIXELS : 0,
+      thingSpritesReady: this.model.thingsEnabled && this.thingEmojiAtlasReady,
       detailMix,
       backgroundColor: this.theme.background,
       frameCount: this.frameCount,

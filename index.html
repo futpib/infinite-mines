@@ -210,17 +210,17 @@
             </button>
           </div>
         </section>
-        <section class="settings-section" aria-labelledby="thing-style-heading">
-          <p class="settings-label" id="thing-style-heading">THING ART</p>
-          <div class="control-options" id="thing-style-options" aria-labelledby="thing-style-heading">
-            <button type="button" data-thing-style="simple" aria-pressed="true">
-              <b>Simple</b><small>Keep the single-cell cyan marker</small>
+        <section class="settings-section" aria-labelledby="things-heading">
+          <p class="settings-label" id="things-heading">THINGS</p>
+          <div class="control-options" id="things-options" aria-labelledby="things-heading">
+            <button type="button" data-things="on" aria-pressed="true">
+              <b>On</b><small>Embed emoji scenes across safe cells</small>
             </button>
-            <button type="button" data-thing-style="illustrated" aria-pressed="false">
-              <b>Illustrated</b><small>Embed vector scenes across safe cells</small>
+            <button type="button" data-things="off" aria-pressed="false">
+              <b>Off</b><small>Generate the field without Things</small>
             </button>
           </div>
-          <p class="dialog-note">Each style keeps a separate field because its mine-free Thing cells differ.</p>
+          <p class="dialog-note">On and Off keep separate fields because Things change mine placement.</p>
         </section>
         <section class="settings-section" aria-labelledby="controls-heading">
           <p class="settings-label" id="controls-heading">REVEAL CONTROLS</p>
@@ -258,13 +258,13 @@
         <section class="settings-section" aria-labelledby="fog-frontier-heading">
           <p class="settings-label" id="fog-frontier-heading">FOG GRID</p>
           <div class="control-options fog-frontier-options" id="fog-frontier-options" aria-labelledby="fog-frontier-heading">
-            <button type="button" data-fog-frontier="off" aria-pressed="true">
+            <button type="button" data-fog-frontier="off" aria-pressed="false">
               <b>Off</b><small>Stop grid lines at explored cells</small>
             </button>
             <button type="button" data-fog-frontier="edge" aria-pressed="false">
               <b>One edge</b><small>Continue boundary rays into fog</small>
             </button>
-            <button type="button" data-fog-frontier="cell" aria-pressed="false">
+            <button type="button" data-fog-frontier="cell" aria-pressed="true">
               <b>One cell</b><small>Outline one complete fog ring</small>
             </button>
           </div>
@@ -293,7 +293,7 @@
               <b>Triangular</b><small>12 touching neighbors</small>
             </button>
           </div>
-          <p class="dialog-note">Each topology, density, and Thing-art choice keeps its own field. A new combination starts with a random seed.</p>
+          <p class="dialog-note">Each topology, density, and Things choice keeps its own field. A new combination starts with a random seed.</p>
         </section>
         <section class="settings-section" aria-labelledby="density-heading">
           <p class="settings-label" id="density-heading">MINE DENSITY · <span id="current-density">18% CURRENT</span></p>
@@ -335,7 +335,7 @@
               </div>
             </div>
           </div>
-          <p class="dialog-note">Percentages are the mine chance on ordinary cells. Each Thing reserves 25 or 36 safe cells—5×5 or 6×6 on Square. Changing a custom percentage replaces that topology’s custom field.</p>
+          <p class="dialog-note">Percentages are the mine chance on ordinary cells. When enabled, each Thing starts with a 25- or 36-cell safe reservation. Changing a custom percentage replaces that topology’s custom field.</p>
         </section>
       </form>
     </dialog>

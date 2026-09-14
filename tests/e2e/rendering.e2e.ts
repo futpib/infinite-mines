@@ -214,13 +214,13 @@ test("R25 — low-zoom state colors approximate the visual average of detailed c
   );
 });
 
-test("R49 — illustrated Things embed fixed vector artwork with exact alpha into reserved topology cells", async ({ page }) => {
+test("R49 — emoji Things embed fixed vector artwork with exact alpha into reserved topology cells", async ({ page }) => {
   await openDeterministicGame(page, 0x5eed_1234);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
-    await api.setThingStyle("illustrated");
-    api.model.reset("beginner", 0x5eed_1234, false, "square", undefined, "illustrated-things-v2");
-    api.renderer.syncThingStyle();
+    await api.setThingsEnabled(true);
+    api.model.reset("beginner", 0x5eed_1234, false, "square", undefined, true);
+    api.renderer.syncThings();
   });
   const result = await page.evaluate(async () => {
     const api = window.__infiniteMines;
@@ -251,7 +251,7 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
       for (let zoneX = -50; zoneX <= 50; zoneX += 1) {
         const anchor = privateModel.artifactForZone(zoneX, zoneY);
         const visual = api.model.thingVisualAt(anchor.x, anchor.y);
-        if (visual?.side === 4 && visual.sprite === 0) {
+        if (visual?.side === 4 && visual.sprite < 12) {
           artifact = visual;
           break search;
         }
@@ -477,7 +477,7 @@ test("R49 — illustrated Things embed fixed vector artwork with exact alpha int
 
 test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its reservation", async ({ page }) => {
   await openDeterministicGame(page, 0x5eed_1234);
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(true));
   const cases = [
     { topology: "square", variant: 0 },
     { topology: "triangular", variant: 3 },
@@ -487,8 +487,8 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
   for (const testCase of cases) {
     const result = await page.evaluate(async ({ topology, variant }) => {
       const api = window.__infiniteMines;
-      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, "illustrated-things-v2");
-      api.renderer.syncThingStyle();
+      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, true);
+      api.renderer.syncThings();
       await api.renderer.waitForThingSprites();
       const privateModel = api.model as unknown as {
         artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
@@ -498,7 +498,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
         for (let zoneX = -50; zoneX <= 50; zoneX += 1) {
           const anchor = privateModel.artifactForZone(zoneX, zoneY);
           const candidate = api.model.thingVisualAt(anchor.x, anchor.y);
-          if (candidate?.side !== 4 || candidate.sprite !== variant) continue;
+          if (candidate?.sprite !== variant) continue;
           thing = candidate;
           break search;
         }
@@ -830,10 +830,10 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
   }
 });
 
-test("R49 — alpha reservations match every SVG, size, topology, and orientation", async ({ page }) => {
+test("R49 — alpha reservations match every curated SVG, size, topology, and orientation", async ({ page }) => {
   test.setTimeout(45_000);
   await openDeterministicGame(page, 0x5eed_1234);
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(true));
   const result = await page.evaluate(async () => {
     const api = window.__infiniteMines;
     await api.renderer.waitForThingSprites();
@@ -893,37 +893,51 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
     >();
     const topologies = new Map<string, typeof api.model.topology>();
     const targets = { square: 24, triangular: 48, rhombille: 72 } as const;
+    const curatedZones = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+      { x: -1, y: 1 },
+      { x: -1, y: 0 },
+      { x: -1, y: -1 },
+      { x: 0, y: -1 },
+      { x: 1, y: -1 },
+      { x: 2, y: -1 },
+      { x: 2, y: 0 },
+      { x: 2, y: 1 },
+    ];
     for (const topology of ["square", "triangular", "rhombille"] as const) {
       const topologyStart = exemplars.size;
-      for (let seedOffset = 0; seedOffset < 8 && exemplars.size - topologyStart < targets[topology]; seedOffset += 1) {
+      for (let seedOffset = 0; seedOffset < 256 && exemplars.size - topologyStart < targets[topology]; seedOffset += 1) {
         const seed = (0x5eed_1234 + seedOffset * 0x1020_3041) >>> 0;
-        api.model.reset("beginner", seed, false, topology, undefined, "illustrated-things-v2");
+        api.model.reset("beginner", seed, false, topology, undefined, true);
         topologies.set(topology, api.model.topology);
-        for (let zoneY = -32; zoneY <= 32 && exemplars.size - topologyStart < targets[topology]; zoneY += 1) {
-          for (let zoneX = -32; zoneX <= 32 && exemplars.size - topologyStart < targets[topology]; zoneX += 1) {
-            const layout = privateModel.artifactForZone(zoneX, zoneY);
-            const thing = api.model.thingVisualAt(layout.x, layout.y);
-            if (!thing) throw new Error("Missing generated Thing visual");
-            const sprite = thing.sprite;
-            const orientation =
-              topology === "triangular"
-                ? positiveModulo(thing.x + thing.y, 2)
-                : topology === "rhombille"
-                  ? positiveModulo(thing.x, 3)
-                  : 0;
-            const key = `${topology}:${orientation}:${thing.side}:${sprite}`;
-            if (!exemplars.has(key)) {
-              exemplars.set(key, { ...thing, topology, sprite });
-              const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
-              for (const cell of thing.artCells) {
-                const clue = api.model.clueAt(cell.x, cell.y);
-                if (clue !== 0) failures.push(`${key}: art cell ${cell.x},${cell.y} has clue ${clue}`);
-                api.model.topology.forEachNeighbor(cell.x, cell.y, (neighborX, neighborY) => {
-                  if (!reserved.has(`${neighborX},${neighborY}`)) {
-                    failures.push(`${key}: art neighbor ${neighborX},${neighborY} is not reserved`);
-                  }
-                });
-              }
+        for (const zone of curatedZones) {
+          if (exemplars.size - topologyStart >= targets[topology]) break;
+          const layout = privateModel.artifactForZone(zone.x, zone.y);
+          const thing = api.model.thingVisualAt(layout.x, layout.y);
+          if (!thing) throw new Error("Missing generated Thing visual");
+          const sprite = thing.sprite;
+          if (sprite >= 12) continue;
+          const orientation =
+            topology === "triangular"
+              ? positiveModulo(thing.x + thing.y, 2)
+              : topology === "rhombille"
+                ? positiveModulo(thing.x, 3)
+                : 0;
+          const key = `${topology}:${orientation}:${thing.side}:${sprite}`;
+          if (!exemplars.has(key)) {
+            exemplars.set(key, { ...thing, topology, sprite });
+            const reserved = new Set(thing.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+            for (const cell of thing.artCells) {
+              const clue = api.model.clueAt(cell.x, cell.y);
+              if (clue !== 0) failures.push(`${key}: art cell ${cell.x},${cell.y} has clue ${clue}`);
+              api.model.topology.forEachNeighbor(cell.x, cell.y, (neighborX, neighborY) => {
+                if (!reserved.has(`${neighborX},${neighborY}`)) {
+                  failures.push(`${key}: art neighbor ${neighborX},${neighborY} is not reserved`);
+                }
+              });
             }
           }
         }
@@ -998,9 +1012,9 @@ test("R49 — alpha reservations match every SVG, size, topology, and orientatio
   expect(result.maxArtCells).toBeLessThanOrEqual(36);
 });
 
-test("R49 — illustrated Things fade continuously through the board detail transition", async ({ page }) => {
+test("R49 — emoji Things fade continuously through the board detail transition", async ({ page }) => {
   await openDeterministicGame(page, 0x5eed_1234);
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(true));
   const results = await page.evaluate(async () => {
     const api = window.__infiniteMines;
     const renderer = api.renderer;
@@ -1034,14 +1048,14 @@ test("R49 — illustrated Things fade continuously through the board detail tran
     const samples: Array<{ topology: string; values: Array<{ cellSize: number; detailMix: number; difference: number }> }> = [];
 
     for (const topology of ["square", "triangular", "rhombille"] as const) {
-      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, "illustrated-things-v2");
-      renderer.syncThingStyle();
+      api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, true);
+      renderer.syncThings();
       let thing: ReturnType<typeof api.model.thingVisualAt> = null;
       search: for (let zoneY = -24; zoneY <= 24; zoneY += 1) {
         for (let zoneX = -24; zoneX <= 24; zoneX += 1) {
           const anchor = privateModel.artifactForZone(zoneX, zoneY);
           const candidate = api.model.thingVisualAt(anchor.x, anchor.y);
-          if (candidate?.side !== 4 || candidate.sprite !== 0) continue;
+          if (candidate?.sprite !== 0) continue;
           thing = candidate;
           break search;
         }

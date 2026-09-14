@@ -1,51 +1,43 @@
 import { expect, test } from "@playwright/test";
 import { findCell, openDeterministicGame, worldPoint } from "./helpers";
 
-test("R49 — Thing art defaults to Simple and keeps separate persisted fields per style", async ({ page }) => {
+test("R49 — emoji Things default on and On/Off fields persist separately", async ({ page }) => {
   await openDeterministicGame(page, 0x49a7_0001);
 
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
-    thingStyle: "simple",
-    fieldGeneration: "original-things",
-    thingSprites: 0,
-    thingTexturePixels: 0,
-    thingSpritesReady: false,
+    thingsEnabled: true,
+    thingSprites: 3731,
+    thingSpritesLoaded: 12,
+    thingSpritesReady: true,
   });
-  expect(await page.locator('[data-thing-style="simple"]').getAttribute("aria-pressed")).toBe("true");
-  expect(
-    await page.evaluate(() => ({
-      atlasAllocated: Boolean(
-        (window.__infiniteMines.renderer as unknown as { thingEmojiAtlas: HTMLCanvasElement | null }).thingEmojiAtlas,
-      ),
-      svgRequests: performance
-        .getEntriesByType("resource")
-        .filter((entry) => entry.name.includes("emoji_u"))
-        .length,
-    })),
-  ).toEqual({ atlasAllocated: false, svgRequests: 0 });
-  expect(
-    await page.evaluate(() => {
-      const model = window.__infiniteMines.model;
-      for (let y = -24; y < 48; y += 1) {
-        for (let x = -24; x < 48; x += 1) {
-          if (model.artifactAt(x, y)) return model.thingVisualAt(x, y);
-        }
-      }
-      throw new Error("No Simple Thing found");
-    }),
-  ).toBeNull();
+  expect(await page.locator('[data-things="on"]').getAttribute("aria-pressed")).toBe("true");
+  expect(await page.getByText("THING ART", { exact: true }).count()).toBe(0);
 
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
     api.model.store.set(120, 120, 10);
     await api.flushSave();
   });
-  await page.locator("#settings-button").click();
-  await page.locator('[data-thing-style="illustrated"]').click();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingStyle)).toBe("illustrated");
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(false));
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingsEnabled)).toBe(false);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    thingSprites: 0,
+    thingTexturePixels: 0,
+    thingSpritesReady: false,
+  });
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
+  expect(
+    await page.evaluate(() => {
+      const model = window.__infiniteMines.model;
+      for (let y = -24; y < 48; y += 1) {
+        for (let x = -24; x < 48; x += 1) {
+          if (model.artifactAt(x, y) || model.thingFootprintAt(x, y)) return false;
+        }
+      }
+      return true;
+    }),
+  ).toBe(true);
   await page.evaluate(async () => {
     const api = window.__infiniteMines;
     api.model.store.set(121, 121, 11);
@@ -53,80 +45,27 @@ test("R49 — Thing art defaults to Simple and keeps separate persisted fields p
   });
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
-    thingStyle: "illustrated",
-    fieldGeneration: "illustrated-things-v3",
+    thingsEnabled: false,
+    thingSprites: 0,
+    thingTexturePixels: 0,
+    thingSpritesReady: false,
   });
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
 
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("simple"));
-  await expect
-    .poll(() => page.evaluate(() => window.__infiniteMines.diagnostics()))
-    .toMatchObject({
-      thingStyle: "simple",
-      fieldGeneration: "original-things",
-      thingSprites: 0,
-      thingTexturePixels: 0,
-      thingSpritesReady: false,
-    });
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(true));
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingsEnabled)).toBe(true);
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(10);
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(0);
 
-  await page.evaluate(() => window.__infiniteMines.setThingStyle("illustrated"));
+  await page.evaluate(() => window.__infiniteMines.setThingsEnabled(false));
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(120, 120))).toBe(0);
   expect(await page.evaluate(() => window.__infiniteMines.model.getState(121, 121))).toBe(11);
-
-  const priorIllustrated = await page.evaluate(async () => {
-    const api = window.__infiniteMines;
-    api.model.reset("beginner", 0x49a7_0002, false, "square", undefined, "illustrated-things");
-    api.renderer.syncThingStyle();
-    let visual: ReturnType<typeof api.model.thingVisualAt> = null;
-    for (let y = 0; y < 24 && !visual; y += 1) {
-      for (let x = 0; x < 24; x += 1) {
-        if (!api.model.artifactAt(x, y)) continue;
-        visual = api.model.thingVisualAt(x, y);
-        break;
-      }
-    }
-    if (!visual) throw new Error("No prior-generation Illustrated Thing found");
-    await api.flushSave();
-    return {
-      generation: api.model.fieldGeneration,
-      seed: api.model.seed,
-      sprite: visual.sprite,
-      reservation: visual.reservedCells.map((cell) => `${cell.x},${cell.y}`),
-    };
-  });
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things");
-  expect(
-    await page.evaluate(() => {
-      const api = window.__infiniteMines;
-      let visual: ReturnType<typeof api.model.thingVisualAt> = null;
-      for (let y = 0; y < 24 && !visual; y += 1) {
-        for (let x = 0; x < 24; x += 1) {
-          if (!api.model.artifactAt(x, y)) continue;
-          visual = api.model.thingVisualAt(x, y);
-          break;
-        }
-      }
-      if (!visual) throw new Error("No restored prior-generation Illustrated Thing found");
-      return {
-        generation: api.model.fieldGeneration,
-        seed: api.model.seed,
-        sprite: visual.sprite,
-        reservation: visual.reservedCells.map((cell) => `${cell.x},${cell.y}`),
-      };
-    }),
-  ).toEqual(priorIllustrated);
-
-  await page.locator("#restart-button").click();
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
 });
 
 test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("infinite-mines-things", "off"));
   await openDeterministicGame(page, 0x49a7_0002);
   expect(
     await page.evaluate(() =>
@@ -136,7 +75,7 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
 
   const result = await page.evaluate(async () => {
     const api = window.__infiniteMines;
-    await api.setThingStyle("illustrated");
+    await api.setThingsEnabled(true);
     await api.renderer.waitForThingSprites();
     const initial = api.diagnostics();
     const extraSprites = [12, 1000, 3730, ...Array.from({ length: 50 }, (_, index) => index + 13)];
@@ -228,7 +167,7 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
   });
 
   expect(result.initial).toMatchObject({
-    fieldGeneration: "illustrated-things-v3",
+    thingsEnabled: true,
     thingSprites: 3731,
     thingSpritesLoaded: 12,
     thingSpritesReady: true,
@@ -243,30 +182,6 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
   expect(result.atlas).toEqual({ width: 4096, height: 4096 });
   expect(result.catalogChunk).toBe(true);
   expect(result.svgRequests).toBeGreaterThanOrEqual(65);
-});
-
-test("R49 — prior 12-scene Illustrated saves restore unchanged and restart into the full catalog", async ({ page }) => {
-  await openDeterministicGame(page, 0x49a7_0003);
-  await page.evaluate(async () => {
-    const api = window.__infiniteMines;
-    await api.setThingStyle("illustrated");
-    api.model.reset("beginner", 0x49a7_0004, false, "rhombille", undefined, "illustrated-things-v2");
-    api.model.store.set(321, -123, 11);
-    api.renderer.syncThingStyle();
-    await api.flushSave();
-  });
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
-  expect(
-    await page.evaluate(() => ({
-      generation: window.__infiniteMines.model.fieldGeneration,
-      seed: window.__infiniteMines.model.seed,
-      state: window.__infiniteMines.model.getState(321, -123),
-    })),
-  ).toEqual({ generation: "illustrated-things-v2", seed: 0x49a7_0004, state: 11 });
-
-  await page.locator("#restart-button").click();
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("illustrated-things-v3");
 });
 
 test("R09 — refresh restores the exact field, progress, marks, and viewport from a compact snapshot", async ({ page }) => {
@@ -317,7 +232,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         topology: api.model.topologyId,
         mode: api.model.mode,
         density: api.model.density,
-        generation: api.model.fieldGeneration,
+        thingsEnabled: api.model.thingsEnabled,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -337,7 +252,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
       new Promise<{
         version: number;
         modelVersion: number;
-        generation: string;
+        thingsEnabled: boolean;
         cellBytes: number;
         records: number;
         active: string;
@@ -350,14 +265,14 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
           const active = store.get("active-slot");
           active.onerror = () => reject(active.error);
           active.onsuccess = () => {
-            const key = `field:${active.result.topology}:${active.result.mode}`;
+            const key = `field:${active.result.topology}:${active.result.mode}:${active.result.thingsEnabled ? "things" : "plain"}`;
             const get = store.get(key);
             get.onerror = () => reject(get.error);
             get.onsuccess = () =>
               resolve({
                 version: get.result.version,
                 modelVersion: get.result.model.version,
-                generation: get.result.model.generation,
+                thingsEnabled: get.result.model.thingsEnabled,
                 cellBytes: get.result.model.cells.byteLength,
                 records: get.result.model.cells.byteLength / 9,
                 active: key,
@@ -366,15 +281,15 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         };
       }),
   );
-  expect(databaseRecord.version).toBe(4);
-  expect(databaseRecord.modelVersion).toBe(4);
-  expect(databaseRecord.generation).toBe("original-things");
-  expect(databaseRecord.active).toBe("field:square:beginner");
+  expect(databaseRecord.version).toBe(1);
+  expect(databaseRecord.modelVersion).toBe(1);
+  expect(databaseRecord.thingsEnabled).toBe(true);
+  expect(databaseRecord.active).toBe("field:square:beginner:things");
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   const after = await page.evaluate(
     ({ artifact, mine, flag }) => {
       const api = window.__infiniteMines;
@@ -383,7 +298,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         topology: api.model.topologyId,
         mode: api.model.mode,
         density: api.model.density,
-        generation: api.model.fieldGeneration,
+        thingsEnabled: api.model.thingsEnabled,
         score: api.model.score,
         things: api.model.things,
         health: api.model.health,
@@ -399,130 +314,6 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
     { ...progress, flag },
   );
   expect(after).toEqual(before);
-});
-
-test("R45 — pre-footprint fields retain their exact rules until an explicit restart", async ({ page }) => {
-  await openDeterministicGame(page);
-  await page.evaluate(async () => {
-    const api = window.__infiniteMines;
-    api.model.reset("beginner", 0x18_00_00_01, false, "square", 0.18);
-    const current = api.model.createSnapshot();
-    const legacyModel = {
-      ...current,
-      version: 3,
-      density: 0.18 * (3295 / 3456),
-    } as Record<string, unknown>;
-    delete legacyModel.generation;
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("infinite-mines", 1);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction("sessions", "readwrite");
-      const store = transaction.objectStore("sessions");
-      store.put({ version: 3, savedAt: Date.now(), model: legacyModel, view: api.renderer.createViewSnapshot() }, "field:square:beginner");
-      store.put({ version: 1, topology: "square", mode: "beginner" }, "active-slot");
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
-  });
-
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
-  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBeCloseTo(0.18 * (3295 / 3456), 12);
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("legacy-flat");
-  expect(await page.evaluate(() => window.__infiniteMines.model.thingFootprintAt(0, 0))).toBe(false);
-  await expect(page.locator("#density-stat")).toHaveText("17.16%");
-  await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#current-density")).toHaveText("17.16% CURRENT · SAVED FIELD");
-  await page.getByRole("button", { name: "Close" }).click();
-
-  await page.locator("#restart-button").click();
-  expect(await page.evaluate(() => window.__infiniteMines.model.density)).toBe(0.18);
-  expect(await page.evaluate(() => window.__infiniteMines.model.fieldGeneration)).toBe("original-things");
-  expect(
-    await page.evaluate(() => {
-      const model = window.__infiniteMines.model;
-      let reserved = 0;
-      for (let y = 0; y < 24; y += 1) {
-        for (let x = 0; x < 24; x += 1) reserved += Number(model.thingFootprintAt(x, y));
-      }
-      return reserved;
-    }),
-  ).toBeGreaterThanOrEqual(25);
-  await expect(page.locator("#density-stat")).toHaveText("18%");
-});
-
-test("R35 — an old saved number at a current Thing migrates to rendered clue zero", async ({ page }) => {
-  await openDeterministicGame(page);
-  const stale = await page.evaluate(async () => {
-    const api = window.__infiniteMines;
-    let artifact: { x: number; y: number } | null = null;
-    for (let y = -100; y <= 100 && !artifact; y += 1) {
-      for (let x = -100; x <= 100; x += 1) {
-        if (api.model.artifactAt(x, y)) {
-          artifact = { x, y };
-          break;
-        }
-      }
-    }
-    if (!artifact) throw new Error("No artifact found for old-save fixture");
-    api.model.store.set(artifact.x, artifact.y, 5);
-    await api.flushSave();
-    return artifact;
-  });
-
-  await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
-  const migrated = await page.evaluate(async (artifact) => {
-    const api = window.__infiniteMines;
-    const renderer = api.renderer;
-    const pixelCellSize = 4;
-    renderer.restoreView({
-      version: 1,
-      panX: -artifact.x * pixelCellSize,
-      panY: -artifact.y * pixelCellSize,
-      zoom: pixelCellSize / 25,
-    });
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    const canvas = document.querySelector<HTMLCanvasElement>("#board");
-    if (!canvas) throw new Error("Missing board");
-    const bounds = canvas.getBoundingClientRect();
-    const dpr = canvas.width / bounds.width;
-    const pixel = new Uint8Array(4);
-    const normalPixel = new Uint8Array(4);
-    renderer.gl.finish();
-    renderer.gl.readPixels(
-      Math.floor((bounds.width / 2) * dpr),
-      canvas.height - 1 - Math.floor((bounds.height / 2) * dpr),
-      1,
-      1,
-      renderer.gl.RGBA,
-      renderer.gl.UNSIGNED_BYTE,
-      pixel,
-    );
-    renderer.gl.readPixels(
-      Math.floor((bounds.width / 2 + pixelCellSize) * dpr),
-      canvas.height - 1 - Math.floor((bounds.height / 2) * dpr),
-      1,
-      1,
-      renderer.gl.RGBA,
-      renderer.gl.UNSIGNED_BYTE,
-      normalPixel,
-    );
-    return {
-      state: api.model.getState(artifact.x, artifact.y),
-      clue: api.model.clueAt(artifact.x, artifact.y),
-      artifact: api.model.artifactAt(artifact.x, artifact.y),
-      pixel: Array.from(pixel.slice(0, 3)),
-      normalPixel: Array.from(normalPixel.slice(0, 3)),
-    };
-  }, stale);
-  expect(migrated.state).toBe(1);
-  expect(migrated.clue).toBe(0);
-  expect(migrated.artifact).toBe(true);
-  expect(migrated.pixel).not.toEqual(migrated.normalPixel);
 });
 
 test("R40 — every topology and difficulty restores its own field, progress, and viewport", async ({ page }) => {
@@ -590,7 +381,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
 
   const slots = await page.evaluate(
     () =>
-      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string; generation: string } }>((resolve, reject) => {
+      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string; thingsEnabled: boolean } }>((resolve, reject) => {
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
@@ -600,7 +391,7 @@ test("R40 — every topology and difficulty restores its own field, progress, an
           keys.onerror = () => reject(keys.error);
           active.onerror = () => reject(active.error);
           let resultKeys: IDBValidKey[] | null = null;
-          let resultActive: { topology: string; mode: string; generation: string } | null = null;
+          let resultActive: { topology: string; mode: string; thingsEnabled: boolean } | null = null;
           const finish = () => {
             if (resultKeys && resultActive) resolve({ keys: resultKeys, active: resultActive });
           };
@@ -618,16 +409,16 @@ test("R40 — every topology and difficulty restores its own field, progress, an
   expect(slots.keys).toEqual(
     expect.arrayContaining([
       "active-slot",
-      "field:square:beginner",
-      "field:square:master",
-      "field:rhombille:beginner",
-      "field:rhombille:master",
+      "field:square:beginner:things",
+      "field:square:master:things",
+      "field:rhombille:beginner:things",
+      "field:rhombille:master:things",
     ]),
   );
-  expect(slots.active).toEqual({ version: 2, topology: "rhombille", mode: "master", generation: "original-things" });
+  expect(slots.active).toEqual({ version: 1, topology: "rhombille", mode: "master", thingsEnabled: true });
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   expect(await capture({ x: 700, y: 700 })).toEqual(rhombilleMaster);
 });
 

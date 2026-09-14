@@ -4,6 +4,7 @@ import { openDeterministicGame } from "./helpers";
 
 test("R05/R07 — polished light and dark themes follow browser hints live", async ({ page }) => {
   await openDeterministicGame(page);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().frontierCells)).toBeGreaterThan(0);
   expect(await page.locator('meta[name="color-scheme"]').getAttribute("content")).toBe("light dark");
   await expect(page.locator('meta[name="theme-color"]')).toHaveCount(2);
   expect(await page.locator('meta[name="theme-color"][media*="light"]')).toHaveAttribute("content", "#fbfaf6");

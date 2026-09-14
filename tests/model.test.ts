@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
   MAX_CHAIN_EXPLOSIONS_PER_ACTION,
-  ORIGINAL_AVAILABLE_CELL_FRACTION,
   PRESET_DENSITIES,
   THING_LARGE_RESERVED_SIDE,
   THING_SMALL_PROBABILITY,
@@ -39,108 +37,6 @@ describe("deterministic infinite field", () => {
         expect(first.mineAt(x, y)).toBe(second.mineAt(x, y));
         expect(hash32(x, y, 42)).toBe(hash32(x, y, 42));
       }
-    }
-  });
-
-  it("keeps Simple fields byte-identical to the pre-illustration generator", () => {
-    const expected = {
-      square: "7caa978d4ea79a0a736e1b1aac060adbb950960d8a76a7a5ad3cf1b4f814b08d",
-      triangular: "2764b84c4032a11b01c6b9ebe077ab01fc8b09c4baa2562da0f04055cf988ac9",
-      rhombille: "7a17e51cc77e77450b6d1ef54eaf07593262120b0c2fbc8788e6bb387f3389a8",
-    } as const;
-    for (const topology of TOPOLOGY_IDS) {
-      const game = new GameModel({ seed: 0x7120_49a7, topology, autoStart: false });
-      const parts: string[] = [];
-      for (let zoneY = -3; zoneY <= 3; zoneY += 1) {
-        for (let zoneX = -3; zoneX <= 3; zoneX += 1) {
-          for (let localY = 0; localY < THING_ZONE_SIZE; localY += 1) {
-            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
-              const x = zoneX * THING_ZONE_SIZE + localX;
-              const y = zoneY * THING_ZONE_SIZE + localY;
-              if (game.artifactAt(x, y)) parts.push(`a:${x},${y}`);
-              if (game.thingFootprintAt(x, y)) parts.push(`r:${x},${y}`);
-              if (game.mineAt(x, y)) parts.push(`m:${x},${y}`);
-            }
-          }
-        }
-      }
-      expect(createHash("sha256").update(parts.join(";")).digest("hex"), topology).toBe(expected[topology]);
-    }
-  });
-
-  it("keeps already-saved Illustrated fields on their original art and reservation rules", () => {
-    const expected = {
-      square: "56a5e497f3fa76eef379921a28bf0dae458004748ce2dce4c65e146a9ded715e",
-      triangular: "dbfeab59bcfc402f6ea97e891815b05677c716d4e9a848dd7a28eab2f83d2045",
-      rhombille: "205c7d7cac652483c85b83fd12f0a6e6e4fa03e883a12d4f1f3f4394088dff8d",
-    } as const;
-    for (const topology of TOPOLOGY_IDS) {
-      const game = new GameModel({
-        seed: 0x5eed_1234,
-        topology,
-        autoStart: false,
-        generation: "illustrated-things",
-      });
-      const parts: string[] = [];
-      for (let zoneY = -2; zoneY <= 2; zoneY += 1) {
-        for (let zoneX = -2; zoneX <= 2; zoneX += 1) {
-          let visual: ReturnType<typeof game.thingVisualAt> = null;
-          for (let localY = 0; localY < THING_ZONE_SIZE && !visual; localY += 1) {
-            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
-              const x = zoneX * THING_ZONE_SIZE + localX;
-              const y = zoneY * THING_ZONE_SIZE + localY;
-              if (!game.artifactAt(x, y)) continue;
-              visual = game.thingVisualAt(x, y);
-              break;
-            }
-          }
-          if (!visual) throw new Error(`Missing prior Illustrated Thing at ${zoneX},${zoneY}`);
-          parts.push(
-            `${visual.x},${visual.y}:${visual.side}:${visual.sprite}:` +
-              `${visual.artCells.map((cell) => `${cell.x},${cell.y}`).join(";")}:` +
-              `${visual.reservedCells.map((cell) => `${cell.x},${cell.y}`).join(";")}`,
-          );
-        }
-      }
-      expect(createHash("sha256").update(parts.join("|")).digest("hex"), topology).toBe(expected[topology]);
-    }
-  });
-
-  it("keeps already-saved Illustrated v2 fields on their 12-scene rules", () => {
-    const expected = {
-      square: "cb3e9b1604cc26b5d78cf0022b881df9c5512261aafce462761cc26d5c3213fb",
-      triangular: "42d2e1530e6eb759dcb65a4d01664e5a708f34dc60799c82bc99453198cab61e",
-      rhombille: "b5aab2e3a11c28207a8c888af22a6a5eecd77039d2d5c50f6d0c34f45432e8a3",
-    } as const;
-    for (const topology of TOPOLOGY_IDS) {
-      const game = new GameModel({
-        seed: 0x5eed_1234,
-        topology,
-        autoStart: false,
-        generation: "illustrated-things-v2",
-      });
-      const parts: string[] = [];
-      for (let zoneY = -2; zoneY <= 2; zoneY += 1) {
-        for (let zoneX = -2; zoneX <= 2; zoneX += 1) {
-          let visual: ReturnType<typeof game.thingVisualAt> = null;
-          for (let localY = 0; localY < THING_ZONE_SIZE && !visual; localY += 1) {
-            for (let localX = 0; localX < THING_ZONE_SIZE; localX += 1) {
-              const x = zoneX * THING_ZONE_SIZE + localX;
-              const y = zoneY * THING_ZONE_SIZE + localY;
-              if (!game.artifactAt(x, y)) continue;
-              visual = game.thingVisualAt(x, y);
-              break;
-            }
-          }
-          if (!visual) throw new Error(`Missing v2 Illustrated Thing at ${zoneX},${zoneY}`);
-          parts.push(
-            `${visual.x},${visual.y}:${visual.side}:${visual.sprite}:` +
-              `${visual.artCells.map((cell) => `${cell.x},${cell.y}`).join(";")}:` +
-              `${visual.reservedCells.map((cell) => `${cell.x},${cell.y}`).join(";")}`,
-          );
-        }
-      }
-      expect(createHash("sha256").update(parts.join("|")).digest("hex"), topology).toBe(expected[topology]);
     }
   });
 
@@ -193,7 +89,8 @@ describe("deterministic infinite field", () => {
     }
   });
 
-  it("tracks the requested per-cell chance and original effective density over a large sample", () => {
+  it("tracks the requested per-cell chance and current Square Thing density over a large sample", () => {
+    const squareAvailableCellFraction = 3295 / 3456;
     for (const mode of MODES) {
       const game = new GameModel({ mode, seed: 91, autoStart: false });
       let mines = 0;
@@ -206,7 +103,7 @@ describe("deterministic infinite field", () => {
         }
       }
       const observed = mines / (side * side);
-      expect(Math.abs(observed - DIFFICULTIES[mode].density * ORIGINAL_AVAILABLE_CELL_FRACTION)).toBeLessThan(0.008);
+      expect(Math.abs(observed - DIFFICULTIES[mode].density * squareAvailableCellFraction)).toBeLessThan(0.008);
       expect(Math.abs(mines / eligible - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
     }
 
@@ -216,11 +113,10 @@ describe("deterministic infinite field", () => {
     for (let y = 1000; y < 1000 + side; y += 1) {
       for (let x = 1000; x < 1000 + side; x += 1) customMines += Number(custom.mineAt(x, y));
     }
-    expect(Math.abs(customMines / (side * side) - 0.1234 * ORIGINAL_AVAILABLE_CELL_FRACTION)).toBeLessThan(0.008);
+    expect(Math.abs(customMines / (side * side) - 0.1234 * squareAvailableCellFraction)).toBeLessThan(0.008);
   });
 
-  it("uses the original nominal presets and exact Thing size distribution", () => {
-    expect(ORIGINAL_AVAILABLE_CELL_FRACTION).toBe(3295 / 3456);
+  it("uses the nominal presets and exact Thing size distribution", () => {
     for (const mode of ["beginner", "master", "ultimate", "impossible", "deathmatch"] as const) {
       expect(DIFFICULTIES[mode].density).toBe(PRESET_DENSITIES[mode]);
     }
@@ -232,7 +128,7 @@ describe("deterministic infinite field", () => {
     expect(thingReservedSideForRoll(1 - Number.EPSILON)).toBe(THING_LARGE_RESERVED_SIDE);
   });
 
-  it("realizes the original five-in-six small Thing probability across deterministic zones", () => {
+  it("realizes the five-in-six small Thing probability across deterministic zones", () => {
     const game = new GameModel({ seed: 0x5eed_1234, autoStart: false });
     let small = 0;
     const zones = 600;
@@ -249,7 +145,7 @@ describe("deterministic infinite field", () => {
     expect(small / zones).toBeCloseTo(THING_SMALL_PROBABILITY, 1);
   });
 
-  it("uses the original padded square footprint and anchor placement on Square", () => {
+  it("uses the padded footprint and anchor placement on Square", () => {
     const game = new GameModel({ seed: 0xa471_f4c7, autoStart: false, topology: "square" });
     for (let zoneX = -16; zoneX < 16; zoneX += 1) {
       const reserved: Array<{ x: number; y: number }> = [];
@@ -272,8 +168,26 @@ describe("deterministic infinite field", () => {
       expect(maxX).toBeLessThan(THING_ZONE_SIZE - 1);
       expect(maxY).toBeLessThan(THING_ZONE_SIZE - 1);
       expect(artifacts).toEqual([{ x: minX + 1, y: minY + 1 }]);
-      expect(game.thingVisualAt(zoneX * THING_ZONE_SIZE + artifacts[0].x, artifacts[0].y)).toBeNull();
+      const visual = game.thingVisualAt(zoneX * THING_ZONE_SIZE + artifacts[0].x, artifacts[0].y);
+      expect(visual?.side).toBe(side - 2);
     }
+  });
+
+  it("generates no Things or Thing reservations when they are disabled", () => {
+    const game = new GameModel({ seed: 0xa471_f4c7, autoStart: false, thingsEnabled: false });
+    let mines = 0;
+    let unexpectedThing: { x: number; y: number } | null = null;
+    const side = 400;
+    for (let y = 1000; y < 1000 + side; y += 1) {
+      for (let x = 1000; x < 1000 + side; x += 1) {
+        if (game.artifactAt(x, y) || game.thingFootprintAt(x, y) || game.thingVisualAt(x, y)) {
+          unexpectedThing ??= { x, y };
+        }
+        mines += Number(game.mineAt(x, y));
+      }
+    }
+    expect(unexpectedThing).toBeNull();
+    expect(Math.abs(mines / (side * side) - game.density)).toBeLessThan(0.008);
   });
 
   it("rejects custom densities outside the supported 12% to 50% range", () => {
@@ -341,85 +255,23 @@ describe("topology-driven fields", () => {
     }
   });
 
-  it("persists generation in v4 and restores older fields under their original rules", () => {
-    const source = new GameModel({ seed: 99, topology: "rhombille", autoStart: false });
+  it("round-trips the only supported snapshot schema and rejects incomplete schemas", () => {
+    const source = new GameModel({ seed: 99, topology: "rhombille", autoStart: false, thingsEnabled: false });
     const snapshot = source.createSnapshot();
-    expect(snapshot.version).toBe(4);
-    expect(snapshot.generation).toBe("original-things");
+    expect(snapshot.version).toBe(1);
     expect(snapshot.topology).toBe("rhombille");
     expect(snapshot.density).toBe(DIFFICULTIES.beginner.density);
+    expect(snapshot.thingsEnabled).toBe(false);
     const restored = new GameModel({ seed: 1, autoStart: false });
     expect(restored.restoreSnapshot(snapshot)).toBe(true);
     expect(restored.topologyId).toBe("rhombille");
     expect(restored.density).toBe(DIFFICULTIES.beginner.density);
-    expect(restored.fieldGeneration).toBe("original-things");
+    expect(restored.thingsEnabled).toBe(false);
 
-    const illustratedSnapshot = new GameModel({
-      seed: 99,
-      topology: "rhombille",
-      autoStart: false,
-      generation: "illustrated-things",
-    }).createSnapshot();
-    expect(illustratedSnapshot.generation).toBe("illustrated-things");
-    expect(restored.restoreSnapshot(illustratedSnapshot)).toBe(true);
-    expect(restored.fieldGeneration).toBe("illustrated-things");
-
-    const v2IllustratedSnapshot = new GameModel({
-      seed: 99,
-      topology: "rhombille",
-      autoStart: false,
-      generation: "illustrated-things-v2",
-    }).createSnapshot();
-    expect(v2IllustratedSnapshot.generation).toBe("illustrated-things-v2");
-    expect(restored.restoreSnapshot(v2IllustratedSnapshot)).toBe(true);
-    expect(restored.fieldGeneration).toBe("illustrated-things-v2");
-
-    const currentIllustratedSnapshot = new GameModel({
-      seed: 99,
-      topology: "rhombille",
-      autoStart: false,
-      generation: "illustrated-things-v3",
-    }).createSnapshot();
-    expect(currentIllustratedSnapshot.generation).toBe("illustrated-things-v3");
-    expect(restored.restoreSnapshot(currentIllustratedSnapshot)).toBe(true);
-    expect(restored.fieldGeneration).toBe("illustrated-things-v3");
-
-    const oldV3 = {
-      ...snapshot,
-      version: 3,
-      density: PRESET_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION,
-    } as Record<string, unknown>;
-    delete oldV3.generation;
-    const preserved = new GameModel({ seed: 1, autoStart: false });
-    expect(preserved.restoreSnapshot(oldV3)).toBe(true);
-    expect(preserved.density).toBe(PRESET_DENSITIES.beginner * ORIGINAL_AVAILABLE_CELL_FRACTION);
-    expect(preserved.fieldGeneration).toBe("legacy-flat");
-    expect(preserved.thingFootprintAt(0, 0)).toBe(false);
-    expect(preserved.createSnapshot()).toMatchObject({ version: 4, generation: "legacy-flat" });
-
-    const oldV2 = { ...snapshot, version: 2 } as Record<string, unknown>;
-    delete oldV2.density;
-    delete oldV2.generation;
-    const nominalLegacy = new GameModel({ seed: 1, autoStart: false });
-    expect(nominalLegacy.restoreSnapshot(oldV2)).toBe(true);
-    expect(nominalLegacy.density).toBe(PRESET_DENSITIES.beginner);
-    expect(nominalLegacy.fieldGeneration).toBe("legacy-flat");
-
-    const squareSnapshot = new GameModel({
-      seed: 99,
-      topology: "square",
-      density: PRESET_DENSITIES.beginner,
-      autoStart: false,
-    }).createSnapshot();
-    const legacy = { ...squareSnapshot, version: 1 } as Record<string, unknown>;
-    delete legacy.topology;
-    delete legacy.density;
-    delete legacy.generation;
-    const migrated = new GameModel({ seed: 1, autoStart: false, topology: "triangular" });
-    expect(migrated.restoreSnapshot(legacy)).toBe(true);
-    expect(migrated.topologyId).toBe("square");
-    expect(migrated.density).toBe(PRESET_DENSITIES.beginner);
-    expect(migrated.fieldGeneration).toBe("legacy-flat");
+    const incomplete = { ...snapshot } as Record<string, unknown>;
+    delete incomplete.thingsEnabled;
+    expect(restored.restoreSnapshot(incomplete)).toBe(false);
+    expect(restored.restoreSnapshot({ ...snapshot, version: 2 })).toBe(false);
   });
 });
 
@@ -512,39 +364,6 @@ describe("saved games", () => {
     }
   });
 
-  it("restores pre-cheat snapshots as clean runs", () => {
-    const snapshot = new GameModel({ seed: 41 }).createSnapshot();
-    delete snapshot.cheats;
-    const restored = new GameModel({ seed: 1, autoStart: false });
-    expect(restored.restoreSnapshot(snapshot)).toBe(true);
-    expect(restored.cheats).toBe(0);
-  });
-
-  it("migrates a stale numbered Thing from an old field to opened zero", () => {
-    const source = new GameModel({ mode: "impossible", seed: 712, autoStart: false, topology: "triangular" });
-    let artifact: { x: number; y: number } | null = null;
-    for (let y = -100; y <= 100 && !artifact; y += 1) {
-      for (let x = -100; x <= 100; x += 1) {
-        if (source.artifactAt(x, y)) {
-          artifact = { x, y };
-          break;
-        }
-      }
-    }
-    if (!artifact) throw new Error("No artifact found for stale-save fixture");
-    source.store.set(artifact.x, artifact.y, CellState.Opened4);
-    source.store.set(500, -500, CellState.Flagged);
-    source.things = 7;
-
-    const restored = new GameModel({ seed: 1, autoStart: false });
-    expect(restored.restoreSnapshot(source.createSnapshot())).toBe(true);
-    expect(restored.artifactAt(artifact.x, artifact.y)).toBe(true);
-    expect(restored.clueAt(artifact.x, artifact.y)).toBe(0);
-    expect(restored.getState(artifact.x, artifact.y)).toBe(CellState.Opened);
-    expect(restored.getState(500, -500)).toBe(CellState.Flagged);
-    expect(restored.things).toBe(7);
-  });
-
   it("rejects a corrupt snapshot without replacing the current field", () => {
     const source = new GameModel({ seed: 22 });
     const snapshot = source.createSnapshot();
@@ -557,7 +376,7 @@ describe("saved games", () => {
     expect(target.restoreSnapshot({ ...snapshot, density: 0.9 })).toBe(false);
     expect(target.seed).toBe(previousSeed);
     expect(target.store.nonZeroCells).toBe(previousCells);
-    expect(target.restoreSnapshot({ ...snapshot, generation: "future" })).toBe(false);
+    expect(target.restoreSnapshot({ ...snapshot, thingsEnabled: "yes" })).toBe(false);
     expect(target.seed).toBe(previousSeed);
     expect(target.store.nonZeroCells).toBe(previousCells);
     expect(target.restoreSnapshot({ ...snapshot, cells: corruptCells })).toBe(false);
@@ -599,13 +418,12 @@ describe("gameplay", () => {
   it("reserves deterministic Thing footprints and keeps every art-covered clue at zero", { timeout: 10_000 }, () => {
     for (const topology of TOPOLOGY_IDS) {
       for (const mode of MODES) {
-        const game = new GameModel({ mode, seed: 712, autoStart: false, topology, generation: "illustrated-things-v3" });
+        const game = new GameModel({ mode, seed: 712, autoStart: false, topology });
         const matching = new GameModel({
           mode,
           seed: 712,
           autoStart: false,
           topology,
-          generation: "illustrated-things-v3",
         });
         let mismatches = 0;
         let reservedMines = 0;

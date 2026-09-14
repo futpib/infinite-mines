@@ -11,14 +11,9 @@ import {
   GameModel,
   Mode,
   MODES,
-  generationForThingStyle,
   isOpened,
   isValidDensity,
   openedClue,
-  thingStyleForGeneration,
-  type FieldGeneration,
-  type PresetMode,
-  type ThingStyle,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
 import { WebGLRenderer, type FogFrontierMode } from "./renderer";
@@ -58,7 +53,7 @@ const hintHoverOptions = element<HTMLElement>("#hint-hover-options");
 const fogFrontierOptions = element<HTMLElement>("#fog-frontier-options");
 const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const themeOptions = element<HTMLElement>("#theme-options");
-const thingStyleOptions = element<HTMLElement>("#thing-style-options");
+const thingsOptions = element<HTMLElement>("#things-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
 const currentDensity = element<HTMLElement>("#current-density");
@@ -134,19 +129,17 @@ const savedHintHoverMode = storageGet("infinite-mines-hint-hover");
 let hintHoverMode: HintHoverMode = savedHintHoverMode === "hide" ? "hide" : "show";
 const savedFogFrontierMode = storageGet("infinite-mines-fog-frontier");
 let fogFrontierMode: FogFrontierMode =
-  savedFogFrontierMode === "cell"
-    ? "cell"
-    : savedFogFrontierMode === "edge" || savedFogFrontierMode === "on"
-      ? "edge"
-      : "off";
+  savedFogFrontierMode === "off" || savedFogFrontierMode === "edge" || savedFogFrontierMode === "cell"
+    ? savedFogFrontierMode
+    : "cell";
 type AutoHideMode = "after-fifty" | "never";
 const savedAutoHideMode = storageGet("infinite-mines-auto-hide-controls");
 let autoHideMode: AutoHideMode = savedAutoHideMode === "never" ? "never" : "after-fifty";
 type ThemeMode = "system" | "light" | "dark";
 const savedThemeMode = storageGet("infinite-mines-theme");
 let themeMode: ThemeMode = savedThemeMode === "light" || savedThemeMode === "dark" ? savedThemeMode : "system";
-const savedThingStyle = storageGet("infinite-mines-thing-style");
-let thingStyle: ThingStyle = savedThingStyle === "illustrated" ? "illustrated" : "simple";
+const savedThings = storageGet("infinite-mines-things");
+let thingsEnabled = savedThings !== "off";
 const browserPlatform =
   (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
 const applePlatform = /mac|iphone|ipad|ipod/i.test(browserPlatform);
@@ -155,19 +148,15 @@ const revealModifierName = applePlatform ? "Command (⌘)" : "Ctrl";
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0];
 const fallbackSeed = randomSeed();
 const persistedGame = await loadActiveGame();
-if (
-  thingStyle === "illustrated" ||
-  (persistedGame?.model.version === 4 && persistedGame.model.generation === "illustrated-things-v3")
-) {
-  await loadThingCatalog();
-}
+if (persistedGame) thingsEnabled = persistedGame.model.thingsEnabled;
+if (thingsEnabled) await loadThingCatalog();
 const model = new GameModel({
   mode: initialMode,
   density: initialMode === "custom" ? customDensity : undefined,
   seed: fallbackSeed,
   autoStart: false,
   topology: initialTopology,
-  generation: generationForThingStyle(thingStyle),
+  thingsEnabled,
 });
 const restoredGame = persistedGame !== null && model.restoreSnapshot(persistedGame.model);
 if (!restoredGame) {
@@ -177,11 +166,11 @@ if (!restoredGame) {
     true,
     initialTopology,
     initialMode === "custom" ? customDensity : undefined,
-    generationForThingStyle(thingStyle),
+    thingsEnabled,
   );
 } else {
-  thingStyle = thingStyleForGeneration(model.fieldGeneration);
-  storageSet("infinite-mines-thing-style", thingStyle);
+  thingsEnabled = model.thingsEnabled;
+  storageSet("infinite-mines-things", thingsEnabled ? "on" : "off");
   storageSet("infinite-mines-mode", model.mode);
   storageSet("infinite-mines-topology", model.topologyId);
   if (model.mode === "custom") {
@@ -256,7 +245,7 @@ const formatDensity = (density: number): string =>
   `${(density * 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`;
 const highScoreKey = (mode: Mode): string => {
   const topologyKey = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
-  const base = thingStyle === "illustrated" ? `${topologyKey}-illustrated` : topologyKey;
+  const base = `${topologyKey}-${thingsEnabled ? "things" : "plain"}`;
   const isNominalPreset = mode !== "custom" && sameDensity(model.density, PRESET_DENSITIES[mode]);
   return isNominalPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
 };
@@ -313,9 +302,9 @@ function updateAutoHideMode(): void {
   }
 }
 
-function updateThingStyle(): void {
-  for (const button of thingStyleOptions.querySelectorAll<HTMLButtonElement>("button[data-thing-style]")) {
-    button.ariaPressed = String(button.dataset.thingStyle === thingStyle);
+function updateThings(): void {
+  for (const button of thingsOptions.querySelectorAll<HTMLButtonElement>("button[data-things]")) {
+    button.ariaPressed = String((button.dataset.things === "on") === thingsEnabled);
   }
 }
 
@@ -346,8 +335,7 @@ function updateTopologyOptions(): void {
     button.ariaPressed = String(button.dataset.mode === model.mode);
   }
   const densityText = formatDensity(model.density);
-  const legacyField = model.fieldGeneration === "legacy-flat";
-  currentDensity.textContent = `${densityText} CURRENT${legacyField ? " · SAVED FIELD" : ""}`;
+  currentDensity.textContent = `${densityText} CURRENT`;
   customDensityOption.dataset.selected = String(model.mode === "custom");
   customDensityApply.ariaPressed = String(model.mode === "custom");
   if (model.mode === "custom") customDensityInput.value = (model.density * 100).toFixed(2).replace(/\.00$/, "");
@@ -708,7 +696,7 @@ function createCellReference(): string {
     `Infinite Mines cell (${locatedCell.x}, ${locatedCell.y})`,
     `mode=${model.mode}`,
     `density=${formatDensity(model.density)}`,
-    `generation=${model.fieldGeneration}`,
+    `things=${model.thingsEnabled ? "on" : "off"}`,
     `topology=${model.topologyId}`,
     `seed=${model.seed}`,
     `safe=${safe}`,
@@ -761,7 +749,7 @@ function flushGameSave(force = false): Promise<void> {
     pendingSave = {
       revision: saveRevision,
       snapshot: {
-        version: 4,
+        version: 1,
         savedAt: Date.now(),
         model: model.createSnapshot(),
         view: renderer.createViewSnapshot(),
@@ -861,8 +849,8 @@ function newGame(
   density: number =
     mode === "custom" ? (model.mode === "custom" ? model.density : customDensity) : DIFFICULTIES[mode].density,
 ): void {
-  model.reset(mode, randomSeed(), true, topology, density, generationForThingStyle(thingStyle));
-  renderer.syncThingStyle();
+  model.reset(mode, randomSeed(), true, topology, density, thingsEnabled);
+  renderer.syncThings();
   storageSet("infinite-mines-mode", mode);
   storageSet("infinite-mines-topology", topology);
   if (mode === "custom") {
@@ -882,15 +870,14 @@ async function switchField(
   mode: Mode,
   topology: TopologyId,
   density?: number,
-  generation: FieldGeneration = generationForThingStyle(thingStyle),
+  requestedThingsEnabled: boolean = thingsEnabled,
 ): Promise<void> {
   if (fieldSwitch) await fieldSwitch;
   const requestedCustomDensity = mode === "custom" ? density : undefined;
-  const requestedThingStyle = thingStyleForGeneration(generation);
   if (
     mode === model.mode &&
     topology === model.topologyId &&
-    requestedThingStyle === thingStyleForGeneration(model.fieldGeneration) &&
+    requestedThingsEnabled === model.thingsEnabled &&
     (requestedCustomDensity === undefined || sameDensity(requestedCustomDensity, model.density))
   ) {
     return;
@@ -898,15 +885,10 @@ async function switchField(
   const fallbackCustomDensity =
     mode === "custom" ? requestedCustomDensity ?? (model.mode === "custom" ? model.density : customDensity) : undefined;
   const operation = (async () => {
-    if (generation === "illustrated-things-v3") await loadThingCatalog();
+    if (requestedThingsEnabled) await loadThingCatalog();
     await flushGameSave(true);
-    const saved = await loadGameSlot(topology, mode, generation);
-    const savedDensity =
-      saved?.model.version === 3 || saved?.model.version === 4
-        ? saved.model.density
-        : saved && saved.model.mode !== "custom"
-          ? PRESET_DENSITIES[saved.model.mode as PresetMode]
-          : null;
+    const saved = await loadGameSlot(topology, mode, requestedThingsEnabled);
+    const savedDensity = saved?.model.density ?? null;
     const restored =
       saved !== null &&
       (requestedCustomDensity === undefined ||
@@ -914,20 +896,20 @@ async function switchField(
       model.restoreSnapshot(saved.model) &&
       model.mode === mode &&
       model.topologyId === topology &&
-      thingStyleForGeneration(model.fieldGeneration) === requestedThingStyle;
+      model.thingsEnabled === requestedThingsEnabled;
     storageSet("infinite-mines-mode", mode);
     storageSet("infinite-mines-topology", topology);
-    thingStyle = requestedThingStyle;
-    storageSet("infinite-mines-thing-style", thingStyle);
+    thingsEnabled = requestedThingsEnabled;
+    storageSet("infinite-mines-things", thingsEnabled ? "on" : "off");
     if (restored && saved) {
-      renderer.syncThingStyle();
+      renderer.syncThings();
       renderer.restoreView(saved.view);
       const activated = await saveActiveGame(saved);
       lastSavedAt = saved.savedAt;
       persistenceStatus = activated ? "restored" : "unavailable";
     } else {
-      model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity, generation);
-      renderer.syncThingStyle();
+      model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity, requestedThingsEnabled);
+      renderer.syncThings();
       renderer.home();
       await flushGameSave(true);
     }
@@ -936,7 +918,7 @@ async function switchField(
       storageSet("infinite-mines-custom-density", String(customDensity));
     }
     updateStats();
-    updateThingStyle();
+    updateThings();
     refreshCellLocator(true);
     showToast(
       restored
@@ -977,7 +959,7 @@ updateHoverMode();
 updateHintHoverMode();
 updateFogFrontierMode();
 updateAutoHideMode();
-updateThingStyle();
+updateThings();
 updateTopologyOptions();
 updateFullscreenState();
 setUiHidden(false);
@@ -1344,13 +1326,13 @@ topologyOptions.addEventListener("click", (event) => {
   void switchField(model.mode, button.dataset.topology);
 });
 
-thingStyleOptions.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-thing-style]");
+thingsOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-things]");
   if (!button) return;
-  const requestedThingStyle: ThingStyle = button.dataset.thingStyle === "illustrated" ? "illustrated" : "simple";
-  if (requestedThingStyle === thingStyle) return;
+  const requestedThingsEnabled = button.dataset.things !== "off";
+  if (requestedThingsEnabled === thingsEnabled) return;
   settingsDialog.close();
-  void switchField(model.mode, model.topologyId, model.mode === "custom" ? model.density : undefined, generationForThingStyle(requestedThingStyle));
+  void switchField(model.mode, model.topologyId, model.mode === "custom" ? model.density : undefined, requestedThingsEnabled);
 });
 
 controlOptions.addEventListener("click", (event) => {
@@ -1461,7 +1443,7 @@ declare global {
       reveal: (x: number, y: number) => void;
       cheatDeath: () => void;
       newGame: (mode?: Mode, topology?: TopologyId, density?: number) => void;
-      setThingStyle: (style: ThingStyle) => Promise<void>;
+      setThingsEnabled: (enabled: boolean) => Promise<void>;
       flushSave: () => Promise<void>;
     };
   }
@@ -1474,7 +1456,6 @@ function getDiagnostics() {
     things: model.things,
     health: model.health,
     density: model.density,
-    fieldGeneration: model.fieldGeneration,
     cheats: model.cheats,
     openedCells: model.store.openedCells,
     topology: model.topologyId,
@@ -1484,7 +1465,7 @@ function getDiagnostics() {
     fogFrontierMode,
     autoHideMode,
     themeMode,
-    thingStyle,
+    thingsEnabled,
     theme: document.documentElement.dataset.theme,
     touchTool: touchRevealTool ? "reveal" : "mark",
     touchPreview: touchPreview.hidden
@@ -1523,12 +1504,12 @@ window.__infiniteMines = {
   reveal: (x, y) => applyAction(model.reveal(x, y)),
   cheatDeath,
   newGame,
-  setThingStyle: (style) =>
+  setThingsEnabled: (enabled) =>
     switchField(
       model.mode,
       model.topologyId,
       model.mode === "custom" ? model.density : undefined,
-      generationForThingStyle(style),
+      enabled,
     ),
   flushSave: () => flushGameSave(true),
 };
