@@ -2,7 +2,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { THING_CATALOG_FILES, fullThingAlphaOffsets } from "../src/thing-catalog-full";
-import { isMultiPersonThingFilename } from "../scripts/thing-catalog-policy.mjs";
+import {
+  isExcludedThingFilename,
+  isMultiPersonThingFilename,
+  isPregnancyThingFilename,
+} from "../scripts/thing-catalog-policy.mjs";
 import {
   THING_CATALOG_COUNT,
   THING_CATALOG_SOURCE_COMMIT,
@@ -19,12 +23,12 @@ describe("reproducible CI contract", () => {
       .sort();
     expect(THING_CATALOG_SOURCE_COMMIT).toBe("8998f5dd683424a73e2314a8c1f1e359c19e8742");
     expect(THING_CURATED_COUNT).toBe(12);
-    expect(THING_CATALOG_COUNT).toBe(3231);
+    expect(THING_CATALOG_COUNT).toBe(3213);
     expect(THING_CATALOG_FILES).toHaveLength(THING_CATALOG_COUNT);
     expect(new Set(THING_CATALOG_FILES).size).toBe(THING_CATALOG_COUNT);
     expect([...THING_CATALOG_FILES].sort()).toEqual(shipped);
-    expect(shipped.filter(isMultiPersonThingFilename)).toEqual([]);
-    expect(THING_CATALOG_FILES.filter(isMultiPersonThingFilename)).toEqual([]);
+    expect(shipped.filter(isExcludedThingFilename)).toEqual([]);
+    expect(THING_CATALOG_FILES.filter(isExcludedThingFilename)).toEqual([]);
     for (const removed of [
       "emoji_u1f465.svg",
       "emoji_u1f46a.svg",
@@ -37,6 +41,18 @@ describe("reproducible CI contract", () => {
       "emoji_u1f469_1f3fb_200d_1f91d_200d_1f469_1f3ff.svg",
     ]) {
       expect(isMultiPersonThingFilename(removed), `${removed} must match the exclusion policy`).toBe(true);
+      expect(shipped, `${removed} must not ship`).not.toContain(removed);
+    }
+    const pregnancySprites = ["1f930", "1fac3", "1fac4"].flatMap((root) =>
+      ["", "_1f3fb", "_1f3fc", "_1f3fd", "_1f3fe", "_1f3ff"].map(
+        (tone) => `emoji_u${root}${tone}.svg`,
+      ),
+    );
+    expect(pregnancySprites).toHaveLength(18);
+    for (const removed of pregnancySprites) {
+      expect(isPregnancyThingFilename(removed), `${removed} must match the pregnancy exclusion`).toBe(true);
+      expect(isMultiPersonThingFilename(removed), `${removed} must not depend on the multi-person rule`).toBe(false);
+      expect(isExcludedThingFilename(removed), `${removed} must match the combined exclusion policy`).toBe(true);
       expect(shipped, `${removed} must not ship`).not.toContain(removed);
     }
     expect(read("public/things/LICENSE")).toContain("Apache License, Version 2.0");

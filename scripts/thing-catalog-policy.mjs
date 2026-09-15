@@ -26,9 +26,23 @@ const PERSON_COMPONENTS = new Set([
   "1f9d2", // child
 ]);
 
+const PREGNANCY_ROOTS = new Set([
+  "1f930", // pregnant woman
+  "1fac3", // pregnant man
+  "1fac4", // pregnant person
+]);
+
 export const isMultiPersonThingFilename = (filename) => {
   const match = /^emoji_u([0-9a-f_]+)\.svg$/.exec(filename);
   if (!match) return false;
   const codepoints = match[1].split("_");
   return MULTI_PERSON_ROOTS.has(codepoints[0]) || codepoints.filter((codepoint) => PERSON_COMPONENTS.has(codepoint)).length >= 2;
 };
+
+export const isPregnancyThingFilename = (filename) => {
+  const match = /^emoji_u([0-9a-f_]+)\.svg$/.exec(filename);
+  return match !== null && PREGNANCY_ROOTS.has(match[1].split("_")[0]);
+};
+
+export const isExcludedThingFilename = (filename) =>
+  isMultiPersonThingFilename(filename) || isPregnancyThingFilename(filename);

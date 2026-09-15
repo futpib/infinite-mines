@@ -467,7 +467,7 @@ test("R49 — emoji Things embed fixed vector artwork with exact alpha into rese
   expect(result.diagnostics).toMatchObject({
     backend: "webgl2",
     drawCalls: 1,
-    thingSprites: 3231,
+    thingSprites: 3213,
     thingSpritesLoaded: 12,
     thingTexturePixels: 512,
     thingSpritesReady: true,
@@ -821,7 +821,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       backend: "webgl2",
       topology: testCase.topology,
       drawCalls: 1,
-      thingSprites: 3231,
+      thingSprites: 3213,
       thingSpritesLoaded: 12,
       thingTexturePixels: 512,
       thingSpritesReady: true,

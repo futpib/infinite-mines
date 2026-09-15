@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { THING_CATALOG_COUNT } from "../../src/thing-catalog-meta";
 import { findCell, openDeterministicGame, worldPoint } from "./helpers";
 
 test("R49 — emoji Things default on and On/Off fields persist separately", async ({ page }) => {
@@ -7,7 +8,7 @@ test("R49 — emoji Things default on and On/Off fields persist separately", asy
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
     thingsEnabled: true,
-    thingSprites: 3231,
+    thingSprites: 3213,
     thingSpritesLoaded: 12,
     thingSpritesReady: true,
   });
@@ -73,12 +74,12 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
     ),
   ).toBe(false);
 
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async ({ lastSprite }) => {
     const api = window.__infiniteMines;
     await api.setThingsEnabled(true);
     await api.renderer.waitForThingSprites();
     const initial = api.diagnostics();
-    const extraSprites = [12, 1000, 3230, ...Array.from({ length: 50 }, (_, index) => index + 13)];
+    const extraSprites = [12, 1000, lastSprite, ...Array.from({ length: 50 }, (_, index) => index + 13)];
     for (const sprite of extraSprites) await api.renderer.waitForThingSprite(sprite);
     const privateModel = api.model as unknown as {
       artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
@@ -119,7 +120,7 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
       (sprite) => api.renderer.thingAtlasSlotForSprite(sprite) === null,
     );
     if (evictedCurated.length === 0) throw new Error("Expected the bounded atlas to evict a curated slot");
-    const requestedSlotsReady = [12, 1000, 3230, 62].map(
+    const requestedSlotsReady = [12, 1000, lastSprite, 62].map(
       (sprite) => api.renderer.thingAtlasSlotForSprite(sprite) !== null,
     );
     await api.renderer.waitForThingSprite(evictedCurated[0]);
@@ -164,16 +165,16 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
           .filter((name) => name.includes("/things/emoji_u") && name.endsWith(".svg")),
       ).size,
     };
-  });
+  }, { lastSprite: THING_CATALOG_COUNT - 1 });
 
   expect(result.initial).toMatchObject({
     thingsEnabled: true,
-    thingSprites: 3231,
+    thingSprites: 3213,
     thingSpritesLoaded: 12,
     thingSpritesReady: true,
   });
   expect(result.afterFill.thingSpritesLoaded).toBe(64);
-  expect(result.afterReload).toMatchObject({ thingSprites: 3231, thingSpritesLoaded: 64, drawCalls: 1, canvasCount: 3 });
+  expect(result.afterReload).toMatchObject({ thingSprites: 3213, thingSpritesLoaded: 64, drawCalls: 1, canvasCount: 3 });
   expect(result.requestedSlotsReady).toEqual([true, true, true, true]);
   expect(result.reloadedSlot).not.toBeNull();
   expect(result.renderedNonCuratedFragments).toBeGreaterThan(0);

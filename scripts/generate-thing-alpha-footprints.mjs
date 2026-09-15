@@ -3,7 +3,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import { isMultiPersonThingFilename } from "./thing-catalog-policy.mjs";
+import { isExcludedThingFilename } from "./thing-catalog-policy.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEXTURE_PIXELS = 512;
@@ -228,9 +228,9 @@ const main = async () => {
   const allSprites = (await readdir(path.join(ROOT, "public/things")))
     .filter((filename) => /^emoji_u[0-9a-f_]+\.svg$/.test(filename))
     .sort();
-  const multiPersonSprites = allSprites.filter(isMultiPersonThingFilename);
-  if (multiPersonSprites.length > 0) {
-    throw new Error(`Multi-person Thing SVGs must not ship: ${multiPersonSprites.join(", ")}`);
+  const excludedSprites = allSprites.filter(isExcludedThingFilename);
+  if (excludedSprites.length > 0) {
+    throw new Error(`Excluded Thing SVGs must not ship: ${excludedSprites.join(", ")}`);
   }
   const missingCurated = CURATED_SPRITES.filter((filename) => !allSprites.includes(filename));
   if (missingCurated.length > 0) throw new Error(`Missing curated Thing SVGs: ${missingCurated.join(", ")}`);

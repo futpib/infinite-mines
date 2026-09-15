@@ -1,10 +1,11 @@
 # Illustrated Thing assets
 
 This directory contains the `svg/` catalog from Google Noto Emoji at commit
-`8998f5dd683424a73e2314a8c1f1e359c19e8742`, excluding every emoji that depicts
-two or more people. The exclusion follows the Unicode 17 family, couple, kiss,
-holding-hands, bunny-pair, wrestling/fighting, hugging, and group categories;
-the generator rejects any such asset if it is reintroduced.
+`8998f5dd683424a73e2314a8c1f1e359c19e8742`, excluding every pregnancy emoji
+and every emoji that depicts two or more people. The multi-person exclusion
+follows the Unicode 17 family, couple, kiss, holding-hands, bunny-pair,
+wrestling/fighting, hugging, and group categories; the generator rejects any
+excluded asset if it is reintroduced.
 
 Source: <https://github.com/googlefonts/noto-emoji>
 
