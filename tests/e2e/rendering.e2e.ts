@@ -247,17 +247,17 @@ test("R49 — emoji Things embed fixed vector artwork with exact alpha into rese
       side: number;
       sprite: number;
     } | null = null;
-    search: for (let zoneY = -50; zoneY <= 50; zoneY += 1) {
-      for (let zoneX = -50; zoneX <= 50; zoneX += 1) {
+    search: for (let zoneY = -200; zoneY <= 200; zoneY += 1) {
+      for (let zoneX = -200; zoneX <= 200; zoneX += 1) {
         const anchor = privateModel.artifactForZone(zoneX, zoneY);
         const visual = api.model.thingVisualAt(anchor.x, anchor.y);
-        if (visual?.side === 4 && visual.sprite < 12) {
+        if (visual?.side === 4 && visual.sprite === 0) {
           artifact = visual;
           break search;
         }
       }
     }
-    if (!artifact) throw new Error("No deterministic four-cell curated Thing found");
+    if (!artifact) throw new Error("No deterministic four-cell castle Thing found");
     const atlasSlot = await renderer.waitForThingSprite(artifact.sprite);
     api.reveal(artifact.x, artifact.y);
     const zoom = 2;
@@ -467,7 +467,7 @@ test("R49 — emoji Things embed fixed vector artwork with exact alpha into rese
   expect(result.diagnostics).toMatchObject({
     backend: "webgl2",
     drawCalls: 1,
-    thingSprites: 3731,
+    thingSprites: 3231,
     thingSpritesLoaded: 12,
     thingTexturePixels: 512,
     thingSpritesReady: true,
@@ -821,7 +821,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
       backend: "webgl2",
       topology: testCase.topology,
       drawCalls: 1,
-      thingSprites: 3731,
+      thingSprites: 3231,
       thingSpritesLoaded: 12,
       thingTexturePixels: 512,
       thingSpritesReady: true,

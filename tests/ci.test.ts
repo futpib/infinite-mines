@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { THING_CATALOG_FILES, fullThingAlphaOffsets } from "../src/thing-catalog-full";
+import { isMultiPersonThingFilename } from "../scripts/thing-catalog-policy.mjs";
 import {
   THING_CATALOG_COUNT,
   THING_CATALOG_SOURCE_COMMIT,
@@ -12,16 +13,32 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string): string => readFileSync(`${root}/${path}`, "utf8");
 
 describe("reproducible CI contract", () => {
-  it("pins and ships the complete Noto SVG Thing catalog", () => {
+  it("pins and ships every permitted Noto SVG Thing", () => {
     const shipped = readdirSync(`${root}/public/things`)
       .filter((name) => name.endsWith(".svg"))
       .sort();
     expect(THING_CATALOG_SOURCE_COMMIT).toBe("8998f5dd683424a73e2314a8c1f1e359c19e8742");
     expect(THING_CURATED_COUNT).toBe(12);
-    expect(THING_CATALOG_COUNT).toBe(3731);
+    expect(THING_CATALOG_COUNT).toBe(3231);
     expect(THING_CATALOG_FILES).toHaveLength(THING_CATALOG_COUNT);
     expect(new Set(THING_CATALOG_FILES).size).toBe(THING_CATALOG_COUNT);
     expect([...THING_CATALOG_FILES].sort()).toEqual(shipped);
+    expect(shipped.filter(isMultiPersonThingFilename)).toEqual([]);
+    expect(THING_CATALOG_FILES.filter(isMultiPersonThingFilename)).toEqual([]);
+    for (const removed of [
+      "emoji_u1f465.svg",
+      "emoji_u1f46a.svg",
+      "emoji_u1f46f.svg",
+      "emoji_u1f48f.svg",
+      "emoji_u1f491.svg",
+      "emoji_u1f93c.svg",
+      "emoji_u1fac2.svg",
+      "emoji_u1f468_200d_2764_200d_1f48b_200d_1f468.svg",
+      "emoji_u1f469_1f3fb_200d_1f91d_200d_1f469_1f3ff.svg",
+    ]) {
+      expect(isMultiPersonThingFilename(removed), `${removed} must match the exclusion policy`).toBe(true);
+      expect(shipped, `${removed} must not ship`).not.toContain(removed);
+    }
     expect(read("public/things/LICENSE")).toContain("Apache License, Version 2.0");
 
     let patterns = 0;
