@@ -16,7 +16,12 @@ import {
   openedClue,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
-import { WebGLRenderer, type FogFrontierMode } from "./renderer";
+import {
+  WebGLRenderer,
+  isFieldRotation,
+  type FieldRotation,
+  type FogFrontierMode,
+} from "./renderer";
 import { TOPOLOGIES, isTopologyId, type TopologyId } from "./topology";
 
 const element = <T extends Element>(selector: string): T => {
@@ -55,6 +60,7 @@ const autoHideOptions = element<HTMLElement>("#auto-hide-options");
 const themeOptions = element<HTMLElement>("#theme-options");
 const thingsOptions = element<HTMLElement>("#things-options");
 const topologyOptions = element<HTMLElement>("#topology-options");
+const rotationOptions = element<HTMLElement>("#rotation-options");
 const difficultyList = element<HTMLElement>("#difficulty-list");
 const currentDensity = element<HTMLElement>("#current-density");
 const customDensityOption = element<HTMLElement>("#custom-density-option");
@@ -140,6 +146,8 @@ const savedThemeMode = storageGet("infinite-mines-theme");
 let themeMode: ThemeMode = savedThemeMode === "light" || savedThemeMode === "dark" ? savedThemeMode : "system";
 const savedThings = storageGet("infinite-mines-things");
 let thingsEnabled = savedThings !== "off";
+const savedRotation = Number(storageGet("infinite-mines-field-rotation"));
+let fieldRotation: FieldRotation = isFieldRotation(savedRotation) ? savedRotation : 0;
 const browserPlatform =
   (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
 const applePlatform = /mac|iphone|ipad|ipod/i.test(browserPlatform);
@@ -195,6 +203,7 @@ const settleFpsCounter = (): void => {
 };
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 const renderer = new WebGLRenderer(canvas, model, fogFrontierMode);
+renderer.setRotation(fieldRotation);
 renderer.setFrameObserver((diagnostics) => {
   const now = performance.now();
   fpsLastFrameAt = now;
@@ -341,6 +350,15 @@ function updateTopologyOptions(): void {
   if (model.mode === "custom") customDensityInput.value = (model.density * 100).toFixed(2).replace(/\.00$/, "");
 }
 
+function updateFieldRotation(): void {
+  for (const button of rotationOptions.querySelectorAll<HTMLButtonElement>("button[data-rotation]")) {
+    button.ariaPressed = String(Number(button.dataset.rotation) === fieldRotation);
+  }
+  renderer.setRotation(fieldRotation);
+  hoverVisualKey = "";
+  refreshCellLocator(true);
+}
+
 function updateStats(): void {
   gameOverPointerAction = null;
   const previousHigh = readHighScore();
@@ -477,7 +495,7 @@ function updateHoverPreview(
   }
   const lod = renderer.diagnostics.lod;
   const dpr = renderer.diagnostics.pixelRatio;
-  const key = `${model.topologyId}:${lod}:${renderer.cellSize}:${dpr}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
+  const key = `${model.topologyId}:${renderer.rotation}:${lod}:${renderer.cellSize}:${dpr}:${renderer.panX}:${renderer.panY}:${boardWidth}:${boardHeight}:${cells
     .map(({ x, y, affected, hint }) => `${x},${y},${Number(affected)},${Number(hint)}`)
     .join(";")}`;
   if (key === hoverVisualKey) return;
@@ -498,18 +516,18 @@ function updateHoverPreview(
     marker.classList.toggle("is-affected", cell.affected);
     marker.classList.toggle("is-hint", cell.hint);
     const polygon = renderer.cellFramebufferPolygon(cell.x, cell.y);
-    const left = Math.min(...polygon.map((point) => point.x));
-    const top = Math.min(...polygon.map((point) => point.y));
-    const right = Math.max(...polygon.map((point) => point.x));
-    const bottom = Math.max(...polygon.map((point) => point.y));
-    // The square shader gives right/bottom grid lines to the neighboring cell,
-    // so the painted border footprint extends one CSS pixel past its snapped
-    // geometric end. Polygon topologies rasterize their unsnapped world edges.
-    const ownedEdgeExtension = model.topologyId === "square" && lod === "detail"
-      ? renderer.diagnostics.borderCssPixels
-      : 0;
-    const width = Math.max(1 / dpr, right - left + ownedEdgeExtension);
-    const height = Math.max(1 / dpr, bottom - top + ownedEdgeExtension);
+    const geometricLeft = Math.min(...polygon.map((point) => point.x));
+    const geometricTop = Math.min(...polygon.map((point) => point.y));
+    const geometricRight = Math.max(...polygon.map((point) => point.x));
+    const geometricBottom = Math.max(...polygon.map((point) => point.y));
+    // The square shader gives two local grid edges to the neighboring cell, so
+    // their screen-space sides depend on field rotation. Polygon topologies
+    // rasterize their unsnapped world edges.
+    const insets = renderer.squareOwnedEdgeInsets();
+    const left = geometricLeft - insets.left;
+    const top = geometricTop - insets.top;
+    const width = Math.max(1 / dpr, geometricRight - geometricLeft + insets.left + insets.right);
+    const height = Math.max(1 / dpr, geometricBottom - geometricTop + insets.top + insets.bottom);
     marker.style.width = `${width}px`;
     marker.style.height = `${height}px`;
     if (model.topologyId === "square") {
@@ -637,17 +655,17 @@ function showTouchPreview(
   }
   const horizontalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxX - minX)) / 2;
   const verticalExpansion = Math.max(0, TOUCH_PREVIEW_MIN_EXTENT - (maxY - minY)) / 2;
-  // Square's detailed grid gives shared lines to the tile below/right. The
-  // neighborhood's visible footprint therefore extends one CSS pixel beyond
-  // its geometric right/bottom bounds. Keep those owned pixels in the crop.
-  const ownedEdgeExtension = model.topologyId === "square" ? renderer.diagnostics.borderCssPixels : 0;
+  // Square's detailed grid owns two shared local edges. Keep their rotated
+  // one-pixel screen-space extensions in the crop.
+  const ownedEdgeInsets = renderer.squareOwnedEdgeInsets();
+  const ownedEdgeExtension = Math.max(...Object.values(ownedEdgeInsets));
   const polygon = renderer.cellScreenPolygon(x, y);
   const { sourceX, sourceY, width, height } = renderer.copyScreenBounds(
     touchPreviewContext,
-    minX - horizontalExpansion,
-    minY - verticalExpansion,
-    maxX + horizontalExpansion + ownedEdgeExtension,
-    maxY + verticalExpansion + ownedEdgeExtension,
+    minX - horizontalExpansion - ownedEdgeInsets.left,
+    minY - verticalExpansion - ownedEdgeInsets.top,
+    maxX + horizontalExpansion + ownedEdgeInsets.right,
+    maxY + verticalExpansion + ownedEdgeInsets.bottom,
   );
   touchPreviewViewport.style.width = `${width}px`;
   touchPreviewViewport.style.height = `${height}px`;
@@ -701,6 +719,7 @@ function createCellReference(): string {
     `safe=${safe}`,
     `state=${describeVisibleCell(locatedCell.x, locatedCell.y)}`,
     `scale=${renderer.cellSize.toFixed(2)}px/tile`,
+    `rotation=${renderer.rotation}deg`,
     `theme=${colorScheme.matches ? "dark" : "light"}`,
   ].join(" | ");
 }
@@ -960,6 +979,7 @@ updateFogFrontierMode();
 updateAutoHideMode();
 updateThings();
 updateTopologyOptions();
+updateFieldRotation();
 updateFullscreenState();
 setUiHidden(false);
 if (!restoredGame) scheduleGameSave(0);
@@ -1323,6 +1343,15 @@ topologyOptions.addEventListener("click", (event) => {
   if (button.dataset.topology === model.topologyId) return;
   settingsDialog.close();
   void switchField(model.mode, button.dataset.topology);
+});
+
+rotationOptions.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-rotation]");
+  const rotation = Number(button?.dataset.rotation);
+  if (!button || !isFieldRotation(rotation) || rotation === fieldRotation) return;
+  fieldRotation = rotation;
+  storageSet("infinite-mines-field-rotation", String(fieldRotation));
+  updateFieldRotation();
 });
 
 thingsOptions.addEventListener("click", (event) => {

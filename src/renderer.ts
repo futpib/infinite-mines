@@ -20,6 +20,7 @@ import {
 export interface RenderDiagnostics {
   backend: "webgl2";
   topology: TopologyId;
+  rotation: FieldRotation;
   lod: "detail" | "pixel";
   cellSize: number;
   borderCssPixels: 0 | 1;
@@ -54,6 +55,11 @@ export interface RenderDiagnostics {
 }
 
 export type FogFrontierMode = "off" | "edge" | "cell";
+export const FIELD_ROTATIONS = [0, 90, 180, 270] as const;
+export type FieldRotation = (typeof FIELD_ROTATIONS)[number];
+
+export const isFieldRotation = (value: unknown): value is FieldRotation =>
+  typeof value === "number" && FIELD_ROTATIONS.includes(value as FieldRotation);
 
 const BASE_CELL_SIZE = 25;
 const MIN_CELL_SIZE = 1;
@@ -152,6 +158,7 @@ layout(location = 2) in float a_edges;
 
 uniform vec2 u_viewport;
 uniform vec2 u_cameraCell;
+uniform vec2 u_rotation;
 uniform float u_cellSize;
 uniform float u_dpr;
 
@@ -162,20 +169,27 @@ flat out float v_edges;
 
 void main() {
   bool thingCell = a_cell.w > 2.5 && a_cell.w < 3.5;
-  vec2 start = u_viewport * 0.5 + (a_cell.xy - u_cameraCell) * u_cellSize;
-  vec2 end = u_viewport * 0.5 + (a_cell.xy - u_cameraCell + 1.0) * u_cellSize;
-  vec2 startDevice = floor(start * u_dpr + 0.5);
-  vec2 endDevice = floor(end * u_dpr + 0.5);
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
+  vec2 relativeStart = a_cell.xy - u_cameraCell;
+  vec2 startDevice = floor((u_viewport * 0.5 + rotation * relativeStart * u_cellSize) * u_dpr + 0.5);
+  vec2 endXDevice = floor((u_viewport * 0.5 + rotation * (relativeStart + vec2(1.0, 0.0)) * u_cellSize) * u_dpr + 0.5);
+  vec2 endYDevice = floor((u_viewport * 0.5 + rotation * (relativeStart + vec2(0.0, 1.0)) * u_cellSize) * u_dpr + 0.5);
   int edges = thingCell ? 0 : int(a_edges + 0.5);
-  vec2 extensionDevice = vec2(
+  vec2 localExtensionDevice = vec2(
     (edges & 4) != 0 ? u_dpr : 0.0,
     (edges & 8) != 0 ? u_dpr : 0.0
   );
-  vec2 drawPixelDevice = mix(startDevice, endDevice + extensionDevice, a_corner);
+  vec2 axisXDevice = endXDevice - startDevice;
+  vec2 axisYDevice = endYDevice - startDevice;
+  vec2 drawPixelDevice = startDevice +
+    a_corner.x * axisXDevice +
+    a_corner.y * axisYDevice +
+    rotation * (a_corner * localExtensionDevice);
   vec2 pixel = drawPixelDevice / u_dpr;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
-  v_cellUv = (drawPixelDevice - startDevice) / max(endDevice - startDevice, vec2(1.0));
+  vec2 cellDeviceSize = max(vec2(length(axisXDevice), length(axisYDevice)), vec2(1.0));
+  v_cellUv = a_corner * (cellDeviceSize + localExtensionDevice) / cellDeviceSize;
   v_sprite = a_cell.z;
   v_cellKind = a_cell.w;
   v_edges = a_edges;
@@ -293,6 +307,7 @@ layout(location = 4) in vec4 a_thingBounds;
 
 uniform vec2 u_viewport;
 uniform vec2 u_cameraWorld;
+uniform vec2 u_rotation;
 uniform float u_cellSize;
 
 out vec2 v_local;
@@ -323,7 +338,8 @@ void main() {
   vec2 spriteCenter = a_centerAxisU.xy;
   if (!thingCell && shape == 1) spriteCenter += a_axisVState.xy / 3.0;
   if (!thingCell && shape == 2) spriteCenter -= a_axisVState.xy / 3.0;
-  vec2 pixel = u_viewport * 0.5 + (world - u_cameraWorld) * u_cellSize;
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
+  vec2 pixel = u_viewport * 0.5 + rotation * (world - u_cameraWorld) * u_cellSize;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_local = local;
@@ -493,6 +509,7 @@ precision highp int;
 
 uniform vec2 u_viewport;
 uniform vec2 u_cameraCell;
+uniform vec2 u_rotation;
 uniform ivec2 u_textureOrigin;
 uniform ivec2 u_textureSize;
 uniform float u_cellSize;
@@ -505,11 +522,10 @@ void main() {
     gl_VertexID == 1 || gl_VertexID == 4 || gl_VertexID == 5 ? 1.0 : 0.0,
     gl_VertexID == 2 || gl_VertexID == 3 || gl_VertexID == 5 ? 1.0 : 0.0
   );
-  vec2 start = u_viewport * 0.5 + (vec2(u_textureOrigin) - u_cameraCell) * u_cellSize;
-  vec2 end = start + vec2(u_textureSize) * u_cellSize;
-  start = floor(start * u_dpr + 0.5) / u_dpr;
-  end = floor(end * u_dpr + 0.5) / u_dpr;
-  vec2 pixel = mix(start, end, corner);
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
+  vec2 world = vec2(u_textureOrigin) + corner * vec2(u_textureSize);
+  vec2 pixel = u_viewport * 0.5 + rotation * (world - u_cameraCell) * u_cellSize;
+  pixel = floor(pixel * u_dpr + 0.5) / u_dpr;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_textureUv = corner;
@@ -567,6 +583,7 @@ interface GlResources {
   scratchFramebuffer: WebGLFramebuffer;
   viewportUniform: WebGLUniformLocation;
   cameraCellUniform: WebGLUniformLocation;
+  rotationUniform: WebGLUniformLocation;
   cellSizeUniform: WebGLUniformLocation;
   dprUniform: WebGLUniformLocation;
   artifactUniform: WebGLUniformLocation;
@@ -580,6 +597,7 @@ interface GlResources {
   lodColorsUniform: WebGLUniformLocation;
   genericViewportUniform: WebGLUniformLocation;
   genericCameraWorldUniform: WebGLUniformLocation;
+  genericRotationUniform: WebGLUniformLocation;
   genericCellSizeUniform: WebGLUniformLocation;
   genericDprUniform: WebGLUniformLocation;
   genericArtifactUniform: WebGLUniformLocation;
@@ -593,6 +611,7 @@ interface GlResources {
   genericLodColorsUniform: WebGLUniformLocation;
   pixelViewportUniform: WebGLUniformLocation;
   pixelCameraCellUniform: WebGLUniformLocation;
+  pixelRotationUniform: WebGLUniformLocation;
   pixelTextureOriginUniform: WebGLUniformLocation;
   pixelTextureSizeUniform: WebGLUniformLocation;
   pixelCellSizeUniform: WebGLUniformLocation;
@@ -666,6 +685,7 @@ export class WebGLRenderer {
   diagnostics: RenderDiagnostics = {
     backend: "webgl2",
     topology: "square",
+    rotation: 0,
     lod: "detail",
     cellSize: BASE_CELL_SIZE,
     borderCssPixels: 1,
@@ -705,6 +725,7 @@ export class WebGLRenderer {
   private height = 1;
   private dpr = 1;
   private frameId: number | null = null;
+  private fieldRotation: FieldRotation = 0;
   private contextLost = false;
   private instanceCount = 0;
   private frontierCellCount = 0;
@@ -789,6 +810,19 @@ export class WebGLRenderer {
 
   get cellSize(): number {
     return BASE_CELL_SIZE * this.zoom;
+  }
+
+  get rotation(): FieldRotation {
+    return this.fieldRotation;
+  }
+
+  setRotation(rotation: FieldRotation): void {
+    if (rotation === this.fieldRotation) return;
+    this.fieldRotation = rotation;
+    this.range = null;
+    this.retainedFrame = false;
+    this.diagnostics = { ...this.diagnostics, rotation };
+    this.requestRender();
   }
 
   async waitForThingSprites(): Promise<void> {
@@ -896,8 +930,9 @@ export class WebGLRenderer {
   }
 
   panBy(deltaX: number, deltaY: number): void {
-    this.panX += deltaX;
-    this.panY += deltaY;
+    const localDelta = this.unrotateVector(deltaX, deltaY);
+    this.panX += localDelta.x;
+    this.panY += localDelta.y;
     this.requestPan();
   }
 
@@ -907,23 +942,23 @@ export class WebGLRenderer {
 
   zoomAt(screenX: number, screenY: number, factor: number): void {
     const previousSize = this.cellSize;
-    const worldX = (screenX - this.width / 2 - this.panX) / previousSize;
-    const worldY = (screenY - this.height / 2 - this.panY) / previousSize;
+    const localScreen = this.unrotateVector(screenX - this.width / 2, screenY - this.height / 2);
+    const world = {
+      x: (localScreen.x - this.panX) / previousSize,
+      y: (localScreen.y - this.panY) / previousSize,
+    };
     const nextZoom = Math.max(MIN_ZOOM, Math.min(2.2, this.zoom * factor));
     if (nextZoom === this.zoom) return;
     this.zoom = nextZoom;
     const nextSize = this.cellSize;
-    this.panX = screenX - this.width / 2 - worldX * nextSize;
-    this.panY = screenY - this.height / 2 - worldY * nextSize;
+    this.panX = localScreen.x - world.x * nextSize;
+    this.panY = localScreen.y - world.y * nextSize;
     this.requestRender();
   }
 
   screenToCell(screenX: number, screenY: number): { x: number; y: number } {
-    const origin = this.model.topology.origin;
-    return this.model.topology.hitTest(
-      origin.x + (screenX - this.width / 2 - this.panX) / this.cellSize,
-      origin.y + (screenY - this.height / 2 - this.panY) / this.cellSize,
-    );
+    const world = this.screenToWorld(screenX, screenY);
+    return this.model.topology.hitTest(world.x, world.y);
   }
 
   copyScreenBounds(
@@ -985,11 +1020,7 @@ export class WebGLRenderer {
   }
 
   cellScreenPolygon(x: number, y: number): WorldPoint[] {
-    const origin = this.model.topology.origin;
-    return this.model.topology.geometry(x, y).vertices.map((point) => ({
-      x: this.width / 2 + this.panX + (point.x - origin.x) * this.cellSize,
-      y: this.height / 2 + this.panY + (point.y - origin.y) * this.cellSize,
-    }));
+    return this.model.topology.geometry(x, y).vertices.map((point) => this.worldToScreen(point.x, point.y));
   }
 
   cellFramebufferPolygon(x: number, y: number): WorldPoint[] {
@@ -1002,6 +1033,17 @@ export class WebGLRenderer {
       x: Math.floor(point.x * this.dpr + 0.5) / this.dpr,
       y: Math.floor(point.y * this.dpr + 0.5) / this.dpr,
     }));
+  }
+
+  squareOwnedEdgeInsets(): { left: number; top: number; right: number; bottom: number } {
+    const extension =
+      this.model.topologyId === "square" && this.diagnostics.lod === "detail"
+        ? this.diagnostics.borderCssPixels
+        : 0;
+    if (this.fieldRotation === 90) return { left: extension, top: 0, right: 0, bottom: extension };
+    if (this.fieldRotation === 180) return { left: extension, top: extension, right: 0, bottom: 0 };
+    if (this.fieldRotation === 270) return { left: 0, top: extension, right: extension, bottom: 0 };
+    return { left: 0, top: 0, right: extension, bottom: extension };
   }
 
   setHoverCells(cells: ReadonlyArray<{ x: number; y: number }>): void {
@@ -1113,12 +1155,11 @@ export class WebGLRenderer {
         floorDiv(Math.floor(centerWorldY) + SPARSE_ANCHOR_CELLS / 2, SPARSE_ANCHOR_CELLS) * SPARSE_ANCHOR_CELLS;
       anchorX = anchorWorldX / RENDER_TILE_CELLS;
       anchorY = anchorWorldY / RENDER_TILE_CELLS;
-      const visibleMin = this.screenToCell(0, 0);
-      const visibleMax = this.screenToCell(this.width, this.height);
-      requiredMinX = floorDiv(visibleMin.x, RENDER_TILE_CELLS);
-      requiredMinY = floorDiv(visibleMin.y, RENDER_TILE_CELLS);
-      requiredMaxX = floorDiv(visibleMax.x, RENDER_TILE_CELLS);
-      requiredMaxY = floorDiv(visibleMax.y, RENDER_TILE_CELLS);
+      const visible = this.screenCellBounds(0);
+      requiredMinX = floorDiv(visible.minX, RENDER_TILE_CELLS);
+      requiredMinY = floorDiv(visible.minY, RENDER_TILE_CELLS);
+      requiredMaxX = floorDiv(visible.maxX, RENDER_TILE_CELLS);
+      requiredMaxY = floorDiv(visible.maxY, RENDER_TILE_CELLS);
       const overscanTiles = Math.ceil(PIXEL_LOD_OVERSCAN_CSS / cellSize / RENDER_TILE_CELLS);
       minX = requiredMinX - overscanTiles;
       minY = requiredMinY - overscanTiles;
@@ -1128,12 +1169,11 @@ export class WebGLRenderer {
       anchorX = floorDiv(Math.floor(centerWorldX), RENDER_TILE_CELLS);
       anchorY = floorDiv(Math.floor(centerWorldY), RENDER_TILE_CELLS);
       const tilePixels = cellSize * RENDER_TILE_CELLS;
-      const min = this.screenToCell(-tilePixels, -tilePixels);
-      const max = this.screenToCell(this.width + tilePixels, this.height + tilePixels);
-      minX = floorDiv(min.x, RENDER_TILE_CELLS);
-      minY = floorDiv(min.y, RENDER_TILE_CELLS);
-      maxX = floorDiv(max.x, RENDER_TILE_CELLS);
-      maxY = floorDiv(max.y, RENDER_TILE_CELLS);
+      const visible = this.screenCellBounds(tilePixels);
+      minX = floorDiv(visible.minX, RENDER_TILE_CELLS);
+      minY = floorDiv(visible.minY, RENDER_TILE_CELLS);
+      maxX = floorDiv(visible.maxX, RENDER_TILE_CELLS);
+      maxY = floorDiv(visible.maxY, RENDER_TILE_CELLS);
       requiredMinX = minX;
       requiredMinY = minY;
       requiredMaxX = maxX;
@@ -1178,8 +1218,9 @@ export class WebGLRenderer {
       this.instanceCount >= PAN_BLIT_MIN_DETAIL_INSTANCES &&
       this.canReuseRetained(true)
     ) {
-      const shiftXFloat = (this.panX - this.retainedPanX) * this.dpr;
-      const shiftYFloat = -(this.panY - this.retainedPanY) * this.dpr;
+      const screenShift = this.rotateVector(this.panX - this.retainedPanX, this.panY - this.retainedPanY);
+      const shiftXFloat = screenShift.x * this.dpr;
+      const shiftYFloat = -screenShift.y * this.dpr;
       const shiftX = Math.round(shiftXFloat);
       const shiftY = Math.round(shiftYFloat);
       if (Math.abs(shiftXFloat - shiftX) > 1e-6 || Math.abs(shiftYFloat - shiftY) > 1e-6) {
@@ -1232,12 +1273,12 @@ export class WebGLRenderer {
     else this.panRedraws += 1;
     this.captureRetainedState();
 
-    const visibleMin = this.screenToCell(0, 0);
-    const visibleMax = this.screenToCell(this.width, this.height);
+    const visible = this.screenCellBounds(0);
     this.frameCount += 1;
     this.diagnostics = {
       backend: "webgl2",
       topology: this.model.topologyId,
+      rotation: this.fieldRotation,
       lod,
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
@@ -1252,7 +1293,7 @@ export class WebGLRenderer {
       backgroundColor: this.theme.background,
       frameCount: this.frameCount,
       frameMs: performance.now() - startedAt,
-      visibleCells: Math.abs((visibleMax.x - visibleMin.x + 1) * (visibleMax.y - visibleMin.y + 1)),
+      visibleCells: (visible.maxX - visible.minX + 1) * (visible.maxY - visible.minY + 1),
       drawnCells: this.instanceCount,
       frontierCells: this.frontierCellCount,
       frontierEdges: this.frontierEdgeCount,
@@ -1285,6 +1326,7 @@ export class WebGLRenderer {
   ): number {
     const gl = this.gl;
     const resources = this.resources;
+    const rotation = this.rotationComponents();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(...this.theme.backgroundRgb, 1);
@@ -1301,6 +1343,7 @@ export class WebGLRenderer {
       gl.bindVertexArray(resources.pixelVertexArray);
       gl.uniform2f(resources.pixelViewportUniform, this.width, this.height);
       gl.uniform2f(resources.pixelCameraCellUniform, relativeCameraX, relativeCameraY);
+      gl.uniform2f(resources.pixelRotationUniform, rotation.cos, rotation.sin);
       gl.uniform2i(resources.pixelTextureOriginUniform, this.pixelTextureOriginX, this.pixelTextureOriginY);
       gl.uniform2i(resources.pixelTextureSizeUniform, this.pixelTextureWidth, this.pixelTextureHeight);
       gl.uniform1f(resources.pixelCellSizeUniform, cellSize);
@@ -1312,6 +1355,7 @@ export class WebGLRenderer {
       gl.bindVertexArray(resources.genericVertexArray);
       gl.uniform2f(resources.genericViewportUniform, this.width, this.height);
       gl.uniform2f(resources.genericCameraWorldUniform, relativeCameraX, relativeCameraY);
+      gl.uniform2f(resources.genericRotationUniform, rotation.cos, rotation.sin);
       gl.uniform1f(resources.genericCellSizeUniform, cellSize);
       gl.uniform1f(resources.genericDprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE0);
@@ -1323,6 +1367,7 @@ export class WebGLRenderer {
       gl.bindVertexArray(resources.vertexArray);
       gl.uniform2f(resources.viewportUniform, this.width, this.height);
       gl.uniform2f(resources.cameraCellUniform, relativeCameraX, relativeCameraY);
+      gl.uniform2f(resources.rotationUniform, rotation.cos, rotation.sin);
       gl.uniform1f(resources.cellSizeUniform, cellSize);
       gl.uniform1f(resources.dprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE0);
@@ -1354,6 +1399,37 @@ export class WebGLRenderer {
   }
 
   private damageRect(bounds: ExploredBounds, cellSize: number): PixelRect | null {
+    if (this.fieldRotation !== 0) {
+      const world = this.model.topologyId === "square"
+        ? {
+            minX: bounds.minX - 1.5,
+            minY: bounds.minY - 1.5,
+            maxX: bounds.maxX + 1.5,
+            maxY: bounds.maxY + 1.5,
+          }
+        : (() => {
+            const topologyBounds = this.model.topology.worldBoundsForCellRange(bounds);
+            const padding = this.model.topology.maxCellRadius * 2;
+            return {
+              minX: topologyBounds.minX - padding,
+              minY: topologyBounds.minY - padding,
+              maxX: topologyBounds.maxX + padding,
+              maxY: topologyBounds.maxY + padding,
+            };
+          })();
+      const corners = [
+        this.worldToScreen(world.minX, world.minY),
+        this.worldToScreen(world.maxX, world.minY),
+        this.worldToScreen(world.minX, world.maxY),
+        this.worldToScreen(world.maxX, world.maxY),
+      ];
+      const left = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.x)) * this.dpr) - 1);
+      const right = Math.min(this.canvas.width, Math.ceil(Math.max(...corners.map((point) => point.x)) * this.dpr) + 1);
+      const top = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.y)) * this.dpr) - 1);
+      const bottom = Math.min(this.canvas.height, Math.ceil(Math.max(...corners.map((point) => point.y)) * this.dpr) + 1);
+      if (left >= right || top >= bottom) return null;
+      return { x: left, y: this.canvas.height - bottom, width: right - left, height: bottom - top };
+    }
     if (this.model.topologyId !== "square") {
       const world = this.model.topology.worldBoundsForCellRange(bounds);
       const origin = this.model.topology.origin;
@@ -1589,14 +1665,71 @@ export class WebGLRenderer {
     return progress * progress * (3 - 2 * progress);
   }
 
-  private worldViewportBounds(paddingCss: number): WorldBounds {
-    const cellSize = this.cellSize;
+  private rotationComponents(): { cos: number; sin: number } {
+    if (this.fieldRotation === 90) return { cos: 0, sin: 1 };
+    if (this.fieldRotation === 180) return { cos: -1, sin: 0 };
+    if (this.fieldRotation === 270) return { cos: 0, sin: -1 };
+    return { cos: 1, sin: 0 };
+  }
+
+  private rotateVector(x: number, y: number): WorldPoint {
+    const { cos, sin } = this.rotationComponents();
+    return { x: cos * x - sin * y, y: sin * x + cos * y };
+  }
+
+  private unrotateVector(x: number, y: number): WorldPoint {
+    const { cos, sin } = this.rotationComponents();
+    return { x: cos * x + sin * y, y: -sin * x + cos * y };
+  }
+
+  private screenToWorld(screenX: number, screenY: number): WorldPoint {
     const origin = this.model.topology.origin;
+    const localScreen = this.unrotateVector(screenX - this.width / 2, screenY - this.height / 2);
     return {
-      minX: origin.x + (-paddingCss - this.width / 2 - this.panX) / cellSize,
-      minY: origin.y + (-paddingCss - this.height / 2 - this.panY) / cellSize,
-      maxX: origin.x + (this.width + paddingCss - this.width / 2 - this.panX) / cellSize,
-      maxY: origin.y + (this.height + paddingCss - this.height / 2 - this.panY) / cellSize,
+      x: origin.x + (localScreen.x - this.panX) / this.cellSize,
+      y: origin.y + (localScreen.y - this.panY) / this.cellSize,
+    };
+  }
+
+  private worldToScreen(worldX: number, worldY: number): WorldPoint {
+    const origin = this.model.topology.origin;
+    const relative = this.rotateVector(
+      this.panX + (worldX - origin.x) * this.cellSize,
+      this.panY + (worldY - origin.y) * this.cellSize,
+    );
+    return {
+      x: this.width / 2 + relative.x,
+      y: this.height / 2 + relative.y,
+    };
+  }
+
+  private screenCellBounds(paddingCss: number): ExploredBounds {
+    const cells = [
+      this.screenToCell(-paddingCss, -paddingCss),
+      this.screenToCell(this.width + paddingCss, -paddingCss),
+      this.screenToCell(-paddingCss, this.height + paddingCss),
+      this.screenToCell(this.width + paddingCss, this.height + paddingCss),
+    ];
+    return {
+      minX: Math.min(...cells.map((cell) => cell.x)),
+      minY: Math.min(...cells.map((cell) => cell.y)),
+      maxX: Math.max(...cells.map((cell) => cell.x)),
+      maxY: Math.max(...cells.map((cell) => cell.y)),
+    };
+  }
+
+  private worldViewportBounds(paddingCss: number): WorldBounds {
+    const corners = [
+      this.screenToWorld(-paddingCss, -paddingCss),
+      this.screenToWorld(this.width + paddingCss, -paddingCss),
+      this.screenToWorld(-paddingCss, this.height + paddingCss),
+      this.screenToWorld(this.width + paddingCss, this.height + paddingCss),
+    ];
+    return {
+      minX: Math.min(...corners.map((point) => point.x)),
+      minY: Math.min(...corners.map((point) => point.y)),
+      maxX: Math.max(...corners.map((point) => point.x)),
+      maxY: Math.max(...corners.map((point) => point.y)),
     };
   }
 
@@ -2539,6 +2672,7 @@ export class WebGLRenderer {
       scratchFramebuffer,
       viewportUniform: requireUniform(gl, program, "u_viewport"),
       cameraCellUniform: requireUniform(gl, program, "u_cameraCell"),
+      rotationUniform: requireUniform(gl, program, "u_rotation"),
       cellSizeUniform: requireUniform(gl, program, "u_cellSize"),
       dprUniform: requireUniform(gl, program, "u_dpr"),
       artifactUniform: requireUniform(gl, program, "u_artifact"),
@@ -2552,6 +2686,7 @@ export class WebGLRenderer {
       lodColorsUniform: requireUniform(gl, program, "u_lodColors[0]"),
       genericViewportUniform: requireUniform(gl, genericProgram, "u_viewport"),
       genericCameraWorldUniform: requireUniform(gl, genericProgram, "u_cameraWorld"),
+      genericRotationUniform: requireUniform(gl, genericProgram, "u_rotation"),
       genericCellSizeUniform: requireUniform(gl, genericProgram, "u_cellSize"),
       genericDprUniform: requireUniform(gl, genericProgram, "u_dpr"),
       genericArtifactUniform: requireUniform(gl, genericProgram, "u_artifact"),
@@ -2565,6 +2700,7 @@ export class WebGLRenderer {
       genericLodColorsUniform: requireUniform(gl, genericProgram, "u_lodColors[0]"),
       pixelViewportUniform: requireUniform(gl, pixelProgram, "u_viewport"),
       pixelCameraCellUniform: requireUniform(gl, pixelProgram, "u_cameraCell"),
+      pixelRotationUniform: requireUniform(gl, pixelProgram, "u_rotation"),
       pixelTextureOriginUniform: requireUniform(gl, pixelProgram, "u_textureOrigin"),
       pixelTextureSizeUniform: requireUniform(gl, pixelProgram, "u_textureSize"),
       pixelCellSizeUniform: requireUniform(gl, pixelProgram, "u_cellSize"),

@@ -45,7 +45,7 @@ test("R16 — cell coordinates produce a safe, reproducible clipboard reference"
     state: (element as HTMLElement).dataset.state,
   }));
   expect(reference).toBe(
-    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | density=${expected.density} | things=${expected.things} | topology=square | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | theme=light`,
+    `Infinite Mines cell (${current.x}, ${current.y}) | mode=${expected.mode} | density=${expected.density} | things=${expected.things} | topology=square | seed=${expected.seed} | safe=${expected.safe} | state=${current.state} | scale=${expected.scale}px/tile | rotation=0deg | theme=light`,
   );
   expect(reference).not.toMatch(/mine=(?:true|false)/);
   expect(reference).not.toContain("concealed mine");

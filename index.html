@@ -295,6 +295,24 @@
           </div>
           <p class="dialog-note">Each topology, density, and Things choice keeps its own field. A new combination starts with a random seed.</p>
         </section>
+        <section class="settings-section" aria-labelledby="rotation-heading">
+          <p class="settings-label" id="rotation-heading">FIELD ROTATION</p>
+          <div class="control-options rotation-options" id="rotation-options" aria-labelledby="rotation-heading">
+            <button type="button" data-rotation="0" aria-pressed="true">
+              <b>0°</b><small>North up</small>
+            </button>
+            <button type="button" data-rotation="90" aria-pressed="false">
+              <b>90°</b><small>Clockwise</small>
+            </button>
+            <button type="button" data-rotation="180" aria-pressed="false">
+              <b>180°</b><small>Upside down</small>
+            </button>
+            <button type="button" data-rotation="270" aria-pressed="false">
+              <b>270°</b><small>Counterclockwise</small>
+            </button>
+          </div>
+          <p class="dialog-note">Rotation changes only how the field is displayed. Cells, progress, and the saved viewport stay unchanged.</p>
+        </section>
         <section class="settings-section" aria-labelledby="density-heading">
           <p class="settings-label" id="density-heading">MINE DENSITY · <span id="current-density">18% CURRENT</span></p>
           <div class="difficulty-list" id="difficulty-list">
