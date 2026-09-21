@@ -294,6 +294,176 @@ test("R50 — every topology and quarter-turn share rendering, hit-testing, pan,
   }
 });
 
+test("R50 — cell glyphs and Thing artwork remain screen-upright through every field rotation", async ({ page }) => {
+  await openDeterministicGame(page, 0x50a7_0003);
+  const samples = await page.evaluate(async ({ opened, opened1 }) => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const gl = renderer.gl;
+    const privateRenderer = renderer as unknown as {
+      resources: {
+        atlasTexture: WebGLTexture;
+        genericAtlasTexture: WebGLTexture;
+        thingAtlasTexture: WebGLTexture;
+      };
+    };
+    const privateModel = api.model as unknown as {
+      artifactForZone(zoneX: number, zoneY: number): { x: number; y: number };
+    };
+    const settle = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const marker = (size: number, firstY: number, secondY: number, markerSize: number) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Missing marker canvas context");
+      context.fillStyle = "#ff00ff";
+      context.fillRect((size - markerSize) / 2, firstY, markerSize, markerSize);
+      context.fillStyle = "#00ffff";
+      context.fillRect((size - markerSize) / 2, secondY, markerSize, markerSize);
+      return canvas;
+    };
+    const upload = (texture: WebGLTexture, x: number, y: number, source: HTMLCanvasElement) => {
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    };
+    const measure = () => {
+      const width = renderer.canvas.width;
+      const height = renderer.canvas.height;
+      const pixels = new Uint8Array(width * height * 4);
+      gl.finish();
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      const totals = {
+        first: { x: 0, y: 0, count: 0 },
+        second: { x: 0, y: 0, count: 0 },
+      };
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const offset = (y * width + x) * 4;
+          const red = pixels[offset];
+          const green = pixels[offset + 1];
+          const blue = pixels[offset + 2];
+          const target = red > 240 && green < 15 && blue > 240
+            ? totals.first
+            : red < 15 && green > 240 && blue > 240
+              ? totals.second
+              : null;
+          if (!target) continue;
+          target.x += x;
+          target.y += y;
+          target.count += 1;
+        }
+      }
+      if (totals.first.count === 0 || totals.second.count === 0) {
+        return { dx: 0, dy: 0, firstPixels: totals.first.count, secondPixels: totals.second.count };
+      }
+      return {
+        dx: totals.second.x / totals.second.count - totals.first.x / totals.first.count,
+        dy: totals.second.y / totals.second.count - totals.first.y / totals.first.count,
+        firstPixels: totals.first.count,
+        secondPixels: totals.second.count,
+      };
+    };
+    const results: Array<{
+      kind: "cell" | "thing";
+      topology: string;
+      rotation: number;
+      dx: number;
+      dy: number;
+      firstPixels: number;
+      secondPixels: number;
+      drawCalls: number;
+    }> = [];
+    const rotations = [0, 90, 180, 270] as const;
+    const topologies = ["square", "triangular", "rhombille"] as const;
+
+    const cellMarker = marker(64, 22, 36, 7);
+    upload(privateRenderer.resources.atlasTexture, 64, 0, cellMarker);
+    upload(privateRenderer.resources.genericAtlasTexture, 64, 0, cellMarker);
+    for (const topology of topologies) {
+      api.model.reset("beginner", 0x50a7_0003, false, topology, undefined, false);
+      api.model.store.clear();
+      api.model.store.set(0, 0, opened1);
+      renderer.syncThings();
+      renderer.restoreView({ version: 1, panX: 0, panY: 0, zoom: 2 });
+      for (const rotation of rotations) {
+        renderer.setRotation(rotation);
+        renderer.requestRender();
+        await settle();
+        results.push({ kind: "cell", topology, rotation, ...measure(), drawCalls: api.diagnostics().drawCalls });
+      }
+    }
+
+    await api.setThingsEnabled(true);
+    await renderer.waitForThingSprites();
+    const thingSlot = await renderer.waitForThingSprite(0);
+    const thingMarker = marker(512, 180, 340, 24);
+    upload(
+      privateRenderer.resources.thingAtlasTexture,
+      (thingSlot % 8) * 512,
+      Math.floor(thingSlot / 8) * 512,
+      thingMarker,
+    );
+    for (const topology of topologies) {
+      api.model.reset("beginner", 0x50a7_0003, false, topology, undefined, true);
+      let thing: ReturnType<typeof api.model.thingVisualAt> = null;
+      search: for (let zoneY = -24; zoneY <= 24; zoneY += 1) {
+        for (let zoneX = -24; zoneX <= 24; zoneX += 1) {
+          const anchor = privateModel.artifactForZone(zoneX, zoneY);
+          const candidate = api.model.thingVisualAt(anchor.x, anchor.y);
+          if (candidate?.sprite !== 0) continue;
+          thing = candidate;
+          break search;
+        }
+      }
+      if (!thing) throw new Error(`No ${topology} upright-art Thing`);
+      api.model.store.clear();
+      for (const cell of thing.reservedCells) api.model.store.set(cell.x, cell.y, opened);
+      renderer.syncThings();
+      const vertices = thing.cells.flatMap((cell) => api.model.topology.geometry(cell.x, cell.y).vertices);
+      const centerX = (Math.min(...vertices.map((point) => point.x)) + Math.max(...vertices.map((point) => point.x))) / 2;
+      const centerY = (Math.min(...vertices.map((point) => point.y)) + Math.max(...vertices.map((point) => point.y))) / 2;
+      const origin = api.model.topology.origin;
+      renderer.restoreView({
+        version: 1,
+        panX: -(centerX - origin.x) * 50,
+        panY: -(centerY - origin.y) * 50,
+        zoom: 2,
+      });
+      for (const rotation of rotations) {
+        renderer.setRotation(rotation);
+        renderer.requestRender();
+        await settle();
+        results.push({ kind: "thing", topology, rotation, ...measure(), drawCalls: api.diagnostics().drawCalls });
+      }
+    }
+    return results;
+  }, { opened: CellState.Opened, opened1: CellState.Opened1 });
+
+  expect(samples).toHaveLength(24);
+  for (const kind of ["cell", "thing"] as const) {
+    for (const topology of ["square", "triangular", "rhombille"] as const) {
+      const cases = samples.filter((sample) => sample.kind === kind && sample.topology === topology);
+      const baseline = cases.find((sample) => sample.rotation === 0);
+      if (!baseline) throw new Error(`Missing ${kind}/${topology} baseline`);
+      const baselineLength = Math.hypot(baseline.dx, baseline.dy);
+      expect(baselineLength, `${kind}/${topology} marker separation`).toBeGreaterThan(4);
+      for (const sample of cases) {
+        const label = `${kind}/${topology}/${sample.rotation}°`;
+        const length = Math.hypot(sample.dx, sample.dy);
+        const alignment = (sample.dx * baseline.dx + sample.dy * baseline.dy) / (length * baselineLength);
+        expect(sample.firstPixels, `${label} first marker`).toBeGreaterThan(5);
+        expect(sample.secondPixels, `${label} second marker`).toBeGreaterThan(5);
+        expect(length, `${label} marker separation`).toBeGreaterThan(4);
+        expect(alignment, `${label} screen orientation`).toBeGreaterThan(0.94);
+        expect(sample.drawCalls, `${label} draw count`).toBe(1);
+      }
+    }
+  }
+});
+
 test("R50 — rotated dense fields retain the one-pixel framebuffer blit path", async ({ page }) => {
   await openDeterministicGame(page);
   const result = await page.evaluate(async ({ opened }) => {

@@ -599,7 +599,7 @@ test("R46 — Deathmatch ends with one focused restart action and rejects reviva
   expect(rejected).toEqual({ result: false, health: 0, cheats: 0, alive: false });
   await page.evaluate(() => window.__infiniteMines.flushSave());
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("restored");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   await expect(page.locator("#game-over-screen")).toBeVisible();
   await expect(page.locator("#cheat-death-button")).toBeHidden();
   await expect(page.locator("#game-over-restart-button")).toHaveClass(/primary-action/);

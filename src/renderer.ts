@@ -6,8 +6,10 @@ import {
   isOpened,
   openedClue,
   type ExploredBounds,
+  type ThingVisual,
 } from "./model";
 import type { ViewSnapshot } from "./persistence";
+import { thingAlphaOffsets } from "./thing-alpha-footprints";
 import { loadThingCatalog, type ThingCatalog } from "./thing-catalog";
 import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 import {
@@ -209,6 +211,7 @@ uniform vec3 u_background;
 uniform vec3 u_marked;
 uniform vec3 u_exploded;
 uniform vec3 u_lodColors[${SQUARE_SPRITE_COUNT}];
+uniform vec2 u_rotation;
 uniform float u_dpr;
 uniform float u_cellSize;
 
@@ -230,6 +233,7 @@ vec4 sampleThing(vec2 uv) {
 }
 
 void main() {
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
   float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   bool thingBorder = v_cellKind > 3.5;
   bool thingCell = v_cellKind > 2.5 && !thingBorder;
@@ -243,13 +247,15 @@ void main() {
     float side = float(packed & 7);
     vec2 fragmentOffset = vec2(float((packed >> 3) & 7), float((packed >> 6) & 7)) - 1.0;
     vec2 thingUv = (fragmentOffset + clamp(v_cellUv, 0.0, 0.999999)) / side;
+    thingUv = rotation * (thingUv - 0.5) + 0.5;
     if (thingUv.x < 0.0 || thingUv.y < 0.0 || thingUv.x >= 1.0 || thingUv.y >= 1.0) discard;
     vec4 glyph = sampleThing(thingUv);
     if (glyph.a <= 0.0) discard;
     outColor = glyph * detailMix;
     return;
   }
-  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(v_cellUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
+  vec2 contentUv = rotation * (v_cellUv - 0.5) + 0.5;
+  vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + clamp(contentUv, 0.0, 1.0) * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${SQUARE_ATLAS_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
   vec4 glyph = texture(u_atlas, atlasPixel / atlasSize);
   bool outerBorder = ((edges & 4) != 0 && v_cellUv.x >= 1.0) || ((edges & 8) != 0 && v_cellUv.y >= 1.0);
@@ -365,6 +371,7 @@ uniform vec3 u_background;
 uniform vec3 u_marked;
 uniform vec3 u_exploded;
 uniform vec3 u_lodColors[${SPRITE_COUNT}];
+uniform vec2 u_rotation;
 uniform float u_dpr;
 uniform float u_cellSize;
 
@@ -393,6 +400,7 @@ vec4 sampleThing(vec2 uv) {
 }
 
 void main() {
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
   float detailMix = smoothstep(${DETAIL_FADE_START.toFixed(1)}, ${DETAIL_FADE_END.toFixed(1)}, u_cellSize);
   int shape = int(v_shape + 0.5);
   int edges = int(v_edges + 0.5);
@@ -462,8 +470,9 @@ void main() {
   if (!inside) discard;
 
   if (thingCell) {
-    if (v_thingUv.x < 0.0 || v_thingUv.y < 0.0 || v_thingUv.x >= 1.0 || v_thingUv.y >= 1.0) discard;
-    vec4 glyph = sampleThing(v_thingUv);
+    vec2 thingUv = rotation * (v_thingUv - 0.5) + 0.5;
+    if (thingUv.x < 0.0 || thingUv.y < 0.0 || thingUv.x >= 1.0 || thingUv.y >= 1.0) discard;
+    vec4 glyph = sampleThing(thingUv);
     if (glyph.a <= 0.0) discard;
     outColor = glyph * detailMix;
     return;
@@ -492,7 +501,7 @@ void main() {
   int stateIndex = int(clamp(v_sprite, 0.0, ${EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
   float contentExtent = shape == 3 ? 0.85 : 0.62;
-  vec2 contentLocal = v_spriteOffset / contentExtent;
+  vec2 contentLocal = rotation * v_spriteOffset / contentExtent;
   vec2 uv = clamp(contentLocal + 0.5, 0.0, 1.0);
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
   vec2 atlasSize = vec2(float(${ATLAS_SPRITE_COUNT * SPRITE_PIXELS}), float(${SPRITE_PIXELS}));
@@ -1733,6 +1742,23 @@ export class WebGLRenderer {
     };
   }
 
+  private thingArtCells(thing: ThingVisual): readonly { x: number; y: number }[] {
+    if (this.fieldRotation === 0) return thing.artCells;
+    const offsets = thingAlphaOffsets(
+      this.model.topologyId,
+      thing.x,
+      thing.y,
+      thing.side,
+      thing.sprite,
+      this.fieldRotation,
+    );
+    const cells: Array<{ x: number; y: number }> = [];
+    for (let index = 0; index < offsets.length; index += 2) {
+      cells.push({ x: thing.x + offsets[index], y: thing.y + offsets[index + 1] });
+    }
+    return cells;
+  }
+
   private rebuildGenericInstances(
     anchorX: number,
     anchorY: number,
@@ -1849,7 +1875,7 @@ export class WebGLRenderer {
       const visual = this.model.thingVisualAt(x, y);
       if (!visual) return;
       const slot = this.thingAtlasSlot(visual.sprite);
-      if (slot !== null) thingVisuals.push({ ...visual, sprite: slot });
+      if (slot !== null) thingVisuals.push({ ...visual, artCells: this.thingArtCells(visual), sprite: slot });
     };
     if (renderCells) {
       for (const cell of renderCells.values()) collectThing(cell.x, cell.y, cell.state, cell.frontier);
@@ -2111,7 +2137,7 @@ export class WebGLRenderer {
         if (slot === null) continue;
         thingVisuals.push({
           cells: visual.cells,
-          artCells: visual.artCells,
+          artCells: this.thingArtCells(visual),
           reservedCells: visual.reservedCells,
           worldX,
           worldY,

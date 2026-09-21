@@ -70,23 +70,33 @@ describe("reproducible CI contract", () => {
         { x: 2, y: 0 },
       ],
     } as const;
+    const rotations = [0, 90, 180, 270] as const;
     for (const [topology, anchors] of Object.entries(variants)) {
       for (const anchor of anchors) {
         for (const side of [3, 4]) {
-          for (let sprite = 0; sprite < THING_CATALOG_COUNT; sprite += 1) {
-            const offsets = fullThingAlphaOffsets(topology as keyof typeof variants, anchor.x, anchor.y, side, sprite);
-            expect(offsets.length).toBeGreaterThan(0);
-            expect(offsets.length % 2).toBe(0);
-            expect(new Set(Array.from({ length: offsets.length / 2 }, (_, index) => `${offsets[index * 2]},${offsets[index * 2 + 1]}`)).size).toBe(
-              offsets.length / 2,
-            );
-            patterns += 1;
+          for (const rotation of rotations) {
+            for (let sprite = 0; sprite < THING_CATALOG_COUNT; sprite += 1) {
+              const offsets = fullThingAlphaOffsets(
+                topology as keyof typeof variants,
+                anchor.x,
+                anchor.y,
+                side,
+                sprite,
+                rotation,
+              );
+              expect(offsets.length).toBeGreaterThan(0);
+              expect(offsets.length % 2).toBe(0);
+              expect(new Set(Array.from({ length: offsets.length / 2 }, (_, index) => `${offsets[index * 2]},${offsets[index * 2 + 1]}`)).size).toBe(
+                offsets.length / 2,
+              );
+              patterns += 1;
+            }
           }
         }
       }
     }
-    expect(patterns).toBe(THING_CATALOG_COUNT * 12);
-  });
+    expect(patterns).toBe(THING_CATALOG_COUNT * 12 * rotations.length);
+  }, 20_000);
 
   it("pins package tools to the versions installed by the lockfile", () => {
     const packageJson = JSON.parse(read("package.json"));

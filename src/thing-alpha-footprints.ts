@@ -6,7 +6,10 @@ type ThingAlphaResolver = (
   anchorY: number,
   side: number,
   sprite: number,
+  rotation: ThingArtworkRotation,
 ) => readonly number[];
+
+export type ThingArtworkRotation = 0 | 90 | 180 | 270;
 
 let resolver: ThingAlphaResolver | null = null;
 
@@ -20,7 +23,8 @@ export const thingAlphaOffsets = (
   anchorY: number,
   side: number,
   sprite: number,
+  rotation: ThingArtworkRotation = 0,
 ): readonly number[] => {
   if (!resolver) throw new Error("Thing catalog was not loaded before field generation");
-  return resolver(topology, anchorX, anchorY, side, sprite);
+  return resolver(topology, anchorX, anchorY, side, sprite, rotation);
 };

@@ -179,7 +179,7 @@ test("R08 — Classic controls restore click-to-reveal and persist", async ({ pa
   expect(await page.evaluate(({ x, y }) => window.__infiniteMines.model.getState(x, y), cell)).toBeGreaterThan(0);
 
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().controlsMode)).toBe("classic");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().controlsMode)).toBe("classic");
   await expect(page.locator("#reveal-key")).toHaveText("CLICK");
   expect(await page.evaluate(() => localStorage.getItem("infinite-mines-controls"))).toBe("classic");
 });

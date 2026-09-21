@@ -22,6 +22,7 @@ import {
 } from "../src/model";
 import { loadThingCatalog } from "../src/thing-catalog";
 import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "../src/thing-catalog-meta";
+import { thingAlphaOffsets } from "../src/thing-alpha-footprints";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
 beforeAll(async () => {
@@ -472,6 +473,17 @@ describe("gameplay", () => {
                     ).toBe(true);
                   }
                   const reservedKeys = new Set(visual.reservedCells.map((cell) => `${cell.x},${cell.y}`));
+                  for (const rotation of [0, 90, 180, 270] as const) {
+                    const offsets = thingAlphaOffsets(topology, visual.x, visual.y, visual.side, visual.sprite, rotation);
+                    for (let offset = 0; offset < offsets.length; offset += 2) {
+                      const artX = visual.x + offsets[offset];
+                      const artY = visual.y + offsets[offset + 1];
+                      expect(
+                        reservedKeys.has(`${artX},${artY}`),
+                        `${topology}/${mode}/${rotation}° art cell ${artX},${artY} is mine-free`,
+                      ).toBe(true);
+                    }
+                  }
                   for (const cell of visual.artCells) {
                     expect(
                       reservedKeys.has(`${cell.x},${cell.y}`),

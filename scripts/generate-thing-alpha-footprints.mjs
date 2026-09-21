@@ -10,6 +10,7 @@ const TEXTURE_PIXELS = 512;
 const TEXTURE_PADDING = 16;
 const TRIANGULAR_FIT = 0.9;
 const RHOMBILLE_FIT = 0.8;
+const FIELD_ROTATIONS = [0, 90, 180, 270];
 const CURATED_SPRITES = [
   "emoji_u1f3f0.svg",
   "emoji_u1f3ef.svg",
@@ -104,28 +105,42 @@ const artBounds = (topologyId, topology, visual) => {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 };
 
-const cellPixelIndices = (topology, cell, bounds) => {
-  const vertices = topology.geometry(cell.x, cell.y).vertices;
+const rotateNormalized = (rotation, x, y) => {
+  if (rotation === 90) return { x: -y, y: x };
+  if (rotation === 180) return { x: -x, y: -y };
+  if (rotation === 270) return { x: y, y: -x };
+  return { x, y };
+};
+
+const cellPixelIndices = (topology, cell, bounds, rotation) => {
+  const vertices = topology.geometry(cell.x, cell.y).vertices.map((vertex) => {
+    const normalized = rotateNormalized(
+      rotation,
+      (vertex.x - bounds.minX) / bounds.width - 0.5,
+      (vertex.y - bounds.minY) / bounds.height - 0.5,
+    );
+    return { x: normalized.x + 0.5, y: normalized.y + 0.5 };
+  });
   const cellMinX = Math.min(...vertices.map((vertex) => vertex.x));
   const cellMinY = Math.min(...vertices.map((vertex) => vertex.y));
   const cellMaxX = Math.max(...vertices.map((vertex) => vertex.x));
   const cellMaxY = Math.max(...vertices.map((vertex) => vertex.y));
-  const minPixelX = Math.max(0, Math.floor(((cellMinX - bounds.minX) / bounds.width) * TEXTURE_PIXELS) - 1);
-  const minPixelY = Math.max(0, Math.floor(((cellMinY - bounds.minY) / bounds.height) * TEXTURE_PIXELS) - 1);
+  const minPixelX = Math.max(0, Math.floor(cellMinX * TEXTURE_PIXELS) - 1);
+  const minPixelY = Math.max(0, Math.floor(cellMinY * TEXTURE_PIXELS) - 1);
   const maxPixelX = Math.min(
     TEXTURE_PIXELS - 1,
-    Math.ceil(((cellMaxX - bounds.minX) / bounds.width) * TEXTURE_PIXELS) + 1,
+    Math.ceil(cellMaxX * TEXTURE_PIXELS) + 1,
   );
   const maxPixelY = Math.min(
     TEXTURE_PIXELS - 1,
-    Math.ceil(((cellMaxY - bounds.minY) / bounds.height) * TEXTURE_PIXELS) + 1,
+    Math.ceil(cellMaxY * TEXTURE_PIXELS) + 1,
   );
   const indices = [];
   for (let pixelY = minPixelY; pixelY <= maxPixelY; pixelY += 1) {
     for (let pixelX = minPixelX; pixelX <= maxPixelX; pixelX += 1) {
-      const worldX = bounds.minX + ((pixelX + 0.5) / TEXTURE_PIXELS) * bounds.width;
-      const worldY = bounds.minY + ((pixelY + 0.5) / TEXTURE_PIXELS) * bounds.height;
-      if (pointInConvexPolygon(worldX, worldY, vertices)) indices.push(pixelY * TEXTURE_PIXELS + pixelX);
+      const textureX = (pixelX + 0.5) / TEXTURE_PIXELS;
+      const textureY = (pixelY + 0.5) / TEXTURE_PIXELS;
+      if (pointInConvexPolygon(textureX, textureY, vertices)) indices.push(pixelY * TEXTURE_PIXELS + pixelX);
     }
   }
   return indices;
@@ -266,15 +281,17 @@ const main = async () => {
               }))
             : candidates.slice(0, side ** 2);
         const bounds = artBounds(topologyId, topology, visual);
-        layouts.push({ topology: topologyId, variant, side, candidates, bounds, anchor });
+        for (const rotation of FIELD_ROTATIONS) {
+          layouts.push({ topology: topologyId, variant, side, rotation, candidates, bounds, anchor });
+        }
       }
     }
   }
 
   const words = new Uint32Array(layouts.length * sprites.length * 2);
   const counts = [];
-  const samples = layouts.map(({ topology, candidates, bounds }) =>
-    candidates.map((cell) => cellPixelIndices(TOPOLOGIES[topology], cell, bounds)),
+  const samples = layouts.map(({ topology, rotation, candidates, bounds }) =>
+    candidates.map((cell) => cellPixelIndices(TOPOLOGIES[topology], cell, bounds, rotation)),
   );
   await page.evaluate((value) => {
     globalThis.__thingFootprintSamples = value;
@@ -283,8 +300,10 @@ const main = async () => {
     const svg = await readFile(path.join(ROOT, "public/things", sprites[sprite]), "utf8");
     const masks = await rasterizeMasks(page, svg);
     for (let layoutIndex = 0; layoutIndex < layouts.length; layoutIndex += 1) {
-      const { topology, variant, side } = layouts[layoutIndex];
-      if (masks.counts[layoutIndex] === 0) throw new Error(`Empty alpha footprint for ${topology}/${variant}/${side}/${sprite}`);
+      const { topology, variant, side, rotation } = layouts[layoutIndex];
+      if (masks.counts[layoutIndex] === 0) {
+        throw new Error(`Empty alpha footprint for ${topology}/${variant}/${side}/${rotation}/${sprite}`);
+      }
       const wordIndex = (layoutIndex * sprites.length + sprite) * 2;
       words[wordIndex] = masks.words[layoutIndex * 2];
       words[wordIndex + 1] = masks.words[layoutIndex * 2 + 1];
@@ -295,16 +314,17 @@ const main = async () => {
   const bytes = Buffer.allocUnsafe(words.length * 4);
   words.forEach((word, index) => bytes.writeUInt32LE(word, index * 4));
   const encodedWords = bytes.toString("base64");
-  const serializedLayouts = layouts.map(({ topology, variant, side, candidates, anchor }) => ({
+  const serializedLayouts = layouts.map(({ topology, variant, side, rotation, candidates, anchor }) => ({
     topology,
     variant,
     side,
+    rotation,
     candidates: candidates.map((cell) => [cell.x - anchor.x, cell.y - anchor.y]),
   }));
   const fullLines = [
     "// Generated by scripts/generate-thing-alpha-footprints.mjs.",
     "// The catalog begins with the curated deck, then contains every remaining Noto SVG.",
-    "// Each two-word mask marks topology cells intersecting SVG alpha after one-texel dilation.",
+    "// Each two-word mask marks topology cells intersecting screen-upright SVG alpha after one-texel dilation.",
     'import type { TopologyId } from "./topology";',
     "",
     `export const THING_CATALOG_FILES = ${JSON.stringify(sprites)} as const;`,
@@ -313,7 +333,7 @@ const main = async () => {
     `const ENCODED_MASK_WORDS = ${JSON.stringify(encodedWords)};`,
     "const encodedBytes = Uint8Array.from(atob(ENCODED_MASK_WORDS), (character) => character.charCodeAt(0));",
     "const maskWords = new DataView(encodedBytes.buffer, encodedBytes.byteOffset, encodedBytes.byteLength);",
-    "const layoutByKey = new Map(LAYOUTS.map((layout, index) => [`${layout.topology}:${layout.variant}:${layout.side}`, index]));",
+    "const layoutByKey = new Map(LAYOUTS.map((layout, index) => [`${layout.topology}:${layout.variant}:${layout.side}:${layout.rotation}`, index]));",
     "",
     "const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;",
     "",
@@ -326,8 +346,9 @@ const main = async () => {
     "  anchorY: number,",
     "  side: number,",
     "  sprite: number,",
+    "  rotation: 0 | 90 | 180 | 270 = 0,",
     "): readonly number[] => {",
-    "  const key = `${topology}:${topologyVariant(topology, anchorX, anchorY)}:${side}`;",
+    "  const key = `${topology}:${topologyVariant(topology, anchorX, anchorY)}:${side}:${rotation}`;",
     "  const layoutIndex = layoutByKey.get(key);",
     '  if (layoutIndex === undefined || sprite < 0 || sprite >= THING_CATALOG_FILES.length) throw new Error(`Missing Thing alpha footprint: ${key}:${sprite}`);',
     "  const layout = LAYOUTS[layoutIndex];",
@@ -352,8 +373,10 @@ const main = async () => {
   await writeFile(path.join(ROOT, "src/thing-catalog-meta.ts"), `${metaLines.join("\n")}\n`);
   await browser.close();
   await vite.close();
+  const minCells = counts.reduce((minimum, count) => Math.min(minimum, count), Number.POSITIVE_INFINITY);
+  const maxCells = counts.reduce((maximum, count) => Math.max(maximum, count), 0);
   console.log(
-    JSON.stringify({ sprites: sprites.length, patterns: counts.length, maskBytes: bytes.length, minCells: Math.min(...counts), maxCells: Math.max(...counts), chromium: await chromium.executablePath() }),
+    JSON.stringify({ sprites: sprites.length, patterns: counts.length, maskBytes: bytes.length, minCells, maxCells, chromium: await chromium.executablePath() }),
   );
 };
 
