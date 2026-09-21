@@ -78,6 +78,7 @@ test("R49 — the full Thing catalog loads lazily into a bounded GPU atlas", asy
     const api = window.__infiniteMines;
     await api.setThingsEnabled(true);
     await api.renderer.waitForThingSprites();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     const initial = api.diagnostics();
     const extraSprites = [12, 1000, lastSprite, ...Array.from({ length: 50 }, (_, index) => index + 13)];
     for (const sprite of extraSprites) await api.renderer.waitForThingSprite(sprite);
