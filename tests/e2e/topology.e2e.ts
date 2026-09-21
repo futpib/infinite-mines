@@ -791,7 +791,10 @@ test("R48 — both frontier modes stay complete across topology, zoom, and devic
 
 test("R37 — topology damage matches a full redraw", async ({ page }) => {
   await openDeterministicGame(page, 0x51a7_10a0);
-  await page.evaluate(() => window.__infiniteMines.newGame("master", "rhombille"));
+  await page.evaluate(async () => {
+    window.__infiniteMines.newGame("master", "rhombille");
+    await window.__infiniteMines.renderer.waitForThingSprites();
+  });
   const beforePrepared = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
   await page.evaluate((opened) => {
     const api = window.__infiniteMines;
