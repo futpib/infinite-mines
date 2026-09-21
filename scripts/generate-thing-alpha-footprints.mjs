@@ -2,6 +2,7 @@ import { chromium } from "@playwright/test";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 import { createServer } from "vite";
 import { isExcludedThingFilename } from "./thing-catalog-policy.mjs";
 
@@ -313,7 +314,7 @@ const main = async () => {
 
   const bytes = Buffer.allocUnsafe(words.length * 4);
   words.forEach((word, index) => bytes.writeUInt32LE(word, index * 4));
-  const encodedWords = bytes.toString("base64");
+  const encodedWords = gzipSync(bytes, { level: 9 }).toString("base64");
   const serializedLayouts = layouts.map(({ topology, variant, side, rotation, candidates, anchor }) => ({
     topology,
     variant,
@@ -330,9 +331,10 @@ const main = async () => {
     `export const THING_CATALOG_FILES = ${JSON.stringify(sprites)} as const;`,
     "",
     `const LAYOUTS = ${JSON.stringify(serializedLayouts)} as const;`,
-    `const ENCODED_MASK_WORDS = ${JSON.stringify(encodedWords)};`,
-    "const encodedBytes = Uint8Array.from(atob(ENCODED_MASK_WORDS), (character) => character.charCodeAt(0));",
-    "const maskWords = new DataView(encodedBytes.buffer, encodedBytes.byteOffset, encodedBytes.byteLength);",
+    `const ENCODED_MASK_WORDS_GZIP = ${JSON.stringify(encodedWords)};`,
+    "const compressedMaskWords = Uint8Array.from(atob(ENCODED_MASK_WORDS_GZIP), (character) => character.charCodeAt(0));",
+    'const maskWordStream = new Blob([compressedMaskWords]).stream().pipeThrough(new DecompressionStream("gzip"));',
+    "const maskWords = new DataView(await new Response(maskWordStream).arrayBuffer());",
     "const layoutByKey = new Map(LAYOUTS.map((layout, index) => [`${layout.topology}:${layout.variant}:${layout.side}:${layout.rotation}`, index]));",
     "",
     "const positiveModulo = (value: number, divisor: number): number => ((value % divisor) + divisor) % divisor;",
