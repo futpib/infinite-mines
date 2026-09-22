@@ -12,6 +12,7 @@ import type { ViewSnapshot } from "./persistence";
 import { thingAlphaOffsets } from "./thing-alpha-footprints";
 import { loadThingCatalog, type ThingCatalog } from "./thing-catalog";
 import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
+import { HyperbolicFieldRenderer } from "./hyperbolic-renderer";
 import {
   compareCells,
   type TopologyId,
@@ -20,7 +21,7 @@ import {
 } from "./topology";
 
 export interface RenderDiagnostics {
-  backend: "webgl2";
+  backend: "webgl2" | "canvas2d";
   topology: TopologyId;
   rotation: FieldRotation;
   lod: "detail" | "pixel";
@@ -686,6 +687,7 @@ const requireUniform = (gl: WebGL2RenderingContext, program: WebGLProgram, name:
 
 export class WebGLRenderer {
   readonly canvas: HTMLCanvasElement;
+  readonly curvedCanvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
   readonly model: GameModel;
   zoom = 1;
@@ -778,8 +780,14 @@ export class WebGLRenderer {
   private damageRedraws = 0;
   private panRedraws = 0;
   private fogFrontierMode: FogFrontierMode;
+  private readonly hyperbolic: HyperbolicFieldRenderer;
 
-  constructor(canvas: HTMLCanvasElement, model: GameModel, fogFrontierMode: FogFrontierMode = "cell") {
+  constructor(
+    canvas: HTMLCanvasElement,
+    curvedCanvas: HTMLCanvasElement,
+    model: GameModel,
+    fogFrontierMode: FogFrontierMode = "cell",
+  ) {
     const gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: false,
@@ -791,8 +799,10 @@ export class WebGLRenderer {
     });
     if (!gl) throw new Error("WebGL 2 is required to render Infinite Mines");
     this.canvas = canvas;
+    this.curvedCanvas = curvedCanvas;
     this.gl = gl;
     this.model = model;
+    this.hyperbolic = new HyperbolicFieldRenderer(curvedCanvas);
     this.fogFrontierMode = fogFrontierMode;
     this.theme = this.readTheme();
     this.resources = this.createResources();
@@ -818,7 +828,9 @@ export class WebGLRenderer {
   }
 
   get cellSize(): number {
-    return BASE_CELL_SIZE * this.zoom;
+    return this.model.topologyId === "pentagonal"
+      ? this.hyperbolic.centralCellPixels(this.zoom)
+      : BASE_CELL_SIZE * this.zoom;
   }
 
   get rotation(): FieldRotation {
@@ -879,7 +891,13 @@ export class WebGLRenderer {
   }
 
   createViewSnapshot(): ViewSnapshot {
-    return { version: 1, panX: this.panX, panY: this.panY, zoom: this.zoom };
+    return {
+      version: 1,
+      panX: this.panX,
+      panY: this.panY,
+      zoom: this.zoom,
+      ...(this.model.topologyId === "pentagonal" ? { hyperbolic: this.hyperbolic.createViewState() } : {}),
+    };
   }
 
   restoreView(value: unknown): boolean {
@@ -898,6 +916,11 @@ export class WebGLRenderer {
     this.panX = snapshot.panX as number;
     this.panY = snapshot.panY as number;
     this.zoom = snapshot.zoom as number;
+    if (this.model.topologyId === "pentagonal") {
+      this.panX = 0;
+      this.panY = 0;
+      if (!this.hyperbolic.restoreViewState(snapshot.hyperbolic)) this.hyperbolic.home();
+    }
     this.range = null;
     this.requestRender();
     return true;
@@ -934,11 +957,17 @@ export class WebGLRenderer {
     this.panX = 0;
     this.panY = 0;
     this.zoom = 1;
+    if (this.model.topologyId === "pentagonal") this.hyperbolic.home();
     this.range = null;
     this.requestRender();
   }
 
   panBy(deltaX: number, deltaY: number): void {
+    if (this.model.topologyId === "pentagonal") {
+      this.hyperbolic.panBy(deltaX, deltaY, this.zoom, this.fieldRotation);
+      this.requestRender();
+      return;
+    }
     const localDelta = this.unrotateVector(deltaX, deltaY);
     this.panX += localDelta.x;
     this.panY += localDelta.y;
@@ -950,6 +979,19 @@ export class WebGLRenderer {
   }
 
   zoomAt(screenX: number, screenY: number, factor: number): void {
+    if (this.model.topologyId === "pentagonal") {
+      const nextZoom = this.hyperbolic.zoomAt(
+        screenX,
+        screenY,
+        this.zoom,
+        this.zoom * factor,
+        this.fieldRotation,
+      );
+      if (nextZoom === this.zoom) return;
+      this.zoom = nextZoom;
+      this.requestRender();
+      return;
+    }
     const previousSize = this.cellSize;
     const localScreen = this.unrotateVector(screenX - this.width / 2, screenY - this.height / 2);
     const world = {
@@ -966,8 +1008,16 @@ export class WebGLRenderer {
   }
 
   screenToCell(screenX: number, screenY: number): { x: number; y: number } {
+    if (this.model.topologyId === "pentagonal") {
+      const cell = this.hyperbolic.screenToCell(screenX, screenY, this.zoom, this.fieldRotation);
+      return { x: cell.x, y: cell.y };
+    }
     const world = this.screenToWorld(screenX, screenY);
     return this.model.topology.hitTest(world.x, world.y);
+  }
+
+  containsScreenPoint(screenX: number, screenY: number): boolean {
+    return this.model.topologyId !== "pentagonal" || this.hyperbolic.containsScreenPoint(screenX, screenY, this.zoom);
   }
 
   copyScreenBounds(
@@ -977,6 +1027,9 @@ export class WebGLRenderer {
     right: number,
     bottom: number,
   ): { sourceX: number; sourceY: number; width: number; height: number } {
+    if (this.model.topologyId === "pentagonal") {
+      return this.hyperbolic.copyScreenBounds(context, left, top, right, bottom);
+    }
     const requestedPixelLeft = Math.floor(left * this.dpr);
     const requestedPixelTop = Math.floor(top * this.dpr);
     const requestedPixelRight = Math.ceil(right * this.dpr);
@@ -1029,6 +1082,9 @@ export class WebGLRenderer {
   }
 
   cellScreenPolygon(x: number, y: number): WorldPoint[] {
+    if (this.model.topologyId === "pentagonal") {
+      return this.hyperbolic.cellScreenPolygon(x, y, this.zoom, this.fieldRotation);
+    }
     return this.model.topology.geometry(x, y).vertices.map((point) => this.worldToScreen(point.x, point.y));
   }
 
@@ -1110,6 +1166,12 @@ export class WebGLRenderer {
 
   render(request: FrameRequest = { kind: "full" }): void {
     if (this.contextLost) return;
+    if (this.model.topologyId === "pentagonal") {
+      this.renderHyperbolic();
+      return;
+    }
+    this.curvedCanvas.classList.remove("is-active");
+    this.curvedCanvas.remove();
     const startedAt = performance.now();
     const cellSize = this.cellSize;
     if (this.cachedGeneration !== this.model.store.generation) {
@@ -1317,6 +1379,72 @@ export class WebGLRenderer {
       redrawMode,
       redrawnPixels,
       blittedPixels,
+      canvasPixels,
+      fullRedraws: this.fullRedraws,
+      damageRedraws: this.damageRedraws,
+      panRedraws: this.panRedraws,
+    };
+    this.frameObserver?.(this.diagnostics);
+  }
+
+  private renderHyperbolic(): void {
+    const startedAt = performance.now();
+    if (!this.curvedCanvas.isConnected) this.canvas.insertAdjacentElement("afterend", this.curvedCanvas);
+    this.curvedCanvas.classList.add("is-active");
+    const frameInterval = this.previousFrameStartedAt === 0 ? 0 : startedAt - this.previousFrameStartedAt;
+    this.previousFrameStartedAt = startedAt;
+    if (frameInterval > 0 && frameInterval < 250) {
+      this.smoothedFrameInterval =
+        this.smoothedFrameInterval === 0
+          ? frameInterval
+          : this.smoothedFrameInterval * 0.8 + frameInterval * 0.2;
+    } else {
+      this.smoothedFrameInterval = 0;
+    }
+    const frame = this.hyperbolic.render(
+      this.model,
+      this.zoom,
+      this.fieldRotation,
+      this.fogFrontierMode,
+      this.theme,
+    );
+    this.frameCount += 1;
+    this.fullRedraws += 1;
+    const canvasPixels = this.curvedCanvas.width * this.curvedCanvas.height;
+    const cellSize = this.cellSize;
+    this.diagnostics = {
+      backend: "canvas2d",
+      topology: this.model.topologyId,
+      rotation: this.fieldRotation,
+      lod: cellSize > 4 ? "detail" : "pixel",
+      cellSize,
+      borderCssPixels: cellSize >= 3 ? 1 : 0,
+      glyphs: cellSize >= 14,
+      thingSprites: 0,
+      thingSpritesLoaded: 0,
+      thingTexturePixels: 0,
+      thingSpritesReady: false,
+      detailMix: cellSize >= 14 ? 1 : 0,
+      backgroundColor: this.theme.background,
+      frameCount: this.frameCount,
+      frameMs: frame.frameMs,
+      visibleCells: frame.visibleCells,
+      drawnCells: frame.drawnCells,
+      frontierCells: frame.frontierCells,
+      frontierEdges: frame.frontierEdges,
+      chunks: this.model.store.chunkCount,
+      storedCells: this.model.store.nonZeroCells,
+      cachedTiles: frame.visibleCells,
+      drawCalls: 1,
+      instanceUploads: frame.visibleCells,
+      pixelRatio: this.dpr,
+      hoveredCells: this.hoverCells.length,
+      fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
+      // The curved pass currently redraws the complete bounded disk for every
+      // request; do not report Euclidean damage or retained-pan semantics.
+      redrawMode: "full",
+      redrawnPixels: canvasPixels,
+      blittedPixels: 0,
       canvasPixels,
       fullRedraws: this.fullRedraws,
       damageRedraws: this.damageRedraws,
@@ -1551,6 +1679,9 @@ export class WebGLRenderer {
   }
 
   drawOverview(canvas: HTMLCanvasElement): string {
+    if (this.model.topologyId === "pentagonal") {
+      return this.hyperbolic.drawOverview(canvas, this.theme, this.model.store.openedCells);
+    }
     const context = canvas.getContext("2d");
     if (!context) return "Overview unavailable";
     const cssWidth = Math.max(280, Math.round(canvas.getBoundingClientRect().width));
@@ -1667,6 +1798,7 @@ export class WebGLRenderer {
       this.scratchHeight = pixelHeight;
       this.retainedFrame = false;
     }
+    this.hyperbolic.resize(this.width, this.height, dpr);
   }
 
   private detailMix(cellSize: number): number {

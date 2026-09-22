@@ -1,4 +1,5 @@
-import { TOPOLOGIES, isTopologyId, type Topology, type TopologyId } from "./topology";
+import { TOPOLOGIES, isTopologyId, type CellRef, type Topology, type TopologyId } from "./topology";
+import { hyperbolicTopologyRegistry, type HyperbolicTopologySnapshot } from "./hyperbolic";
 import { thingAlphaOffsets } from "./thing-alpha-footprints";
 import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 
@@ -165,6 +166,7 @@ export interface GameSnapshot {
   safeY: number;
   bounds: ExploredBounds | null;
   cells: ArrayBuffer;
+  hyperbolic?: HyperbolicTopologySnapshot;
 }
 
 interface StateChunk {
@@ -298,6 +300,7 @@ export const thingSpriteFor = (x: number, y: number, seed: number): number => {
 
 export class CellStore {
   private readonly chunks = new Map<string, StateChunk>();
+  private directCells: Map<string, CellState> | null = null;
   private readonly tileVersions = new Map<string, number>();
   nonZeroCells = 0;
   openedCells = 0;
@@ -305,7 +308,13 @@ export class CellStore {
   generation = 0;
 
   get chunkCount(): number {
-    return this.chunks.size;
+    return this.directCells?.size ?? this.chunks.size;
+  }
+
+  setDirectMode(enabled: boolean): void {
+    if ((this.directCells !== null) === enabled) return;
+    this.clear();
+    this.directCells = enabled ? new Map<string, CellState>() : null;
   }
 
   getTileVersion(tileX: number, tileY: number): number {
@@ -313,6 +322,7 @@ export class CellStore {
   }
 
   get(x: number, y: number): CellState {
+    if (this.directCells) return this.directCells.get(`${x},${y}`) ?? CellState.Covered;
     const chunkX = floorDiv(x, CHUNK_SIZE);
     const chunkY = floorDiv(y, CHUNK_SIZE);
     const chunk = this.chunks.get(`${chunkX},${chunkY}`);
@@ -321,6 +331,19 @@ export class CellStore {
   }
 
   set(x: number, y: number, state: CellState): void {
+    if (this.directCells) {
+      const key = `${x},${y}`;
+      const previous = this.directCells.get(key) ?? CellState.Covered;
+      if (previous === state) return;
+      this.version += 1;
+      if (previous === CellState.Covered) this.nonZeroCells += 1;
+      if (state === CellState.Covered) this.nonZeroCells -= 1;
+      if (isOpened(previous) || previous === CellState.Exploded) this.openedCells -= 1;
+      if (isOpened(state) || state === CellState.Exploded) this.openedCells += 1;
+      if (state === CellState.Covered) this.directCells.delete(key);
+      else this.directCells.set(key, state);
+      return;
+    }
     const chunkX = floorDiv(x, CHUNK_SIZE);
     const chunkY = floorDiv(y, CHUNK_SIZE);
     const key = `${chunkX},${chunkY}`;
@@ -355,6 +378,7 @@ export class CellStore {
 
   clear(): void {
     this.chunks.clear();
+    this.directCells?.clear();
     this.tileVersions.clear();
     this.nonZeroCells = 0;
     this.openedCells = 0;
@@ -383,6 +407,7 @@ export class CellStore {
     if (!(value instanceof ArrayBuffer) || value.byteLength % CELL_RECORD_BYTES !== 0) return false;
 
     const nextChunks = new Map<string, StateChunk>();
+    const nextDirect = this.directCells ? new Map<string, CellState>() : null;
     const view = new DataView(value);
     let nextNonZeroCells = 0;
     let nextOpenedCells = 0;
@@ -393,6 +418,15 @@ export class CellStore {
       const state = isPersistedCellState(encoded) ? encoded : null;
       if (state === null) return false;
       if (isOpened(state) && openedClue(state) > maxClue) return false;
+
+      if (nextDirect) {
+        const key = `${x},${y}`;
+        if (nextDirect.has(key)) return false;
+        nextDirect.set(key, state);
+        nextNonZeroCells += 1;
+        if (isOpened(state) || state === CellState.Exploded) nextOpenedCells += 1;
+        continue;
+      }
 
       const chunkX = floorDiv(x, CHUNK_SIZE);
       const chunkY = floorDiv(y, CHUNK_SIZE);
@@ -411,7 +445,12 @@ export class CellStore {
     }
 
     this.chunks.clear();
-    for (const [key, chunk] of nextChunks) this.chunks.set(key, chunk);
+    if (this.directCells) {
+      this.directCells.clear();
+      for (const [key, state] of nextDirect ?? []) this.directCells.set(key, state);
+    } else {
+      for (const [key, chunk] of nextChunks) this.chunks.set(key, chunk);
+    }
     this.tileVersions.clear();
     this.nonZeroCells = nextNonZeroCells;
     this.openedCells = nextOpenedCells;
@@ -421,6 +460,13 @@ export class CellStore {
   }
 
   forEachNonZero(visitor: (x: number, y: number, state: CellState) => void): void {
+    if (this.directCells) {
+      for (const [key, state] of this.directCells) {
+        const separator = key.indexOf(",");
+        visitor(Number(key.slice(0, separator)), Number(key.slice(separator + 1)), state);
+      }
+      return;
+    }
     for (const [key, chunk] of this.chunks) {
       const separator = key.indexOf(",");
       const chunkX = Number(key.slice(0, separator));
@@ -445,6 +491,12 @@ export class CellStore {
     visitor: (x: number, y: number, state: CellState) => void,
   ): void {
     if (minX > maxX || minY > maxY) return;
+    if (this.directCells) {
+      this.forEachNonZero((x, y, state) => {
+        if (x >= minX && x <= maxX && y >= minY && y <= maxY) visitor(x, y, state);
+      });
+      return;
+    }
     const minChunkX = floorDiv(minX, CHUNK_SIZE);
     const minChunkY = floorDiv(minY, CHUNK_SIZE);
     const maxChunkX = floorDiv(maxX, CHUNK_SIZE);
@@ -544,7 +596,7 @@ export class GameModel {
   }
 
   createSnapshot(): GameSnapshot {
-    return {
+    const snapshot: GameSnapshot = {
       version: 1,
       topology: this.topologyId,
       mode: this.mode,
@@ -561,6 +613,13 @@ export class GameModel {
       bounds: this.bounds ? { ...this.bounds } : null,
       cells: this.store.pack(),
     };
+    if (this.topologyId === "pentagonal") {
+      const refs: CellRef[] = [];
+      this.store.forEachNonZero((x, y) => refs.push({ x, y }));
+      if (this.started) refs.push({ x: this.safeX, y: this.safeY });
+      snapshot.hyperbolic = hyperbolicTopologyRegistry.snapshotFor(refs);
+    }
+    return snapshot;
   }
 
   restoreSnapshot(value: unknown): boolean {
@@ -589,6 +648,7 @@ export class GameModel {
       !MODES.includes(snapshot.mode as Mode) ||
       !isValidDensity(snapshot.density) ||
       typeof snapshot.thingsEnabled !== "boolean" ||
+      (snapshot.topology === "pentagonal" && snapshot.thingsEnabled) ||
       !validUnsignedInteger(snapshot.seed) ||
       snapshot.seed > 0xffff_ffff ||
       !validUnsignedInteger(snapshot.score) ||
@@ -598,15 +658,38 @@ export class GameModel {
       typeof snapshot.started !== "boolean" ||
       !validCoordinate(snapshot.safeX) ||
       !validCoordinate(snapshot.safeY) ||
-      (snapshot.bounds !== null && !validBounds(snapshot.bounds)) ||
-      !this.store.restorePacked(snapshot.cells, TOPOLOGIES[snapshot.topology].maxNeighbors)
+      (snapshot.bounds !== null && !validBounds(snapshot.bounds))
     ) {
       return false;
     }
 
+    if (snapshot.topology === "pentagonal" && !hyperbolicTopologyRegistry.restore(snapshot.hyperbolic)) {
+      return false;
+    }
+    const directMode = snapshot.topology === "pentagonal";
+    const candidateStore = new CellStore();
+    candidateStore.setDirectMode(directMode);
+    if (!candidateStore.restorePacked(snapshot.cells, TOPOLOGIES[snapshot.topology].maxNeighbors)) {
+      return false;
+    }
+    if (snapshot.topology === "pentagonal") {
+      let complete = true;
+      candidateStore.forEachNonZero((x, y) => {
+        if (!hyperbolicTopologyRegistry.entryAt(x, y)) complete = false;
+      });
+      if (!complete || (snapshot.started && !hyperbolicTopologyRegistry.entryAt(snapshot.safeX, snapshot.safeY))) {
+        return false;
+      }
+    }
+
+    // Validate into an isolated store first so a corrupt cross-topology record
+    // cannot clear or change the currently playable field.
+    this.store.setDirectMode(directMode);
+    if (!this.store.restorePacked(snapshot.cells, TOPOLOGIES[snapshot.topology].maxNeighbors)) return false;
+
     this.mode = snapshot.mode as Mode;
     this.density = snapshot.density as number;
-    this.thingsEnabled = snapshot.thingsEnabled;
+    this.thingsEnabled = snapshot.topology === "pentagonal" ? false : snapshot.thingsEnabled;
     this.seed = snapshot.seed;
     this.topologyId = snapshot.topology;
     this.score = snapshot.score;
@@ -634,9 +717,10 @@ export class GameModel {
     if (!isValidDensity(density)) throw new RangeError(`Density must be between 12% and 50%: ${density}`);
     this.mode = mode;
     this.density = density;
-    this.thingsEnabled = thingsEnabled;
+    this.thingsEnabled = topology === "pentagonal" ? false : thingsEnabled;
     this.seed = seed >>> 0;
     this.topologyId = topology;
+    this.store.setDirectMode(topology === "pentagonal");
     this.score = 0;
     this.things = 0;
     this.health = DIFFICULTIES[mode].startingHealth;
@@ -737,7 +821,14 @@ export class GameModel {
   }
 
   private rawMineAt(x: number, y: number): boolean {
-    const topologySalt = this.topologyId === "square" ? 0 : this.topologyId === "triangular" ? 0x34c1a5d7 : 0x69b284eb;
+    const topologySalt =
+      this.topologyId === "square"
+        ? 0
+        : this.topologyId === "triangular"
+          ? 0x34c1a5d7
+          : this.topologyId === "rhombille"
+            ? 0x69b284eb
+            : 0x17d4c6af;
     return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.density;
   }
 
@@ -1094,6 +1185,11 @@ export class GameModel {
     let head = 0;
     let tail = 0;
     let scheduledMines = 0;
+    let scheduledSafeCells = 0;
+    // Below the site-percolation threshold an infinite hyperbolic zero-clue
+    // component can be genuinely unbounded. Limit one action's work while
+    // leaving its covered boundary available for the next reveal.
+    const maxScheduledSafeCells = this.topologyId === "pentagonal" ? 128 : Number.POSITIVE_INFINITY;
     const enqueue = (x: number, y: number, knownMine?: boolean, allowFlaggedMine = false): void => {
       const state = this.store.get(x, y);
       if (isOpened(state) || state === CellState.Exploded || state === CellState.Queued) return;
@@ -1101,7 +1197,9 @@ export class GameModel {
       const mine = knownMine ?? this.mineAt(x, y);
       if (state === CellState.Flagged && !mine) return;
       if (mine && scheduledMines >= MAX_CHAIN_EXPLOSIONS_PER_ACTION) return;
+      if (!mine && scheduledSafeCells >= maxScheduledSafeCells) return;
       this.store.set(x, y, CellState.Queued);
+      if (!mine) scheduledSafeCells += 1;
       if (tail + 3 > queue.length) {
         const expanded = new Int32Array(queue.length * 2);
         expanded.set(queue);

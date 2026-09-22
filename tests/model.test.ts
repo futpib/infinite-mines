@@ -25,6 +25,30 @@ import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "../src/thing-catalog-m
 import { thingAlphaOffsets } from "../src/thing-alpha-footprints";
 import { TOPOLOGIES, TOPOLOGY_IDS } from "../src/topology";
 
+const EUCLIDEAN_TOPOLOGY_IDS = TOPOLOGY_IDS.filter((id) => id !== "pentagonal");
+
+const graphSample = (topologyId: (typeof TOPOLOGY_IDS)[number], count: number): Array<[number, number]> => {
+  if (topologyId !== "pentagonal") {
+    const cells: Array<[number, number]> = [];
+    for (let y = -20; y <= 20 && cells.length < count; y += 4) {
+      for (let x = -30; x <= 30 && cells.length < count; x += 5) cells.push([x, y]);
+    }
+    return cells;
+  }
+  const cells: Array<[number, number]> = [[0, 0]];
+  const seen = new Set(["0,0"]);
+  for (let index = 0; index < cells.length && cells.length < count; index += 1) {
+    const [x, y] = cells[index];
+    TOPOLOGIES.pentagonal.forEachNeighbor(x, y, (neighborX, neighborY) => {
+      const key = `${neighborX},${neighborY}`;
+      if (seen.has(key) || cells.length >= count) return;
+      seen.add(key);
+      cells.push([neighborX, neighborY]);
+    });
+  }
+  return cells;
+};
+
 beforeAll(async () => {
   await loadThingCatalog();
 });
@@ -211,20 +235,20 @@ describe("topology-driven fields", () => {
     for (const topologyId of TOPOLOGY_IDS) {
       const first = new GameModel({ mode: "master", seed: 0x71a9, autoStart: false, topology: topologyId });
       const second = new GameModel({ mode: "master", seed: 0x71a9, autoStart: false, topology: topologyId });
-      for (let y = -20; y <= 20; y += 4) {
-        for (let x = -30; x <= 30; x += 5) {
-          expect(first.mineAt(x, y)).toBe(second.mineAt(x, y));
-          let expectedClue = 0;
-          TOPOLOGIES[topologyId].forEachNeighbor(x, y, (neighborX, neighborY) => {
-            expectedClue += Number(first.mineAt(neighborX, neighborY));
-          });
-          expect(first.clueAt(x, y)).toBe(expectedClue);
-        }
+      const samples = graphSample(topologyId, 80);
+      for (const [x, y] of samples) {
+        expect(first.mineAt(x, y)).toBe(second.mineAt(x, y));
+        let expectedClue = 0;
+        TOPOLOGIES[topologyId].forEachNeighbor(x, y, (neighborX, neighborY) => {
+          expectedClue += Number(first.mineAt(neighborX, neighborY));
+        });
+        expect(first.clueAt(x, y)).toBe(expectedClue);
       }
 
-      first.reveal(7, -11);
-      let frontier: Array<[number, number]> = [[7, -11]];
-      const safe = new Set(["7,-11"]);
+      const [startX, startY] = samples[Math.min(17, samples.length - 1)];
+      first.reveal(startX, startY);
+      let frontier: Array<[number, number]> = [[startX, startY]];
+      const safe = new Set([`${startX},${startY}`]);
       for (let distance = 0; distance < 2; distance += 1) {
         const next: Array<[number, number]> = [];
         for (const [x, y] of frontier) {
@@ -245,8 +269,8 @@ describe("topology-driven fields", () => {
   });
 
   it("stores and exposes clues above eight without widening sparse cell records", () => {
-    for (const topologyId of ["triangular", "rhombille"] as const) {
-      const game = new GameModel({ seed: 8, autoStart: false, topology: topologyId });
+    for (const topologyId of ["triangular", "rhombille", "pentagonal"] as const) {
+      const game = new GameModel({ seed: 8, autoStart: false, topology: topologyId, thingsEnabled: false });
       const mines = new Set<string>();
       game.topology.forEachNeighbor(0, 0, (x, y) => mines.add(`${x},${y}`));
       vi.spyOn(game, "mineAt").mockImplementation((x, y) => mines.has(`${x},${y}`));
@@ -273,6 +297,36 @@ describe("topology-driven fields", () => {
     delete incomplete.thingsEnabled;
     expect(restored.restoreSnapshot(incomplete)).toBe(false);
     expect(restored.restoreSnapshot({ ...snapshot, version: 2 })).toBe(false);
+  });
+
+  it("persists exact hyperbolic cell identities and rejects a mismatched graph record", () => {
+    const source = new GameModel({ seed: 0x5f4, autoStart: false, topology: "pentagonal", thingsEnabled: true });
+    const neighbor = source.topology.edgeNeighbors(0, 0)[0];
+    source.cycleMark(neighbor.x, neighbor.y);
+    const snapshot = source.createSnapshot();
+    expect(source.thingsEnabled).toBe(false);
+    expect(snapshot.hyperbolic?.cells.some((cell) => cell.x === neighbor.x && cell.y === neighbor.y)).toBe(true);
+
+    const restored = new GameModel({ autoStart: false, thingsEnabled: false });
+    expect(restored.restoreSnapshot(snapshot)).toBe(true);
+    expect(restored.topologyId).toBe("pentagonal");
+    expect(restored.getState(neighbor.x, neighbor.y)).toBe(CellState.Flagged);
+    expect(restored.topology.edgeNeighbors(neighbor.x, neighbor.y)).toContainEqual({ x: 0, y: 0 });
+
+    const corrupt = structuredClone(snapshot);
+    if (!corrupt.hyperbolic) throw new Error("Missing hyperbolic graph snapshot");
+    const record = corrupt.hyperbolic.cells.find((cell) => cell.x === neighbor.x && cell.y === neighbor.y);
+    if (!record) throw new Error("Missing persisted neighbor");
+    record.x += 1;
+    expect(restored.restoreSnapshot(corrupt)).toBe(false);
+
+    const corruptCells = structuredClone(snapshot);
+    corruptCells.cells = new ArrayBuffer(1);
+    const current = new GameModel({ seed: 7, autoStart: false, topology: "square", thingsEnabled: false });
+    current.cycleMark(4, 5);
+    expect(current.restoreSnapshot(corruptCells)).toBe(false);
+    expect(current.topologyId).toBe("square");
+    expect(current.getState(4, 5)).toBe(CellState.Flagged);
   });
 });
 
@@ -417,7 +471,7 @@ describe("gameplay", () => {
   });
 
   it("reserves deterministic Thing footprints and keeps every art-covered clue at zero", { timeout: 10_000 }, () => {
-    for (const topology of TOPOLOGY_IDS) {
+    for (const topology of EUCLIDEAN_TOPOLOGY_IDS) {
       for (const mode of MODES) {
         const game = new GameModel({ mode, seed: 712, autoStart: false, topology });
         const matching = new GameModel({
@@ -641,7 +695,8 @@ describe("gameplay", () => {
     ];
 
     for (const topologyId of TOPOLOGY_IDS) {
-      for (const [centerX, centerY] of anchors) {
+      const topologyAnchors = topologyId === "pentagonal" ? ([[0, 0]] as const) : anchors;
+      for (const [centerX, centerY] of topologyAnchors) {
         const overFlagged = new GameModel({ mode: "impossible", seed: 84, autoStart: false, topology: topologyId });
         const neighbors: Array<[number, number]> = [];
         overFlagged.topology.forEachNeighbor(centerX, centerY, (x, y) => neighbors.push([x, y]));

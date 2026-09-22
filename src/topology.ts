@@ -1,4 +1,6 @@
-export const TOPOLOGY_IDS = ["square", "triangular", "rhombille"] as const;
+import { hyperbolicTopologyRegistry } from "./hyperbolic";
+
+export const TOPOLOGY_IDS = ["square", "triangular", "rhombille", "pentagonal"] as const;
 export type TopologyId = (typeof TOPOLOGY_IDS)[number];
 
 export interface CellRef {
@@ -25,7 +27,7 @@ export interface CellRange {
   maxY: number;
 }
 
-export type CellShape = "square" | "triangle-up" | "triangle-down" | "rhombus";
+export type CellShape = "square" | "triangle-up" | "triangle-down" | "rhombus" | "pentagon";
 
 export interface CellGeometry {
   center: WorldPoint;
@@ -460,10 +462,54 @@ const rhombilleTopology: Topology = {
   },
 };
 
+const pentagonalTopology: Topology = {
+  id: "pentagonal",
+  label: "Hyperbolic pentagons",
+  origin: { x: 0, y: 0 },
+  maxNeighbors: 10,
+  maxCellRadius: Math.tanh(hyperbolicTopologyRegistry.tiling.metrics.circumradius / 2),
+  forEachNeighbor(x, y, visitor) {
+    for (const neighbor of hyperbolicTopologyRegistry.touchingNeighbors(x, y)) {
+      visitor(neighbor.x, neighbor.y);
+    }
+  },
+  edgeNeighbors(x, y) {
+    return hyperbolicTopologyRegistry.edgeNeighbors(x, y).map(({ x: neighborX, y: neighborY }) => ({
+      x: neighborX,
+      y: neighborY,
+    }));
+  },
+  geometry(x, y) {
+    const geometry = hyperbolicTopologyRegistry.geometry(x, y);
+    return {
+      ...geometry,
+      shape: "pentagon",
+      axisU: { x: this.maxCellRadius, y: 0 },
+      axisV: { x: 0, y: this.maxCellRadius },
+    };
+  },
+  hitTest(worldX, worldY) {
+    const radius = Math.hypot(worldX, worldY);
+    const scale = radius >= 0.999_999 ? 0.999_999 / radius : 1;
+    const cell = hyperbolicTopologyRegistry.hitTestDisk(worldX * scale, worldY * scale);
+    return { x: cell.x, y: cell.y };
+  },
+  // Hyperbolic cell IDs are exact graph identities rather than a rectangular
+  // Euclidean lattice. The specialized Poincare renderer performs visibility
+  // traversal; these conservative disk bounds keep the common interface total.
+  cellRangeForWorldBounds() {
+    return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  },
+  worldBoundsForCellRange() {
+    return { minX: -1, minY: -1, maxX: 1, maxY: 1 };
+  },
+};
+
 export const TOPOLOGIES: Readonly<Record<TopologyId, Topology>> = {
   square: squareTopology,
   triangular: triangleTopology,
   rhombille: rhombilleTopology,
+  pentagonal: pentagonalTopology,
 };
 
 export const topologyFor = (id: TopologyId): Topology => TOPOLOGIES[id];

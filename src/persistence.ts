@@ -1,11 +1,13 @@
 import { MODES, type GameSnapshot, type Mode } from "./model";
 import { isTopologyId, type TopologyId } from "./topology";
+import type { HyperbolicViewState } from "./hyperbolic-renderer";
 
 export interface ViewSnapshot {
   version: 1;
   panX: number;
   panY: number;
   zoom: number;
+  hyperbolic?: HyperbolicViewState;
 }
 
 export interface PersistedGame {

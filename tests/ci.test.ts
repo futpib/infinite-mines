@@ -115,6 +115,13 @@ describe("reproducible CI contract", () => {
     expect(packageJson.packageManager).toBe("npm@10.9.8");
     expect(packageJson.devDependencies).toEqual(expected);
     expect(lock.packages[""].devDependencies).toEqual(expected);
+    expect(packageJson.dependencies).toEqual({ "hyperbolic-map": "0.1.1" });
+    expect(lock.packages[""].dependencies).toEqual({ "hyperbolic-map": "0.1.1" });
+    expect(lock.packages["node_modules/hyperbolic-map"]).toMatchObject({
+      version: "0.1.1",
+      license: "BSD-3-Clause",
+    });
+    expect(read("public/licenses/hyperbolic-map-LICENSE.txt")).toContain("BSD 3-Clause License");
     expect(packageJson.scripts["test:docker"]).toBe("bash scripts/test-ci-docker.sh");
     expect(styles).toContain("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2");
     for (const [name, version] of Object.entries(expected)) {

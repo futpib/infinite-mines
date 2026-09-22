@@ -14,10 +14,11 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
   await expect(page.locator("#topology-pill")).toHaveText("SQUARE");
 
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#topology-options button")).toHaveCount(3);
+  await expect(page.locator("#topology-options button")).toHaveCount(4);
   expect(await page.locator("#topology-options button b").allTextContents()).toEqual([
     "Square",
     "Rhombille",
+    "Hyperbolic pentagons",
     "Triangular",
   ]);
   await expect(page.getByRole("button", { name: /Square/ })).toHaveAttribute("aria-pressed", "true");

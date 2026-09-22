@@ -16,6 +16,7 @@ import {
   openedClue,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
+import { hyperbolicTopologyRegistry } from "./hyperbolic";
 import {
   WebGLRenderer,
   isFieldRotation,
@@ -31,6 +32,9 @@ const element = <T extends Element>(selector: string): T => {
 };
 
 const canvas = element<HTMLCanvasElement>("#board");
+const curvedCanvas = document.createElement("canvas");
+curvedCanvas.id = "curved-board";
+curvedCanvas.ariaHidden = "true";
 const game = element<HTMLElement>("#game");
 const modeStat = element<HTMLElement>("#mode-stat");
 const densityStat = element<HTMLElement>("#density-stat");
@@ -176,6 +180,7 @@ if (!restoredGame) {
     initialMode === "custom" ? customDensity : undefined,
     thingsEnabled,
   );
+  thingsEnabled = model.thingsEnabled;
 } else {
   thingsEnabled = model.thingsEnabled;
   storageSet("infinite-mines-things", thingsEnabled ? "on" : "off");
@@ -202,7 +207,7 @@ const settleFpsCounter = (): void => {
   fpsValue.textContent = "IDLE";
 };
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-const renderer = new WebGLRenderer(canvas, model, fogFrontierMode);
+const renderer = new WebGLRenderer(canvas, curvedCanvas, model, fogFrontierMode);
 renderer.setRotation(fieldRotation);
 renderer.setFrameObserver((diagnostics) => {
   const now = performance.now();
@@ -314,7 +319,9 @@ function updateAutoHideMode(): void {
 function updateThings(): void {
   for (const button of thingsOptions.querySelectorAll<HTMLButtonElement>("button[data-things]")) {
     button.ariaPressed = String((button.dataset.things === "on") === thingsEnabled);
+    button.disabled = model.topologyId === "pentagonal" && button.dataset.things === "on";
   }
+  thingsOptions.title = model.topologyId === "pentagonal" ? "Things are unavailable on the curved field" : "";
 }
 
 function updateThemeMode(refreshRenderer = true): void {
@@ -516,6 +523,10 @@ function updateHoverPreview(
     marker.classList.toggle("is-affected", cell.affected);
     marker.classList.toggle("is-hint", cell.hint);
     const polygon = renderer.cellFramebufferPolygon(cell.x, cell.y);
+    if (polygon.length < 3) {
+      marker.classList.remove("is-visible");
+      continue;
+    }
     const geometricLeft = Math.min(...polygon.map((point) => point.x));
     const geometricTop = Math.min(...polygon.map((point) => point.y));
     const geometricRight = Math.max(...polygon.map((point) => point.x));
@@ -578,6 +589,10 @@ function scheduleLocatorText(force = false): void {
 }
 
 function refreshCellLocator(forceText = false, showHover = true): void {
+  if (!renderer.containsScreenPoint(locatorScreen.x, locatorScreen.y)) {
+    updateHoverPreview([]);
+    return;
+  }
   locatedCell = renderer.screenToCell(locatorScreen.x, locatorScreen.y);
   const affectedCells =
     hoverMode === "affected" ? model.previewClickCells(locatedCell.x, locatedCell.y) : [{ ...locatedCell }];
@@ -709,12 +724,15 @@ function scheduleCellLocator(screenX: number, screenY: number): void {
 function createCellReference(): string {
   const origin = model.safeOrigin;
   const safe = origin ? `(${origin.x}, ${origin.y})` : "unset";
+  const hyperbolicEntry =
+    model.topologyId === "pentagonal" ? hyperbolicTopologyRegistry.entryAt(locatedCell.x, locatedCell.y) : null;
   return [
     `Infinite Mines cell (${locatedCell.x}, ${locatedCell.y})`,
     `mode=${model.mode}`,
     `density=${formatDensity(model.density)}`,
     `things=${model.thingsEnabled ? "on" : "off"}`,
     `topology=${model.topologyId}`,
+    ...(hyperbolicEntry ? [`path=${hyperbolicEntry.path.length === 0 ? "root" : hyperbolicEntry.path.join(".")}`] : []),
     `seed=${model.seed}`,
     `safe=${safe}`,
     `state=${describeVisibleCell(locatedCell.x, locatedCell.y)}`,
@@ -867,7 +885,8 @@ function newGame(
   density: number =
     mode === "custom" ? (model.mode === "custom" ? model.density : customDensity) : DIFFICULTIES[mode].density,
 ): void {
-  model.reset(mode, randomSeed(), true, topology, density, thingsEnabled);
+  model.reset(mode, randomSeed(), true, topology, density, topology === "pentagonal" ? false : thingsEnabled);
+  thingsEnabled = model.thingsEnabled;
   renderer.syncThings();
   storageSet("infinite-mines-mode", mode);
   storageSet("infinite-mines-topology", topology);
@@ -890,6 +909,7 @@ async function switchField(
   density?: number,
   requestedThingsEnabled: boolean = thingsEnabled,
 ): Promise<void> {
+  if (topology === "pentagonal") requestedThingsEnabled = false;
   if (fieldSwitch) await fieldSwitch;
   const requestedCustomDensity = mode === "custom" ? density : undefined;
   if (
@@ -996,6 +1016,7 @@ interface PointerGesture {
   longPressCancelled: boolean;
   mark: boolean;
   reveal: boolean;
+  onField: boolean;
   touch: boolean;
   cellX: number;
   cellY: number;
@@ -1103,12 +1124,13 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
   }
-  const cell = renderer.screenToCell(point.x, point.y);
+  const onField = renderer.containsScreenPoint(point.x, point.y);
+  const cell = onField ? renderer.screenToCell(point.x, point.y) : locatedCell;
   const state = model.getState(cell.x, cell.y);
   const revealModifier = event.ctrlKey || event.metaKey;
   const directPointer = event.pointerType !== "mouse";
   const touch = event.pointerType === "touch";
-  const concealed = state === CellState.Covered || state === CellState.Flagged || state === CellState.Question;
+  const concealed = onField && (state === CellState.Covered || state === CellState.Flagged || state === CellState.Question);
   const guardedTouchMark = touch && !touchRevealTool && concealed;
   const mark = !revealModifier && (event.button === 2 || event.shiftKey || guardedTouchMark);
   const reveal = touch ? touchRevealTool || isOpened(state) : directPointer || revealModifier || controlsMode === "classic";
@@ -1124,6 +1146,7 @@ canvas.addEventListener("pointerdown", (event) => {
     longPressCancelled: false,
     mark,
     reveal,
+    onField,
     touch,
     cellX: cell.x,
     cellY: cell.y,
@@ -1201,6 +1224,10 @@ const finishPointer = (event: PointerEvent): void => {
     scheduleGameSave();
     return;
   }
+  if (!completed.onField) {
+    refreshCellLocator(true);
+    return;
+  }
   if (completed.longPressed) {
     const cancelled =
       completed.longPressAction === "reveal" && outsideGestureDeadZone(completed, event.clientX, event.clientY);
@@ -1233,6 +1260,7 @@ canvas.addEventListener("pointerup", (event) => {
 });
 canvas.addEventListener("dblclick", (event) => {
   if (controlsMode !== "guarded" || event.button !== 0 || event.shiftKey) return;
+  if (!renderer.containsScreenPoint(event.offsetX, event.offsetY)) return;
   const cell = renderer.screenToCell(event.offsetX, event.offsetY);
   if (!requiresRevealGuard(model.getState(cell.x, cell.y))) return;
   clearToast();
