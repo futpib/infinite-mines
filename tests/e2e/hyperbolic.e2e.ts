@@ -39,6 +39,24 @@ test("R51 — right-angled hyperbolic pentagons stay exact, interactive, persist
   expect(contract.diagnostics.visibleCells).toBeLessThanOrEqual(384);
   expect(contract.diagnostics.openedCells).toBeLessThanOrEqual(128);
 
+  const fullViewport = await page.evaluate(() => {
+    const renderer = window.__infiniteMines.renderer;
+    const width = renderer.canvas.clientWidth;
+    const height = renderer.canvas.clientHeight;
+    const corners = [
+      { x: 1, y: 1 },
+      { x: width - 1, y: 1 },
+      { x: 1, y: height - 1 },
+      { x: width - 1, y: height - 1 },
+    ];
+    return corners.map((point) => ({
+      contained: renderer.containsScreenPoint(point.x, point.y),
+      cell: renderer.screenToCell(point.x, point.y),
+    }));
+  });
+  expect(fullViewport.every(({ contained }) => contained)).toBe(true);
+  expect(new Set(fullViewport.map(({ cell }) => `${cell.x},${cell.y}`)).size).toBe(4);
+
   await page.getByRole("button", { name: "Game settings" }).click();
   await expect(page.locator('[data-things="on"]')).toBeDisabled();
   await page.locator("#settings-dialog .close-button").click();
@@ -61,6 +79,17 @@ test("R51 — right-angled hyperbolic pentagons stay exact, interactive, persist
   });
   const board = await page.locator("#board").boundingBox();
   if (!board) throw new Error("Board is not visible");
+
+  const edgeCell = await page.evaluate(() => window.__infiniteMines.renderer.screenToCell(5, 70));
+  await page.mouse.click(board.x + 5, board.y + 70, { button: "right" });
+  expect(await page.evaluate((cell) => window.__infiniteMines.model.getState(cell.x, cell.y), edgeCell)).toBe(10);
+
+  const zoomedOut = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.renderer.zoomAt(api.renderer.canvas.clientWidth / 2, api.renderer.canvas.clientHeight / 2, 0.4);
+    return api.diagnostics().frameCount;
+  });
+  await waitForNextFrame(page, zoomedOut);
   const beforeOutsideClick = await page.evaluate(() => [...new Uint8Array(window.__infiniteMines.model.createSnapshot().cells)]);
   await page.mouse.click(board.x + 5, board.y + board.height / 2, { button: "right" });
   expect(await page.evaluate(() => [...new Uint8Array(window.__infiniteMines.model.createSnapshot().cells)])).toEqual(
@@ -68,19 +97,36 @@ test("R51 — right-angled hyperbolic pentagons stay exact, interactive, persist
   );
   await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(0);
 
+  const homed = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.renderer.home();
+    return api.diagnostics().frameCount;
+  });
+  await waitForNextFrame(page, homed);
+
   await page.mouse.move(board.x + rootCenter.x, board.y + rootCenter.y);
   await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(11);
 
   const target = await page.evaluate(() => {
     const api = window.__infiniteMines;
-    const cell = api.model.topology.edgeNeighbors(0, 0)[0];
-    const polygon = api.renderer.cellScreenPolygon(cell.x, cell.y);
+    const candidates = api.model.topology.edgeNeighbors(0, 0).map((cell) => {
+      const polygon = api.renderer.cellScreenPolygon(cell.x, cell.y);
+      return {
+        cell,
+        polygon,
+        point: {
+          x: polygon.reduce((sum, vertex) => sum + vertex.x, 0) / polygon.length,
+          y: polygon.reduce((sum, vertex) => sum + vertex.y, 0) / polygon.length,
+        },
+      };
+    });
+    const selected = candidates
+      .filter(({ point }) => api.renderer.containsScreenPoint(point.x, point.y))
+      .sort((left, right) => right.point.x - left.point.x)[0];
+    if (!selected) throw new Error("No visible edge-neighbor is available");
     return {
-      cell,
-      point: {
-        x: polygon.reduce((sum, vertex) => sum + vertex.x, 0) / polygon.length,
-        y: polygon.reduce((sum, vertex) => sum + vertex.y, 0) / polygon.length,
-      },
+      cell: selected.cell,
+      point: selected.point,
     };
   });
   await page.mouse.click(board.x + target.point.x, board.y + target.point.y, { button: "right" });
@@ -169,7 +215,7 @@ test("R51 — right-angled hyperbolic pentagons stay exact, interactive, persist
     const before = api.renderer.screenToCell(x, y);
     api.renderer.zoomAt(x, y, 1.25);
     const after = api.renderer.screenToCell(x, y);
-    api.renderer.panBy(260, 40);
+    api.renderer.panBy(600, 100);
     return { before, after, frame: api.diagnostics().frameCount };
   }, focal);
   expect(navigation.after).toEqual(navigation.before);

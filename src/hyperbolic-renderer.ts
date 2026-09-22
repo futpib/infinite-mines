@@ -58,7 +58,10 @@ interface VisibleNode {
 const MIN_HYPERBOLIC_ZOOM = 0.4;
 const MAX_HYPERBOLIC_ZOOM = 2.2;
 const MAX_VISIBLE_TILES = 384;
-const DISK_MARGIN = 0.965;
+// Keep the ideal boundary just beyond the viewport corners at the home zoom.
+// The Poincare projection remains circular and conformal; the screen is simply
+// a rectangular crop of it instead of showing the whole disk.
+const VIEWPORT_CORNER_DISK_RADIUS = 0.965;
 const pointKey = (x: number, y: number): string => `${x},${y}`;
 
 export class HyperbolicFieldRenderer {
@@ -93,7 +96,10 @@ export class HyperbolicFieldRenderer {
   }
 
   radius(zoom: number): number {
-    return Math.max(1, (Math.min(this.width, this.height) * DISK_MARGIN * zoom) / 2);
+    return Math.max(
+      1,
+      (Math.hypot(this.width, this.height) * zoom) / (2 * VIEWPORT_CORNER_DISK_RADIUS),
+    );
   }
 
   centralCellPixels(zoom: number): number {

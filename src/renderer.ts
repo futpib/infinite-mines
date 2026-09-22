@@ -1440,7 +1440,7 @@ export class WebGLRenderer {
       pixelRatio: this.dpr,
       hoveredCells: this.hoverCells.length,
       fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
-      // The curved pass currently redraws the complete bounded disk for every
+      // The curved pass currently redraws the complete bounded projection for every
       // request; do not report Euclidean damage or retained-pan semantics.
       redrawMode: "full",
       redrawnPixels: canvasPixels,
