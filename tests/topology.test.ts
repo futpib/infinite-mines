@@ -15,7 +15,7 @@ const keyFor = (cell: CellRef): string => `${cell.x},${cell.y}`;
 
 describe("topology descriptors", () => {
   it("advertises exactly the touching-cell neighborhood used by every clue", () => {
-    const expected = { square: 8, triangular: 12, rhombille: 10 } as const;
+    const expected = { square: 8, hexagonal: 6, triangular: 12, rhombille: 10 } as const;
     for (const id of EUCLIDEAN_TOPOLOGY_IDS) {
       const topology = TOPOLOGIES[id];
       for (let y = -3; y <= 3; y += 1) {

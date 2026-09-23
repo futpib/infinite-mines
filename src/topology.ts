@@ -1,6 +1,6 @@
 import { hyperbolicTopologyRegistry } from "./hyperbolic";
 
-export const TOPOLOGY_IDS = ["square", "triangular", "rhombille", "pentagonal"] as const;
+export const TOPOLOGY_IDS = ["square", "hexagonal", "triangular", "rhombille", "pentagonal"] as const;
 export type TopologyId = (typeof TOPOLOGY_IDS)[number];
 
 export interface CellRef {
@@ -27,7 +27,7 @@ export interface CellRange {
   maxY: number;
 }
 
-export type CellShape = "square" | "triangle-up" | "triangle-down" | "rhombus" | "pentagon";
+export type CellShape = "square" | "hexagon" | "triangle-up" | "triangle-down" | "rhombus" | "pentagon";
 
 export interface CellGeometry {
   center: WorldPoint;
@@ -53,6 +53,9 @@ export interface Topology {
 }
 
 const SQRT_3 = Math.sqrt(3);
+const HEX_RADIUS = 1 / SQRT_3;
+const HEX_HALF_HEIGHT = 0.5;
+const HEX_CENTER_X_STEP = SQRT_3 / 2;
 const TRIANGLE_HEIGHT = SQRT_3 / 2;
 const RHOMBILLE_LATTICE_X = SQRT_3;
 const RHOMBILLE_LATTICE_Y = 1.5;
@@ -169,6 +172,105 @@ const squareTopology: Topology = {
       minY: range.minY - 0.5,
       maxX: range.maxX + 0.5,
       maxY: range.maxY + 0.5,
+    };
+  },
+};
+
+// Flat-top regular hexagons use axial (q, r) integer coordinates. Scaling the
+// circumradius to 1/sqrt(3) gives every cell unit height and area sqrt(3)/2,
+// keeping its on-screen scale close to Square and Rhombille.
+const hexagonalGeometry = (x: number, y: number): CellGeometry => {
+  const center = {
+    x: x * HEX_CENTER_X_STEP,
+    y: y + x * 0.5,
+  };
+  return {
+    center,
+    vertices: [
+      { x: center.x - HEX_RADIUS / 2, y: center.y - HEX_HALF_HEIGHT },
+      { x: center.x + HEX_RADIUS / 2, y: center.y - HEX_HALF_HEIGHT },
+      { x: center.x + HEX_RADIUS, y: center.y },
+      { x: center.x + HEX_RADIUS / 2, y: center.y + HEX_HALF_HEIGHT },
+      { x: center.x - HEX_RADIUS / 2, y: center.y + HEX_HALF_HEIGHT },
+      { x: center.x - HEX_RADIUS, y: center.y },
+    ],
+    shape: "hexagon",
+    axisU: { x: HEX_RADIUS, y: 0 },
+    axisV: { x: 0, y: HEX_HALF_HEIGHT },
+  };
+};
+
+const HEXAGONAL_NEIGHBORS: readonly (readonly [number, number])[] = [
+  [0, -1],
+  [1, -1],
+  [1, 0],
+  [0, 1],
+  [-1, 1],
+  [-1, 0],
+];
+
+const hexagonalFractionalCell = (worldX: number, worldY: number): WorldPoint => {
+  const x = worldX / HEX_CENTER_X_STEP;
+  return { x, y: worldY - x * 0.5 };
+};
+
+const hexagonalCellRange = (bounds: WorldBounds, padding = 0): CellRange => {
+  const corners = [
+    hexagonalFractionalCell(bounds.minX, bounds.minY),
+    hexagonalFractionalCell(bounds.maxX, bounds.minY),
+    hexagonalFractionalCell(bounds.minX, bounds.maxY),
+    hexagonalFractionalCell(bounds.maxX, bounds.maxY),
+  ];
+  const rangePadding = padding + 2;
+  return {
+    minX: Math.floor(Math.min(...corners.map((corner) => corner.x))) - rangePadding,
+    minY: Math.floor(Math.min(...corners.map((corner) => corner.y))) - rangePadding,
+    maxX: Math.ceil(Math.max(...corners.map((corner) => corner.x))) + rangePadding,
+    maxY: Math.ceil(Math.max(...corners.map((corner) => corner.y))) + rangePadding,
+  };
+};
+
+const hexagonalTopology: Topology = {
+  id: "hexagonal",
+  label: "Hexagonal",
+  origin: { x: 0, y: 0 },
+  maxNeighbors: 6,
+  maxCellRadius: HEX_RADIUS,
+  forEachNeighbor(x, y, visitor) {
+    for (const [offsetX, offsetY] of HEXAGONAL_NEIGHBORS) visitor(x + offsetX, y + offsetY);
+  },
+  edgeNeighbors(x, y) {
+    return HEXAGONAL_NEIGHBORS.map(([offsetX, offsetY]) => ({ x: x + offsetX, y: y + offsetY }));
+  },
+  geometry: hexagonalGeometry,
+  hitTest(worldX, worldY) {
+    const approximate = hexagonalFractionalCell(worldX, worldY);
+    return closestContainingCell(
+      worldX,
+      worldY,
+      {
+        minX: Math.floor(approximate.x) - 2,
+        minY: Math.floor(approximate.y) - 2,
+        maxX: Math.ceil(approximate.x) + 2,
+        maxY: Math.ceil(approximate.y) + 2,
+      },
+      hexagonalGeometry,
+    );
+  },
+  cellRangeForWorldBounds: hexagonalCellRange,
+  worldBoundsForCellRange(range) {
+    const cornerCells = [
+      { x: range.minX, y: range.minY },
+      { x: range.maxX, y: range.minY },
+      { x: range.minX, y: range.maxY },
+      { x: range.maxX, y: range.maxY },
+    ];
+    const vertices = cornerCells.flatMap((cell) => hexagonalGeometry(cell.x, cell.y).vertices);
+    return {
+      minX: Math.min(...vertices.map((vertex) => vertex.x)),
+      minY: Math.min(...vertices.map((vertex) => vertex.y)),
+      maxX: Math.max(...vertices.map((vertex) => vertex.x)),
+      maxY: Math.max(...vertices.map((vertex) => vertex.y)),
     };
   },
 };
@@ -507,6 +609,7 @@ const pentagonalTopology: Topology = {
 
 export const TOPOLOGIES: Readonly<Record<TopologyId, Topology>> = {
   square: squareTopology,
+  hexagonal: hexagonalTopology,
   triangular: triangleTopology,
   rhombille: rhombilleTopology,
   pentagonal: pentagonalTopology,

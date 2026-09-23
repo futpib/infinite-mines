@@ -15,6 +15,7 @@ import { THING_CATALOG_COUNT, THING_CURATED_COUNT } from "./thing-catalog-meta";
 import { HyperbolicFieldRenderer } from "./hyperbolic-renderer";
 import {
   compareCells,
+  type CellShape,
   type TopologyId,
   type WorldBounds,
   type WorldPoint,
@@ -103,10 +104,13 @@ const THING_ATLAS_SLOTS = THING_ATLAS_COLUMNS * THING_ATLAS_ROWS;
 const THING_TEXTURE_PADDING = 16;
 const THING_TRIANGULAR_FIT = 0.9;
 const THING_RHOMBILLE_FIT = 0.8;
+const THING_HEXAGONAL_FIT = 0.9;
 const MAX_CACHED_TILES = 2048;
 const MAX_DAMAGE_AREA_RATIO = 0.4;
 const PAN_BLIT_MIN_DETAIL_INSTANCES = 20_000;
 const worldPointKey = (point: WorldPoint): string => `${point.x.toFixed(8)},${point.y.toFixed(8)}`;
+const genericShapeCode = (shape: CellShape): number =>
+  shape === "triangle-up" ? 1 : shape === "triangle-down" ? 2 : shape === "hexagon" ? 4 : 3;
 
 interface FrameRequest {
   kind: "full" | "damage" | "pan";
@@ -330,7 +334,7 @@ void main() {
   bool thingCell = a_axisVState.w > 2.5;
   bool frontier = a_axisVState.w > 1.5 && !thingCell;
   vec2 local = a_corner * 2.0 - 1.0;
-  if (shape == 3 || frontier) {
+  if (shape >= 3 || frontier) {
     // Polygon edges can coincide with an excluded edge of their carrier quad
     // (notably the horizontal edge of a down triangle). Grow only the carrier;
     // the fragment shader still clips to the exact polygon. This guarantees
@@ -443,6 +447,33 @@ void main() {
       includeEdge(right, 2, edges, edgePixels);
       includeEdge(left, 4, edges, edgePixels);
     }
+  } else if (shape == 4) {
+    float edge0 = v_local.y + 1.0;
+    float edge1 = 1.0 - v_local.x + v_local.y * 0.5;
+    float edge2 = 1.0 - v_local.x - v_local.y * 0.5;
+    float edge3 = 1.0 - v_local.y;
+    float edge4 = 1.0 + v_local.x - v_local.y * 0.5;
+    float edge5 = 1.0 + v_local.x + v_local.y * 0.5;
+    float ownershipTolerance = max(
+      max(max(fwidth(edge0), fwidth(edge1)), max(fwidth(edge2), fwidth(edge3))),
+      max(fwidth(edge4), fwidth(edge5))
+    ) * 0.75;
+    float minimumEdge = min(min(min(edge0, edge1), min(edge2, edge3)), min(edge4, edge5));
+    inside = minimumEdge >= (thingCell ? 0.0 : -ownershipTolerance);
+    if (frontier || thingUnderlay || thingBorder || maskedCell) {
+      if ((edges & 1) != 0) edgePixels = min(edgePixels, abs(edge0) / max(fwidth(edge0), 0.000001) * 2.0);
+      if ((edges & 2) != 0) edgePixels = min(edgePixels, abs(edge1) / max(fwidth(edge1), 0.000001) * 2.0);
+      if ((edges & 4) != 0) edgePixels = min(edgePixels, abs(edge2) / max(fwidth(edge2), 0.000001) * 2.0);
+      if ((edges & 8) != 0) edgePixels = min(edgePixels, abs(edge3) / max(fwidth(edge3), 0.000001) * 2.0);
+      if ((edges & 16) != 0) edgePixels = min(edgePixels, abs(edge4) / max(fwidth(edge4), 0.000001) * 2.0);
+      if ((edges & 32) != 0) edgePixels = min(edgePixels, abs(edge5) / max(fwidth(edge5), 0.000001) * 2.0);
+    } else {
+      edgePixels = min(
+        min(min(abs(edge0) / max(fwidth(edge0), 0.000001), abs(edge1) / max(fwidth(edge1), 0.000001)),
+          min(abs(edge2) / max(fwidth(edge2), 0.000001), abs(edge3) / max(fwidth(edge3), 0.000001))),
+        min(abs(edge4) / max(fwidth(edge4), 0.000001), abs(edge5) / max(fwidth(edge5), 0.000001))
+      ) * 2.0;
+    }
   } else {
     float edge0 = 1.0 + v_local.x + v_local.y;
     float edge1 = 1.0 - v_local.x + v_local.y;
@@ -501,7 +532,7 @@ void main() {
 
   int stateIndex = int(clamp(v_sprite, 0.0, ${EXPLODED_SPRITE.toFixed(1)}) + 0.5);
   vec3 stateColor = frontier ? u_background : (artifact ? u_lodArtifact : u_lodColors[stateIndex]);
-  float contentExtent = shape == 3 ? 0.85 : 0.62;
+  float contentExtent = shape == 3 ? 0.85 : (shape == 4 ? 0.52 : 0.62);
   vec2 contentLocal = rotation * v_spriteOffset / contentExtent;
   vec2 uv = clamp(contentLocal + 0.5, 0.0, 1.0);
   vec2 atlasPixel = vec2(v_sprite * float(${SPRITE_PIXELS}), 0.0) + uv * float(${SPRITE_PIXELS - 1}) + 0.5;
@@ -2031,7 +2062,12 @@ export class WebGLRenderer {
         }
       }
       if (this.model.topologyId !== "square") {
-        const fit = this.model.topologyId === "triangular" ? THING_TRIANGULAR_FIT : THING_RHOMBILLE_FIT;
+        const fit =
+          this.model.topologyId === "triangular"
+            ? THING_TRIANGULAR_FIT
+            : this.model.topologyId === "hexagonal"
+              ? THING_HEXAGONAL_FIT
+              : THING_RHOMBILLE_FIT;
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
         const halfWidth = ((maxX - minX) * fit) / 2;
@@ -2093,7 +2129,7 @@ export class WebGLRenderer {
           }
         }
       }
-      const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+      const shape = genericShapeCode(geometry.shape);
       instances[index++] = drawCenterX - anchor.x;
       instances[index++] = drawCenterY - anchor.y;
       instances[index++] = geometry.axisU.x;
@@ -2146,7 +2182,7 @@ export class WebGLRenderer {
               Math.max(...geometry.vertices.map((vertex) => vertex.y))) /
             2;
         }
-        const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+        const shape = genericShapeCode(geometry.shape);
         instances[index++] = drawCenterX - anchor.x;
         instances[index++] = drawCenterY - anchor.y;
         instances[index++] = geometry.axisU.x;
@@ -2190,7 +2226,7 @@ export class WebGLRenderer {
               Math.max(...geometry.vertices.map((vertex) => vertex.y))) /
             2;
         }
-        const shape = geometry.shape === "triangle-up" ? 1 : geometry.shape === "triangle-down" ? 2 : 3;
+        const shape = genericShapeCode(geometry.shape);
         instances[index++] = drawCenterX - anchor.x;
         instances[index++] = drawCenterY - anchor.y;
         instances[index++] = geometry.axisU.x;

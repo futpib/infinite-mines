@@ -138,7 +138,7 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
     const page = await context.newPage();
     try {
       await openDeterministicGame(page);
-      for (const topology of ["square", "triangular", "rhombille"] as const) {
+      for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
         for (const cellSize of [4, 8, 25, 34.25]) {
           const center = await page.evaluate(
             async ({ topologyId, requestedCellSize, phase, opened1, opened4, flagged }) => {
@@ -179,7 +179,9 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
           await page.mouse.move(center.x + 70, center.y + 45);
           await page.mouse.move(center.x, center.y);
           const markers = page.locator("#hover-overlay .hover-cell.is-visible");
-          await expect(markers).toHaveCount(topology === "square" ? 5 : topology === "triangular" ? 13 : 11);
+          await expect(markers).toHaveCount(
+            topology === "square" ? 5 : topology === "hexagonal" ? 7 : topology === "triangular" ? 13 : 11,
+          );
           // Preserve the real chord/hint marker set, then make those same cells
           // explored so every complete WebGL outline is present for pixel sampling.
           const frameBeforeNeighborhoodRender = await page.evaluate((opened1) => {
@@ -325,8 +327,8 @@ test("R18 — hover paint follows WebGL edges across topology, zoom, camera phas
       await context.close();
     }
   }
-  expect(configurationCount).toBe(60);
-  expect(matrix).toHaveLength(580);
+  expect(configurationCount).toBe(80);
+  expect(matrix).toHaveLength(720);
 });
 
 test("R26 — hover footprint can persistently reduce to the directly hovered cell", async ({ page }) => {

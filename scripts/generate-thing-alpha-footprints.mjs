@@ -11,6 +11,7 @@ const TEXTURE_PIXELS = 512;
 const TEXTURE_PADDING = 16;
 const TRIANGULAR_FIT = 0.9;
 const RHOMBILLE_FIT = 0.8;
+const HEXAGONAL_FIT = 0.9;
 const FIELD_ROTATIONS = [0, 90, 180, 270];
 const CURATED_SPRITES = [
   "emoji_u1f3f0.svg",
@@ -93,7 +94,8 @@ const artBounds = (topologyId, topology, visual) => {
     }
   }
   if (topologyId !== "square") {
-    const fit = topologyId === "triangular" ? TRIANGULAR_FIT : RHOMBILLE_FIT;
+    const fit =
+      topologyId === "triangular" ? TRIANGULAR_FIT : topologyId === "hexagonal" ? HEXAGONAL_FIT : RHOMBILLE_FIT;
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     const halfWidth = ((maxX - minX) * fit) / 2;
@@ -259,9 +261,9 @@ const main = async () => {
   await page.goto("about:blank");
 
   const layouts = [];
-  for (const topologyId of ["square", "triangular", "rhombille"]) {
+  for (const topologyId of ["square", "hexagonal", "triangular", "rhombille"]) {
     const topology = TOPOLOGIES[topologyId];
-    const variants = topologyId === "square" ? 1 : topologyId === "triangular" ? 2 : 3;
+    const variants = topologyId === "triangular" ? 2 : topologyId === "rhombille" ? 3 : 1;
     for (let variant = 0; variant < variants; variant += 1) {
       const anchor = variantAnchor(topologyId, variant);
       if (topologyVariant(topologyId, anchor.x, anchor.y) !== variant) throw new Error("Invalid variant anchor");

@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { CellState } from "../../src/model";
-import { openDeterministicGame, worldPoint } from "./helpers";
+import { findCell, openDeterministicGame, worldPoint } from "./helpers";
 
 const waitForNextFrame = async (page: import("@playwright/test").Page, previous: number): Promise<void> => {
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().frameCount)).toBeGreaterThan(previous);
 };
 
-test("R37 — Square is default and topology selection drives exact gameplay, geometry, hover, and pixel LOD", async ({
+test("R37/R52 — Square is default and topology selection drives exact gameplay, geometry, hover, and pixel LOD", async ({
   page,
 }) => {
   await openDeterministicGame(page, 0x71a9_0025);
@@ -14,9 +14,10 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
   await expect(page.locator("#topology-pill")).toHaveText("SQUARE");
 
   await page.getByRole("button", { name: "Game settings" }).click();
-  await expect(page.locator("#topology-options button")).toHaveCount(4);
+  await expect(page.locator("#topology-options button")).toHaveCount(5);
   expect(await page.locator("#topology-options button b").allTextContents()).toEqual([
     "Square",
+    "Hexagonal",
     "Rhombille",
     "Hyperbolic pentagons",
     "Triangular",
@@ -33,6 +34,63 @@ test("R37 — Square is default and topology selection drives exact gameplay, ge
       generation: window.__infiniteMines.model.store.generation,
     })),
   ).toEqual(squareField);
+  await page.getByRole("button", { name: /Hexagonal/ }).click();
+  await expect(page.locator("#topology-pill")).toHaveText("HEXAGONAL");
+  const hexagonal = await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    const neighbors: Array<{ x: number; y: number }> = [];
+    api.model.topology.forEachNeighbor(0, 0, (x, y) => neighbors.push({ x, y }));
+    const hitTests = [
+      { x: 0, y: 0 },
+      { x: -7, y: 4 },
+      { x: 12, y: -9 },
+    ].map((cell) => {
+      const center = api.model.topology.geometry(cell.x, cell.y).center;
+      return api.model.topology.hitTest(center.x, center.y);
+    });
+    return { neighbors, hitTests, originState: api.model.getState(0, 0), diagnostics: api.diagnostics() };
+  });
+  expect(hexagonal.neighbors).toHaveLength(6);
+  expect(new Set(hexagonal.neighbors.map((cell) => `${cell.x},${cell.y}`)).size).toBe(6);
+  expect(hexagonal.hitTests).toEqual([
+    { x: 0, y: 0 },
+    { x: -7, y: 4 },
+    { x: 12, y: -9 },
+  ]);
+  expect(hexagonal.originState).not.toBe(CellState.Covered);
+  expect(hexagonal.diagnostics).toMatchObject({ topology: "hexagonal", drawCalls: 1, cachedTiles: 0 });
+
+  const trustedHexTarget = await findCell(page, "covered-safe");
+  const trustedHexPoint = await worldPoint(page, trustedHexTarget);
+  await page.keyboard.down("Control");
+  await page.mouse.click(trustedHexPoint.x, trustedHexPoint.y);
+  await page.keyboard.up("Control");
+  expect(await page.evaluate((cell) => window.__infiniteMines.model.getState(cell.x, cell.y), trustedHexTarget)).not.toBe(
+    CellState.Covered,
+  );
+
+  const beforeHexFrame = hexagonal.diagnostics.frameCount;
+  await page.evaluate((opened6) => {
+    const api = window.__infiniteMines;
+    api.model.store.clear();
+    api.model.store.set(0, 0, opened6);
+    api.renderer.home();
+  }, CellState.Opened6);
+  await waitForNextFrame(page, beforeHexFrame);
+  const hexPoint = await worldPoint(page, { x: 0, y: 0 });
+  await page.mouse.move(hexPoint.x, hexPoint.y);
+  await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(7);
+  expect(await page.locator("#hover-overlay .hover-cell.is-visible").first().evaluate((node) => (node as HTMLElement).style.clipPath)).toContain(
+    "polygon",
+  );
+
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
+  expect(await page.evaluate(() => window.__infiniteMines.model.topologyId)).toBe("hexagonal");
+  await expect(page.locator("#topology-pill")).toHaveText("HEXAGONAL");
+
+  await page.getByRole("button", { name: "Game settings" }).click();
   await page.getByRole("button", { name: /Triangular/ }).click();
   await expect(page.locator("#topology-pill")).toHaveText("TRIANGULAR");
 
@@ -214,7 +272,7 @@ test("R48 — every boundary-vertex segment continues one edge into covered fog"
   await page.addInitScript(() => localStorage.setItem("infinite-mines-fog-frontier", "edge"));
   await openDeterministicGame(page, 0xf09b_0048);
 
-  for (const topology of ["square", "triangular", "rhombille"] as const) {
+  for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
     const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await page.evaluate(
       ({ topologyId, opened }) => {
@@ -324,7 +382,7 @@ test("R48 — every boundary-vertex segment continues one edge into covered fog"
     });
 
     expect(detail.diagnostics.lod).toBe("detail");
-    expect(detail.continuationSegmentCount).toBe({ square: 8, triangular: 12, rhombille: 10 }[topology]);
+    expect(detail.continuationSegmentCount).toBe({ square: 8, hexagonal: 6, triangular: 12, rhombille: 10 }[topology]);
     expect(detail.diagnostics.frontierEdges).toBe(detail.continuationSegmentCount);
     expect(detail.diagnostics.frontierCells).toBeGreaterThan(0);
     expect(detail.diagnostics.frontierCells).toBeLessThanOrEqual(detail.neighborCount);
@@ -543,7 +601,7 @@ test("R48 — one-cell mode outlines exactly the complete first touching ring", 
   await page.addInitScript(() => localStorage.setItem("infinite-mines-fog-frontier", "cell"));
   await openDeterministicGame(page, 0xf09b_48ce);
 
-  for (const topologyId of ["square", "triangular", "rhombille"] as const) {
+  for (const topologyId of ["square", "hexagonal", "triangular", "rhombille"] as const) {
     const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await page.evaluate(
       ({ topologyId: nextTopology, opened }) => {
@@ -659,6 +717,7 @@ test("R48 — one-cell mode outlines exactly the complete first touching ring", 
 
     const expected = {
       square: { cells: 8, edges: 20 },
+      hexagonal: { cells: 6, edges: 24 },
       triangular: { cells: 12, edges: 21 },
       rhombille: { cells: 10, edges: 26 },
     }[topologyId];
@@ -702,7 +761,7 @@ test("R48 — both frontier modes stay complete across topology, zoom, and devic
       await context.addInitScript((mode) => localStorage.setItem("infinite-mines-fog-frontier", mode), frontierMode);
       const page = await context.newPage();
       await openDeterministicGame(page, 0xf09b_48d0 + deviceScaleFactor * 100);
-      for (const topology of ["square", "triangular", "rhombille"] as const) {
+      for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
         for (const zoom of [0.32, 1, 2.2]) {
           const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
           await page.evaluate(
@@ -757,11 +816,14 @@ test("R48 — both frontier modes stay complete across topology, zoom, and devic
               }
             }
             for (const key of expected.keys()) forbidden.delete(key);
-            const hasPaint = ({ start, end }: { start: { x: number; y: number }; end: { x: number; y: number } }) => {
+            const hasPaint = (
+              { start, end }: { start: { x: number; y: number }; end: { x: number; y: number } },
+              radius = 1,
+            ) => {
               const x = Math.floor(((start.x + end.x) / 2) * dpr);
               const y = canvas.height - 1 - Math.floor(((start.y + end.y) / 2) * dpr);
-              for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-                for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+              for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+                for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
                   const pixel = new Uint8Array(4);
                   gl.readPixels(x + offsetX, y + offsetY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
                   if (Math.hypot(pixel[0] - background[0], pixel[1] - background[1], pixel[2] - background[2]) > 15) {
@@ -776,7 +838,10 @@ test("R48 — both frontier modes stay complete across topology, zoom, and devic
               diagnostics: api.diagnostics(),
               expectedEdges: expected.size,
               missing: [...expected].filter(([, segment]) => !hasPaint(segment)).map(([key]) => key),
-              unexpected: [...forbidden].filter(([, segment]) => hasPaint(segment)).map(([key]) => key),
+              // At the smallest cell size a one-pixel neighborhood can overlap
+              // a different legal edge of a six-sided cell. The exact midpoint
+              // remains a discriminating negative sample.
+              unexpected: [...forbidden].filter(([, segment]) => hasPaint(segment, 0)).map(([key]) => key),
             };
           });
           const label = `${frontierMode} ${topology} zoom=${zoom} dpr=${deviceScaleFactor}`;
@@ -841,10 +906,10 @@ test("R37 — topology damage matches a full redraw", async ({ page }) => {
   expect(fullHash).toBe(partialResult.hash);
 });
 
-test("R37 — dense Triangular and Rhombille fields retain one-draw, no-upload camera movement", async ({ page }) => {
-  test.setTimeout(45_000);
+test("R37/R52 — dense polygon fields retain one-draw, no-upload camera movement", async ({ page }) => {
+  test.setTimeout(90_000);
   await openDeterministicGame(page, 0x7e11_1a95);
-  for (const topology of ["triangular", "rhombille"] as const) {
+  for (const topology of ["hexagonal", "triangular", "rhombille"] as const) {
     await page.evaluate(({ topologyId, opened1 }) => {
       const api = window.__infiniteMines;
       api.newGame("master", topologyId);
@@ -906,7 +971,7 @@ test("R38 — every topology tessellates without background cracks and Rhombille
   page,
 }) => {
   await openDeterministicGame(page, 0x5ea1_5afe);
-  for (const topology of ["square", "triangular", "rhombille"] as const) {
+  for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
     const previousFrame = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await page.evaluate(
       ({ topologyId, opened }) => {
@@ -914,7 +979,7 @@ test("R38 — every topology tessellates without background cracks and Rhombille
         api.model.reset("master", 0x5ea1_5afe, false, topologyId);
         api.model.store.clear();
         const bounds =
-          topologyId === "square"
+          topologyId === "square" || topologyId === "hexagonal"
             ? { minX: -40, maxX: 40, minY: -28, maxY: 28 }
             : topologyId === "triangular"
               ? { minX: -90, maxX: 90, minY: -35, maxY: 35 }
@@ -1020,7 +1085,7 @@ test("R39 — non-square hover separates hint neighborhoods from click effects w
   page,
 }) => {
   await openDeterministicGame(page, 0x417e_c7ed);
-  for (const topology of ["rhombille", "triangular"] as const) {
+  for (const topology of ["hexagonal", "rhombille", "triangular"] as const) {
     const frameBeforeReset = await page.evaluate((topologyId) => {
       const api = window.__infiniteMines;
       const frameCount = api.diagnostics().frameCount;
@@ -1033,7 +1098,7 @@ test("R39 — non-square hover separates hint neighborhoods from click effects w
     const frameBeforeHover = await page.evaluate(() => window.__infiniteMines.diagnostics().frameCount);
     await page.mouse.move(center.x + 40, center.y);
     await page.mouse.move(center.x, center.y);
-    const expectedCells = topology === "triangular" ? 13 : 11;
+    const expectedCells = topology === "hexagonal" ? 7 : topology === "triangular" ? 13 : 11;
     await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(expectedCells);
     await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-hint")).toHaveCount(expectedCells - 1);
     await expect(page.locator("#hover-overlay .hover-cell.is-visible.is-affected")).toHaveCount(1);

@@ -141,7 +141,7 @@ test("R50 — every topology and quarter-turn share rendering, hit-testing, pan,
     }> = [];
     const target = { x: 4, y: -2 };
     const rotations = [0, 90, 180, 270] as const;
-    const topologies = ["square", "rhombille", "triangular"] as const;
+    const topologies = ["square", "hexagonal", "rhombille", "triangular"] as const;
     const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const rotate = (rotation: (typeof rotations)[number], x: number, y: number) => {
       if (rotation === 90) return { x: -y, y: x };
@@ -279,7 +279,7 @@ test("R50 — every topology and quarter-turn share rendering, hit-testing, pan,
     return results;
   }, { opened: CellState.Opened1 });
 
-  expect(cases).toHaveLength(12);
+  expect(cases).toHaveLength(16);
   for (const result of cases) {
     const label = `${result.topology} at ${result.rotation}°`;
     expect(result.hit, `${label} hit test`).toEqual({ x: 4, y: -2 });
@@ -377,9 +377,9 @@ test("R50 — cell glyphs and Thing artwork remain screen-upright through every 
       drawCalls: number;
     }> = [];
     const rotations = [0, 90, 180, 270] as const;
-    const topologies = ["square", "triangular", "rhombille"] as const;
+    const topologies = ["square", "hexagonal", "triangular", "rhombille"] as const;
 
-    const cellMarker = marker(64, 22, 36, 7);
+    const cellMarker = marker(64, 23, 35, 8);
     upload(privateRenderer.resources.atlasTexture, 64, 0, cellMarker);
     upload(privateRenderer.resources.genericAtlasTexture, 64, 0, cellMarker);
     for (const topology of topologies) {
@@ -442,9 +442,9 @@ test("R50 — cell glyphs and Thing artwork remain screen-upright through every 
     return results;
   }, { opened: CellState.Opened, opened1: CellState.Opened1 });
 
-  expect(samples).toHaveLength(24);
+  expect(samples).toHaveLength(32);
   for (const kind of ["cell", "thing"] as const) {
-    for (const topology of ["square", "triangular", "rhombille"] as const) {
+    for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
       const cases = samples.filter((sample) => sample.kind === kind && sample.topology === topology);
       const baseline = cases.find((sample) => sample.rotation === 0);
       if (!baseline) throw new Error(`Missing ${kind}/${topology} baseline`);

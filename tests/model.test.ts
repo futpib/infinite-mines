@@ -162,6 +162,10 @@ describe("deterministic infinite field", () => {
         off: { beginner: 0.18, master: 0.22, ultimate: 0.27, impossible: 0.33, deathmatch: 0.33 },
         on: { beginner: 0.19, master: 0.23, ultimate: 0.29, impossible: 0.36, deathmatch: 0.36 },
       },
+      hexagonal: {
+        off: { beginner: 0.2, master: 0.245, ultimate: 0.29, impossible: 0.345, deathmatch: 0.345 },
+        on: { beginner: 0.205, master: 0.25, ultimate: 0.305, impossible: 0.375, deathmatch: 0.375 },
+      },
       triangular: {
         off: { beginner: 0.145, master: 0.237, ultimate: 0.27, impossible: 0.312, deathmatch: 0.312 },
         on: { beginner: 0.155, master: 0.243, ultimate: 0.3, impossible: 0.355, deathmatch: 0.355 },
@@ -265,6 +269,12 @@ describe("deterministic infinite field", () => {
         expect(game.store.openedCells, `${topology} seed ${seed}`).toBeLessThan(100_000);
       }
     }
+  });
+
+  it("caps a potentially infinite low-density Hex opening without consuming its frontier", () => {
+    const game = new GameModel({ mode: "custom", density: CUSTOM_DENSITY_MIN, seed: 0, topology: "hexagonal" });
+    expect(game.store.openedCells).toBeLessThanOrEqual(4096);
+    expect(game.store.nonZeroCells).toBe(game.store.openedCells);
   });
 });
 
@@ -760,14 +770,15 @@ describe("gameplay", () => {
             autoStart: false,
             topology: topologyId,
           });
-          connectedMines.store.set(centerX, centerY, CellState.Opened4);
-          const wrongFlags = new Set(neighbors.slice(0, 4).map(([x, y]) => `${x},${y}`));
+          const initialMineCount = Math.min(4, Math.floor(neighbors.length / 2));
+          connectedMines.store.set(centerX, centerY, (CellState.Opened + initialMineCount) as CellState);
+          const wrongFlags = new Set(neighbors.slice(0, initialMineCount).map(([x, y]) => `${x},${y}`));
           const initialKeys = new Set(neighbors.map(([x, y]) => `${x},${y}`));
-          const actualMines = new Set(neighbors.slice(4, 8).map(([x, y]) => `${x},${y}`));
-          for (const [x, y] of neighbors.slice(0, 4)) connectedMines.store.set(x, y, CellState.Flagged);
+          const initialMines = neighbors.slice(initialMineCount, initialMineCount * 2);
+          const actualMines = new Set(initialMines.map(([x, y]) => `${x},${y}`));
+          for (const [x, y] of neighbors.slice(0, initialMineCount)) connectedMines.store.set(x, y, CellState.Flagged);
 
-          const secondaryMarks = neighbors
-            .slice(4, 8)
+          const secondaryMarks = initialMines
             .flatMap(([x, y]) => {
               const secondary: Array<[number, number]> = [];
               connectedMines.topology.forEachNeighbor(x, y, (nextX, nextY) => secondary.push([nextX, nextY]));
@@ -791,7 +802,7 @@ describe("gameplay", () => {
               ((x !== centerX || y !== centerY) && !initialKeys.has(key) && !wrongFlags.has(key))
             );
           };
-          const expectedQueue = neighbors.slice(4, 8).map(([x, y]) => ({ x, y }));
+          const expectedQueue = initialMines.map(([x, y]) => ({ x, y }));
           const expectedScheduled = new Set(expectedQueue.map(({ x, y }) => `${x},${y}`));
           const expectedExploded: string[] = [];
           while (expectedQueue.length > 0) {
@@ -819,7 +830,7 @@ describe("gameplay", () => {
             return isMockMine(x, y);
           });
 
-          expect(connectedMines.clueAt(centerX, centerY)).toBe(4);
+          expect(connectedMines.clueAt(centerX, centerY)).toBe(initialMineCount);
           mineLookups = 0;
           const blast = connectedMines.reveal(centerX, centerY);
           const explodedCells: string[] = [];
@@ -851,7 +862,8 @@ describe("gameplay", () => {
         const first = runInfiniteChain();
         const second = runInfiniteChain();
         expect(first.blast.exploded, `${topologyId} blast at ${centerX},${centerY}`).toBe(true);
-        expect(first.blast.changed).toBe(MAX_CHAIN_EXPLOSIONS_PER_ACTION + neighbors.length - 8);
+        const initialMineCount = Math.min(4, Math.floor(neighbors.length / 2));
+        expect(first.blast.changed).toBe(MAX_CHAIN_EXPLOSIONS_PER_ACTION + neighbors.length - initialMineCount * 2);
         expect(first.blast.healthDelta).toBe(-1);
         expect(first.health).toBe(2);
         expect(first.explodedCells).toHaveLength(MAX_CHAIN_EXPLOSIONS_PER_ACTION);

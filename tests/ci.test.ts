@@ -60,6 +60,7 @@ describe("reproducible CI contract", () => {
     let patterns = 0;
     const variants = {
       square: [{ x: 0, y: 0 }],
+      hexagonal: [{ x: 0, y: 0 }],
       triangular: [
         { x: 0, y: 0 },
         { x: 1, y: 0 },
@@ -95,7 +96,7 @@ describe("reproducible CI contract", () => {
         }
       }
     }
-    expect(patterns).toBe(THING_CATALOG_COUNT * 12 * rotations.length);
+    expect(patterns).toBe(THING_CATALOG_COUNT * 14 * rotations.length);
   }, 20_000);
 
   it("pins package tools to the versions installed by the lockfile", () => {

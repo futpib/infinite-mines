@@ -35,6 +35,10 @@ export const PRESET_DENSITY_MATRIX: Readonly<
     off: PRESET_DENSITIES,
     on: { beginner: 0.19, master: 0.23, ultimate: 0.29, impossible: 0.36, deathmatch: 0.36 },
   },
+  hexagonal: {
+    off: { beginner: 0.2, master: 0.245, ultimate: 0.29, impossible: 0.345, deathmatch: 0.345 },
+    on: { beginner: 0.205, master: 0.25, ultimate: 0.305, impossible: 0.375, deathmatch: 0.375 },
+  },
   triangular: {
     off: { beginner: 0.145, master: 0.237, ultimate: 0.27, impossible: 0.312, deathmatch: 0.312 },
     on: { beginner: 0.155, master: 0.243, ultimate: 0.3, impossible: 0.355, deathmatch: 0.355 },
@@ -872,7 +876,9 @@ export class GameModel {
           ? 0x34c1a5d7
           : this.topologyId === "rhombille"
             ? 0x69b284eb
-            : 0x17d4c6af;
+            : this.topologyId === "hexagonal"
+              ? 0x2d6f8a31
+              : 0x17d4c6af;
     return hash32(x, y, this.seed, 0x51ed270b ^ topologySalt) / UINT32_RANGE < this.density;
   }
 
@@ -1042,7 +1048,7 @@ export class GameModel {
       // topology coordinate systems (especially Rhombille's three slots per
       // lattice point). Choose both the artwork and its larger safe footprint
       // by actual rendered distance from the discovery cell instead. The
-      // resulting Thing is a compact union of real triangles/rhombi.
+      // resulting Thing is a compact union of real topology cells.
       const artifactX = zoneX * THING_ZONE_SIZE + artifactLocalX;
       const artifactY = zoneY * THING_ZONE_SIZE + artifactLocalY;
       const template = this.thingSpatialTemplate(artifactX, artifactY, reservedCells);
@@ -1230,10 +1236,12 @@ export class GameModel {
     let tail = 0;
     let scheduledMines = 0;
     let scheduledSafeCells = 0;
-    // Below the site-percolation threshold an infinite hyperbolic zero-clue
-    // component can be genuinely unbounded. Limit one action's work while
-    // leaving its covered boundary available for the next reveal.
-    const maxScheduledSafeCells = this.topologyId === "pentagonal" ? 128 : Number.POSITIVE_INFINITY;
+    // Infinite zero-clue components can occur in the hyperbolic field and in
+    // low-density Hex custom games. Limit one action's work while leaving its
+    // covered boundary available for the next reveal. Hex can safely use a
+    // much larger Euclidean budget because its frontier grows only linearly.
+    const maxScheduledSafeCells =
+      this.topologyId === "pentagonal" ? 128 : this.topologyId === "hexagonal" ? 4096 : Number.POSITIVE_INFINITY;
     const enqueue = (x: number, y: number, knownMine?: boolean, allowFlaggedMine = false): void => {
       const state = this.store.get(x, y);
       if (isOpened(state) || state === CellState.Exploded || state === CellState.Queued) return;

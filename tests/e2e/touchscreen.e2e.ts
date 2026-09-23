@@ -346,7 +346,7 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
 
   try {
     await openDeterministicGame(page);
-    for (const topology of ["square", "rhombille", "triangular"] as const) {
+    for (const topology of ["square", "hexagonal", "rhombille", "triangular"] as const) {
       await page.evaluate((nextTopology) => window.__infiniteMines.newGame("beginner", nextTopology), topology);
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
       const target = await coveredTarget();
@@ -511,7 +511,7 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
 test("R47 — preview pixels stay aligned and unobscured across zoom and device scale", async ({ browser }) => {
   test.setTimeout(120_000);
   const matrix: Array<{
-    topology: "square" | "rhombille" | "triangular";
+    topology: "square" | "hexagonal" | "rhombille" | "triangular";
     deviceScaleFactor: number;
     rendererPixelRatio: number;
     cellSize: number;
@@ -543,7 +543,7 @@ test("R47 — preview pixels stay aligned and unobscured across zoom and device 
     let pointerId = 200;
     try {
       await openDeterministicGame(page);
-      for (const topology of ["square", "rhombille", "triangular"] as const) {
+      for (const topology of ["square", "hexagonal", "rhombille", "triangular"] as const) {
         const target = await page.evaluate((topologyId) => {
           const api = window.__infiniteMines;
           api.model.reset("beginner", 0x5eed_1234, false, topologyId);

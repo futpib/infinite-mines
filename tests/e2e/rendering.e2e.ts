@@ -480,6 +480,7 @@ test("R49 — every drawn Thing fragment and vector-alpha texel stays inside its
   await page.evaluate(() => window.__infiniteMines.setThingsEnabled(true));
   const cases = [
     { topology: "square", variant: 0 },
+    { topology: "hexagonal", variant: 0 },
     { topology: "triangular", variant: 3 },
     { topology: "rhombille", variant: 9 },
   ] as const;
@@ -889,10 +890,13 @@ test("R49 — alpha reservations match every curated SVG, size, topology, and or
     const failures: string[] = [];
     const exemplars = new Map<
       string,
-      NonNullable<ReturnType<typeof api.model.thingVisualAt>> & { topology: "square" | "triangular" | "rhombille"; sprite: number }
+      NonNullable<ReturnType<typeof api.model.thingVisualAt>> & {
+        topology: "square" | "hexagonal" | "triangular" | "rhombille";
+        sprite: number;
+      }
     >();
     const topologies = new Map<string, typeof api.model.topology>();
-    const targets = { square: 24, triangular: 48, rhombille: 72 } as const;
+    const targets = { square: 24, hexagonal: 24, triangular: 48, rhombille: 72 } as const;
     const curatedZones = [
       { x: 0, y: 0 },
       { x: 1, y: 0 },
@@ -907,7 +911,7 @@ test("R49 — alpha reservations match every curated SVG, size, topology, and or
       { x: 2, y: 0 },
       { x: 2, y: 1 },
     ];
-    for (const topology of ["square", "triangular", "rhombille"] as const) {
+    for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
       const topologyStart = exemplars.size;
       for (let seedOffset = 0; seedOffset < 256 && exemplars.size - topologyStart < targets[topology]; seedOffset += 1) {
         const seed = (0x5eed_1234 + seedOffset * 0x1020_3041) >>> 0;
@@ -958,7 +962,7 @@ test("R49 — alpha reservations match every curated SVG, size, topology, and or
       let maxX = Math.max(...vertices.map((point) => point.x));
       let maxY = Math.max(...vertices.map((point) => point.y));
       if (thing.topology !== "square") {
-        const fit = thing.topology === "triangular" ? 0.9 : 0.8;
+        const fit = thing.topology === "triangular" || thing.topology === "hexagonal" ? 0.9 : 0.8;
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
         const halfWidth = ((maxX - minX) * fit) / 2;
@@ -1006,7 +1010,7 @@ test("R49 — alpha reservations match every curated SVG, size, topology, and or
     return { patterns: exemplars.size, failures, minArtCells, maxArtCells };
   });
 
-  expect(result.patterns).toBe(144);
+  expect(result.patterns).toBe(168);
   expect(result.failures).toEqual([]);
   expect(result.minArtCells).toBeGreaterThan(0);
   expect(result.maxArtCells).toBeLessThanOrEqual(36);
@@ -1047,7 +1051,7 @@ test("R49 — emoji Things fade continuously through the board detail transition
     blank.height = 512;
     const samples: Array<{ topology: string; values: Array<{ cellSize: number; detailMix: number; difference: number }> }> = [];
 
-    for (const topology of ["square", "triangular", "rhombille"] as const) {
+    for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
       api.model.reset("beginner", 0x5eed_1234, false, topology, undefined, true);
       renderer.syncThings();
       let thing: ReturnType<typeof api.model.thingVisualAt> = null;
