@@ -2,7 +2,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CUSTOM_DENSITY_MIN,
   MAX_CHAIN_EXPLOSIONS_PER_ACTION,
+  PRESET_DENSITY_MATRIX,
   PRESET_DENSITIES,
+  PRESET_MODES,
   THING_LARGE_RESERVED_SIDE,
   THING_SMALL_PROBABILITY,
   THING_SMALL_RESERVED_SIDE,
@@ -16,6 +18,7 @@ import {
   hash32,
   isOpened,
   openedClue,
+  presetDensityFor,
   thingReservedSideForRoll,
   thingDeckPositionForZone,
   thingSpriteFor,
@@ -128,8 +131,8 @@ describe("deterministic infinite field", () => {
         }
       }
       const observed = mines / (side * side);
-      expect(Math.abs(observed - DIFFICULTIES[mode].density * squareAvailableCellFraction)).toBeLessThan(0.008);
-      expect(Math.abs(mines / eligible - DIFFICULTIES[mode].density)).toBeLessThan(0.008);
+      expect(Math.abs(observed - game.density * squareAvailableCellFraction)).toBeLessThan(0.008);
+      expect(Math.abs(mines / eligible - game.density)).toBeLessThan(0.008);
     }
 
     const custom = new GameModel({ mode: "custom", density: 0.1234, seed: 91, autoStart: false });
@@ -151,6 +154,41 @@ describe("deterministic infinite field", () => {
     expect(thingReservedSideForRoll(THING_SMALL_PROBABILITY - Number.EPSILON)).toBe(THING_SMALL_RESERVED_SIDE);
     expect(thingReservedSideForRoll(THING_SMALL_PROBABILITY)).toBe(THING_LARGE_RESERVED_SIDE);
     expect(thingReservedSideForRoll(1 - Number.EPSILON)).toBe(THING_LARGE_RESERVED_SIDE);
+  });
+
+  it("uses the simulated preset density for every topology and Thing setting", () => {
+    expect(PRESET_DENSITY_MATRIX).toEqual({
+      square: {
+        off: { beginner: 0.18, master: 0.22, ultimate: 0.27, impossible: 0.33, deathmatch: 0.33 },
+        on: { beginner: 0.19, master: 0.23, ultimate: 0.29, impossible: 0.36, deathmatch: 0.36 },
+      },
+      triangular: {
+        off: { beginner: 0.145, master: 0.237, ultimate: 0.27, impossible: 0.312, deathmatch: 0.312 },
+        on: { beginner: 0.155, master: 0.243, ultimate: 0.3, impossible: 0.355, deathmatch: 0.355 },
+      },
+      rhombille: {
+        off: { beginner: 0.12, master: 0.125, ultimate: 0.168, impossible: 0.22, deathmatch: 0.22 },
+        on: { beginner: 0.12, master: 0.135, ultimate: 0.187, impossible: 0.248, deathmatch: 0.248 },
+      },
+      pentagonal: {
+        off: { beginner: 0.15, master: 0.22, ultimate: 0.245, impossible: 0.28, deathmatch: 0.28 },
+        on: { beginner: 0.15, master: 0.22, ultimate: 0.245, impossible: 0.28, deathmatch: 0.28 },
+      },
+    });
+
+    for (const topology of TOPOLOGY_IDS) {
+      for (const thingsEnabled of [false, true]) {
+        for (const mode of PRESET_MODES) {
+          const expected = PRESET_DENSITY_MATRIX[topology][thingsEnabled && topology !== "pentagonal" ? "on" : "off"][mode];
+          expect(presetDensityFor(mode, topology, thingsEnabled)).toBe(expected);
+          const game = new GameModel({ mode, topology, thingsEnabled, autoStart: false });
+          expect(game.density).toBe(expected);
+          expect(game.thingsEnabled).toBe(topology === "pentagonal" ? false : thingsEnabled);
+          game.reset(mode, 17, false, topology, undefined, thingsEnabled);
+          expect(game.density).toBe(expected);
+        }
+      }
+    }
   });
 
   it("realizes the five-in-six small Thing probability across deterministic zones", () => {
@@ -285,12 +323,12 @@ describe("topology-driven fields", () => {
     const snapshot = source.createSnapshot();
     expect(snapshot.version).toBe(1);
     expect(snapshot.topology).toBe("rhombille");
-    expect(snapshot.density).toBe(DIFFICULTIES.beginner.density);
+    expect(snapshot.density).toBe(presetDensityFor("beginner", "rhombille", false));
     expect(snapshot.thingsEnabled).toBe(false);
     const restored = new GameModel({ seed: 1, autoStart: false });
     expect(restored.restoreSnapshot(snapshot)).toBe(true);
     expect(restored.topologyId).toBe("rhombille");
-    expect(restored.density).toBe(DIFFICULTIES.beginner.density);
+    expect(restored.density).toBe(presetDensityFor("beginner", "rhombille", false));
     expect(restored.thingsEnabled).toBe(false);
 
     const incomplete = { ...snapshot } as Record<string, unknown>;

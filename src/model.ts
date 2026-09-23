@@ -22,6 +22,40 @@ export const PRESET_DENSITIES: Record<PresetMode, number> = {
   deathmatch: 0.33,
 };
 
+type ThingSetting = "off" | "on";
+type PresetDensitySet = Readonly<Record<PresetMode, number>>;
+
+// Square without Things is the canonical difficulty fingerprint. The remaining
+// values match its simulated opening cadence and logical-stall pressure rather
+// than merely equalizing each topology's raw neighbor count.
+export const PRESET_DENSITY_MATRIX: Readonly<
+  Record<TopologyId, Readonly<Record<ThingSetting, PresetDensitySet>>>
+> = {
+  square: {
+    off: PRESET_DENSITIES,
+    on: { beginner: 0.19, master: 0.23, ultimate: 0.29, impossible: 0.36, deathmatch: 0.36 },
+  },
+  triangular: {
+    off: { beginner: 0.145, master: 0.237, ultimate: 0.27, impossible: 0.312, deathmatch: 0.312 },
+    on: { beginner: 0.155, master: 0.243, ultimate: 0.3, impossible: 0.355, deathmatch: 0.355 },
+  },
+  rhombille: {
+    off: { beginner: 0.12, master: 0.125, ultimate: 0.168, impossible: 0.22, deathmatch: 0.22 },
+    on: { beginner: 0.12, master: 0.135, ultimate: 0.187, impossible: 0.248, deathmatch: 0.248 },
+  },
+  pentagonal: {
+    off: { beginner: 0.15, master: 0.22, ultimate: 0.245, impossible: 0.28, deathmatch: 0.28 },
+    // Things are unavailable on this topology; keeping the disabled branch
+    // complete makes this table total for callers and tests.
+    on: { beginner: 0.15, master: 0.22, ultimate: 0.245, impossible: 0.28, deathmatch: 0.28 },
+  },
+};
+
+export function presetDensityFor(mode: PresetMode, topology: TopologyId, thingsEnabled: boolean): number {
+  const setting: ThingSetting = topology !== "pentagonal" && thingsEnabled ? "on" : "off";
+  return PRESET_DENSITY_MATRIX[topology][setting][mode];
+}
+
 export const CUSTOM_DENSITY_MIN = 0.12;
 export const CUSTOM_DENSITY_MAX = 0.5;
 export const CUSTOM_DENSITY_DEFAULT = 0.25;
@@ -557,10 +591,14 @@ export class GameModel {
 
   constructor(options: GameOptions = {}) {
     this.mode = options.mode ?? "beginner";
-    this.density = DIFFICULTIES[this.mode].density;
     this.seed = options.seed ?? 1;
     this.topologyId = options.topology ?? "square";
-    this.thingsEnabled = options.thingsEnabled ?? true;
+    this.thingsEnabled = this.topologyId === "pentagonal" ? false : (options.thingsEnabled ?? true);
+    this.density =
+      options.density ??
+      (this.mode === "custom"
+        ? CUSTOM_DENSITY_DEFAULT
+        : presetDensityFor(this.mode, this.topologyId, this.thingsEnabled));
     this.reset(
       this.mode,
       this.seed,
@@ -711,13 +749,19 @@ export class GameModel {
     seed: number = this.seed,
     autoStart = true,
     topology: TopologyId = this.topologyId,
-    density: number = DIFFICULTIES[mode].density,
+    density?: number,
     thingsEnabled: boolean = this.thingsEnabled,
   ): ActionResult {
-    if (!isValidDensity(density)) throw new RangeError(`Density must be between 12% and 50%: ${density}`);
+    const resolvedThingsEnabled = topology === "pentagonal" ? false : thingsEnabled;
+    const resolvedDensity =
+      density ??
+      (mode === "custom" ? CUSTOM_DENSITY_DEFAULT : presetDensityFor(mode, topology, resolvedThingsEnabled));
+    if (!isValidDensity(resolvedDensity)) {
+      throw new RangeError(`Density must be between 12% and 50%: ${resolvedDensity}`);
+    }
     this.mode = mode;
-    this.density = density;
-    this.thingsEnabled = topology === "pentagonal" ? false : thingsEnabled;
+    this.density = resolvedDensity;
+    this.thingsEnabled = resolvedThingsEnabled;
     this.seed = seed >>> 0;
     this.topologyId = topology;
     this.store.setDirectMode(topology === "pentagonal");

@@ -5,7 +5,6 @@ import {
   ActionResult,
   CUSTOM_DENSITY_DEFAULT,
   DIFFICULTIES,
-  PRESET_DENSITIES,
   PRESET_MODES,
   CellState,
   GameModel,
@@ -14,6 +13,7 @@ import {
   isOpened,
   isValidDensity,
   openedClue,
+  presetDensityFor,
 } from "./model";
 import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
 import { hyperbolicTopologyRegistry } from "./hyperbolic";
@@ -260,7 +260,8 @@ const formatDensity = (density: number): string =>
 const highScoreKey = (mode: Mode): string => {
   const topologyKey = model.topologyId === "square" ? `infinite-mines-high-${mode}` : `infinite-mines-high-${model.topologyId}-${mode}`;
   const base = `${topologyKey}-${thingsEnabled ? "things" : "plain"}`;
-  const isNominalPreset = mode !== "custom" && sameDensity(model.density, PRESET_DENSITIES[mode]);
+  const isNominalPreset =
+    mode !== "custom" && sameDensity(model.density, presetDensityFor(mode, model.topologyId, model.thingsEnabled));
   return isNominalPreset ? base : `${base}-${Math.round(model.density * 100_000_000)}`;
 };
 const readHighScore = (): number => Number(storageGet(highScoreKey(model.mode)) ?? 0);
@@ -349,6 +350,12 @@ function updateTopologyOptions(): void {
   }
   for (const button of difficultyList.querySelectorAll<HTMLButtonElement>("button[data-mode]")) {
     button.ariaPressed = String(button.dataset.mode === model.mode);
+    const mode = button.dataset.mode as (typeof PRESET_MODES)[number];
+    const detail = button.querySelector<HTMLElement>("small");
+    if (detail) {
+      const lives = DIFFICULTIES[mode].startingHealth;
+      detail.textContent = `${formatDensity(presetDensityFor(mode, model.topologyId, model.thingsEnabled))} chance · ${lives} ${lives === 1 ? "life" : "lives"}`;
+    }
   }
   const densityText = formatDensity(model.density);
   currentDensity.textContent = `${densityText} CURRENT`;
@@ -882,16 +889,17 @@ function runGameOverAction(event: MouseEvent, button: HTMLButtonElement, action:
 function newGame(
   mode: Mode = model.mode,
   topology: TopologyId = model.topologyId,
-  density: number =
-    mode === "custom" ? (model.mode === "custom" ? model.density : customDensity) : DIFFICULTIES[mode].density,
+  density?: number,
 ): void {
-  model.reset(mode, randomSeed(), true, topology, density, topology === "pentagonal" ? false : thingsEnabled);
+  const requestedDensity =
+    mode === "custom" ? (density ?? (model.mode === "custom" ? model.density : customDensity)) : density;
+  model.reset(mode, randomSeed(), true, topology, requestedDensity, topology === "pentagonal" ? false : thingsEnabled);
   thingsEnabled = model.thingsEnabled;
   renderer.syncThings();
   storageSet("infinite-mines-mode", mode);
   storageSet("infinite-mines-topology", topology);
   if (mode === "custom") {
-    customDensity = density;
+    customDensity = model.density;
     storageSet("infinite-mines-custom-density", String(customDensity));
   }
   renderer.home();
@@ -899,7 +907,7 @@ function newGame(
   refreshCellLocator(true);
   scheduleGameSave(0);
   showToast(
-    `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(density)} field generated`,
+    `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(model.density)} field generated`,
   );
 }
 

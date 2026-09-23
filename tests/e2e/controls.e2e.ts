@@ -24,10 +24,14 @@ async function alignFatalMine(page: Page, target: { x: number; y: number }): Pro
     for (let radius = 3; radius < 100 && !mine; radius += 1) {
       for (let y = -radius; y <= radius && !mine; y += 1) {
         for (let x = -radius; x <= radius; x += 1) {
-          if (model.getState(x, y) === 0 && model.mineAt(x, y)) {
-            mine = { x, y };
-            break;
-          }
+          if (model.getState(x, y) !== 0 || !model.mineAt(x, y)) continue;
+          let touchesMine = false;
+          model.topology.forEachNeighbor(x, y, (neighborX, neighborY) => {
+            if (model.mineAt(neighborX, neighborY)) touchesMine = true;
+          });
+          if (touchesMine) continue;
+          mine = { x, y };
+          break;
         }
       }
     }
