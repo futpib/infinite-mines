@@ -264,10 +264,10 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
         open.onsuccess = () => {
           const transaction = open.result.transaction("sessions");
           const store = transaction.objectStore("sessions");
-          const active = store.get("active-slot");
+          const active = store.get("active-field");
           active.onerror = () => reject(active.error);
           active.onsuccess = () => {
-            const key = `field:${active.result.topology}:${active.result.mode}:${active.result.thingsEnabled ? "things" : "plain"}`;
+            const key = `run:${active.result.id}`;
             const get = store.get(key);
             get.onerror = () => reject(get.error);
             get.onsuccess = () =>
@@ -286,7 +286,7 @@ test("R09 — refresh restores the exact field, progress, marks, and viewport fr
   expect(databaseRecord.version).toBe(1);
   expect(databaseRecord.modelVersion).toBe(1);
   expect(databaseRecord.thingsEnabled).toBe(true);
-  expect(databaseRecord.active).toBe("field:square:beginner:things");
+  expect(databaseRecord.active).toMatch(/^run:/);
   expect(databaseRecord.cellBytes).toBe(before.stored * 9);
   expect(databaseRecord.records).toBe(before.stored);
 
@@ -383,19 +383,22 @@ test("R40 — every topology and difficulty restores its own field, progress, an
 
   const slots = await page.evaluate(
     () =>
-      new Promise<{ keys: IDBValidKey[]; active: { topology: string; mode: string; thingsEnabled: boolean } }>((resolve, reject) => {
+      new Promise<{ keys: IDBValidKey[]; active: { id: string }; activeField: { model: { topology: string; mode: string; thingsEnabled: boolean } } }>((resolve, reject) => {
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
           const store = open.result.transaction("sessions").objectStore("sessions");
           const keys = store.getAllKeys();
-          const active = store.get("active-slot");
+          const active = store.get("active-field");
           keys.onerror = () => reject(keys.error);
           active.onerror = () => reject(active.error);
           let resultKeys: IDBValidKey[] | null = null;
-          let resultActive: { topology: string; mode: string; thingsEnabled: boolean } | null = null;
+          let resultActive: { id: string } | null = null;
           const finish = () => {
-            if (resultKeys && resultActive) resolve({ keys: resultKeys, active: resultActive });
+            if (!resultKeys || !resultActive) return;
+            const activeField = store.get(`run:${resultActive.id}`);
+            activeField.onerror = () => reject(activeField.error);
+            activeField.onsuccess = () => resolve({ keys: resultKeys as IDBValidKey[], active: resultActive as { id: string }, activeField: activeField.result });
           };
           keys.onsuccess = () => {
             resultKeys = keys.result;
@@ -408,23 +411,17 @@ test("R40 — every topology and difficulty restores its own field, progress, an
         };
       }),
   );
-  expect(slots.keys).toEqual(
-    expect.arrayContaining([
-      "active-slot",
-      "field:square:beginner:things",
-      "field:square:master:things",
-      "field:rhombille:beginner:things",
-      "field:rhombille:master:things",
-    ]),
-  );
-  expect(slots.active).toEqual({ version: 1, topology: "rhombille", mode: "master", thingsEnabled: true });
+  expect(slots.keys).toContain("active-field");
+  expect(slots.keys.filter((key) => typeof key === "string" && key.startsWith("run:"))).toHaveLength(4);
+  expect(slots.active.id).toBeTruthy();
+  expect(slots.activeField.model).toMatchObject({ topology: "rhombille", mode: "master", thingsEnabled: true });
 
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
   expect(await capture({ x: 700, y: 700 })).toEqual(rhombilleMaster);
 });
 
-test("R40 — Restart replaces only the active topology and difficulty slot", async ({ page }) => {
+test("R53 — Restart archives the current field and offers an exact resume", async ({ page }) => {
   await openDeterministicGame(page);
   await page.evaluate(() => {
     window.__infiniteMines.model.cycleMark(500, 500);
@@ -435,6 +432,12 @@ test("R40 — Restart replaces only the active topology and difficulty slot", as
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().persistenceStatus)).toBe("saved");
   const oldMasterSeed = await page.evaluate(() => window.__infiniteMines.model.seed);
+  await page.evaluate(() => {
+    const api = window.__infiniteMines;
+    api.model.cycleMark(777, 777);
+    api.renderer.restoreView({ version: 1, panX: 91.25, panY: -48.5, zoom: 1.3 });
+    return api.flushSave();
+  });
   await page.evaluate((nextSeed) => {
     Object.defineProperty(globalThis.crypto, "getRandomValues", {
       configurable: true,
@@ -446,17 +449,15 @@ test("R40 — Restart replaces only the active topology and difficulty slot", as
   }, (oldMasterSeed ^ 0xa5a5_a5a5) >>> 0);
   await page.locator("#restart-button").click();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.seed)).not.toBe(oldMasterSeed);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("1");
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("beginner");
-  expect(await page.evaluate(() => window.__infiniteMines.model.getState(500, 500))).toBe(10);
-  await page.keyboard.press("2");
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.mode)).toBe("master");
-  expect(await page.evaluate(() => window.__infiniteMines.model.seed)).not.toBe(oldMasterSeed);
+  await expect(page.getByRole("button", { name: "RESUME PREVIOUS" })).toBeVisible();
+  expect(await page.evaluate(() => window.__infiniteMines.listSavedFields().then((fields) => fields.length))).toBe(3);
+  await page.getByRole("button", { name: "RESUME PREVIOUS" }).click();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.model.seed)).toBe(oldMasterSeed);
+  expect(await page.evaluate(() => window.__infiniteMines.model.getState(777, 777))).toBe(10);
   expect(await page.evaluate(() => window.__infiniteMines.renderer.createViewSnapshot())).toEqual({
     version: 1,
-    panX: 0,
-    panY: 0,
-    zoom: 1,
+    panX: 91.25,
+    panY: -48.5,
+    zoom: 1.3,
   });
 });

@@ -233,12 +233,14 @@ test("R45 — calibrated field presets and a persisted custom density report the
         const open = indexedDB.open("infinite-mines", 1);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
-          const request = open.result
-            .transaction("sessions")
-            .objectStore("sessions")
-            .get("field:square:custom:things");
-          request.onerror = () => reject(request.error);
-          request.onsuccess = () => resolve(request.result.model.density);
+          const store = open.result.transaction("sessions").objectStore("sessions");
+          const pointer = store.get("active-field");
+          pointer.onerror = () => reject(pointer.error);
+          pointer.onsuccess = () => {
+            const request = store.get(`run:${pointer.result.id}`);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result.model.density);
+          };
         };
       }),
   );

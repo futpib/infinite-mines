@@ -15,8 +15,21 @@ import {
   openedClue,
   presetDensityFor,
 } from "./model";
-import { loadActiveGame, loadGameSlot, saveActiveGame, type PersistedGame } from "./persistence";
-import { hyperbolicTopologyRegistry } from "./hyperbolic";
+import {
+  activateSavedField,
+  archiveAndCreateSavedField,
+  createSavedField,
+  deleteSavedField,
+  listSavedFields,
+  loadActiveGame,
+  loadGameSlot,
+  loadSavedField,
+  saveActiveGame,
+  setSavedFieldPinned,
+  type PersistedGame,
+  type SavedField,
+} from "./persistence";
+import { HyperbolicTopologyRegistry, hyperbolicTopologyRegistry } from "./hyperbolic";
 import {
   WebGLRenderer,
   isFieldRotation,
@@ -50,6 +63,8 @@ const toast = element<HTMLElement>("#toast");
 const mobileTool = element<HTMLButtonElement>("#mobile-tool");
 const settingsDialog = element<HTMLDialogElement>("#settings-dialog");
 const overviewDialog = element<HTMLDialogElement>("#overview-dialog");
+const fieldsDialog = element<HTMLDialogElement>("#fields-dialog");
+const fieldsList = element<HTMLElement>("#fields-list");
 const helpDialog = element<HTMLDialogElement>("#help-dialog");
 const overviewCanvas = element<HTMLCanvasElement>("#overview-canvas");
 const overviewCaption = element<HTMLElement>("#overview-caption");
@@ -235,6 +250,7 @@ let saveDrain: Promise<void> | null = null;
 let fieldSwitch: Promise<void> | null = null;
 let persistenceStatus = restoredGame ? "restored" : "idle";
 let lastSavedAt = restoredGame && Number.isFinite(persistedGame.savedAt) ? persistedGame.savedAt : 0;
+let activeSavedFieldId = persistedGame?.id ?? null;
 let locatedCell = { x: 0, y: 0 };
 let locatorScreen = { x: 0, y: 0 };
 let pendingLocatorScreen: { x: number; y: number } | null = null;
@@ -340,6 +356,7 @@ function updateThemeMode(refreshRenderer = true): void {
     renderer.refreshTheme();
     refreshCellLocator(true);
     if (overviewDialog.open) overviewCaption.textContent = renderer.drawOverview(overviewCanvas);
+    if (fieldsDialog.open) void renderSavedFields();
   });
 }
 
@@ -406,19 +423,239 @@ function cancelGuardToast(): void {
   guardToastTimer = 0;
 }
 
-function showToast(message: string): void {
+function showToast(message: string, action?: { label: string; run: () => void }): void {
   cancelGuardToast();
   window.clearTimeout(toastTimer);
-  toast.textContent = message;
+  const messageNode = document.createElement("span");
+  messageNode.textContent = message;
+  toast.replaceChildren(messageNode);
+  if (action) {
+    const actionButton = document.createElement("button");
+    actionButton.type = "button";
+    actionButton.textContent = action.label;
+    actionButton.addEventListener("click", () => {
+      clearToast();
+      action.run();
+    });
+    toast.append(actionButton);
+  }
+  toast.classList.toggle("has-action", Boolean(action));
   toast.classList.add("visible");
-  toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 1800);
+  toastTimer = window.setTimeout(() => toast.classList.remove("visible"), action ? 6_000 : 1_800);
 }
 
 function clearToast(): void {
   cancelGuardToast();
   window.clearTimeout(toastTimer);
-  toast.textContent = "";
+  toast.replaceChildren();
+  toast.classList.remove("has-action");
   toast.classList.remove("visible");
+}
+
+const savedFieldOpenedCells = (field: SavedField): number => {
+  const view = new DataView(field.model.cells);
+  let opened = 0;
+  for (let offset = 8; offset < view.byteLength; offset += 9) {
+    const state = view.getUint8(offset);
+    if (isOpened(state) || state === CellState.Exploded) opened += 1;
+  }
+  return opened;
+};
+
+const relativeSavedTime = (savedAt: number): string => {
+  const elapsed = Math.max(0, Date.now() - savedAt);
+  if (elapsed < 60_000) return "just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  if (elapsed < 604_800_000) return `${Math.floor(elapsed / 86_400_000)}d ago`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(savedAt);
+};
+
+function drawSavedFieldThumbnail(target: HTMLCanvasElement, field: SavedField): void {
+  const width = Math.max(220, Math.round(target.clientWidth || 280));
+  const height = Math.max(92, Math.round(target.clientHeight || 108));
+  const ratio = Math.min(devicePixelRatio, 2);
+  target.width = Math.round(width * ratio);
+  target.height = Math.round(height * ratio);
+  const context = target.getContext("2d");
+  if (!context) return;
+  context.scale(ratio, ratio);
+  const styles = getComputedStyle(document.documentElement);
+  context.fillStyle = styles.getPropertyValue("--overview-bg").trim();
+  context.fillRect(0, 0, width, height);
+
+  const packed = new DataView(field.model.cells);
+  const count = packed.byteLength / 9;
+  const stride = Math.max(1, Math.ceil(count / 4_000));
+  const registry = field.model.topology === "pentagonal" ? new HyperbolicTopologyRegistry() : null;
+  if (registry && !registry.restore(field.model.hyperbolic)) return;
+  const samples: Array<{ vertices: readonly { x: number; y: number }[]; state: CellState }> = [];
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < count; index += stride) {
+    const offset = index * 9;
+    const x = packed.getInt32(offset, true);
+    const y = packed.getInt32(offset + 4, true);
+    const state = packed.getUint8(offset + 8) as CellState;
+    let vertices: readonly { x: number; y: number }[];
+    try {
+      vertices = registry ? registry.geometry(x, y).vertices : TOPOLOGIES[field.model.topology].geometry(x, y).vertices;
+    } catch {
+      continue;
+    }
+    samples.push({ vertices, state });
+    if (isOpened(state) || state === CellState.Exploded) {
+      for (const vertex of vertices) {
+        minX = Math.min(minX, vertex.x);
+        minY = Math.min(minY, vertex.y);
+        maxX = Math.max(maxX, vertex.x);
+        maxY = Math.max(maxY, vertex.y);
+      }
+    }
+  }
+  if (samples.length === 0 || !Number.isFinite(minX)) {
+    context.fillStyle = styles.getPropertyValue("--overview-opened").trim();
+    context.beginPath();
+    context.arc(width / 2, height / 2, 4, 0, Math.PI * 2);
+    context.fill();
+    return;
+  }
+  const padding = 9;
+  const scale = Math.min((width - padding * 2) / Math.max(0.001, maxX - minX), (height - padding * 2) / Math.max(0.001, maxY - minY));
+  const offsetX = (width - (maxX - minX) * scale) / 2 - minX * scale;
+  const offsetY = (height - (maxY - minY) * scale) / 2 - minY * scale;
+  const openedColor = styles.getPropertyValue("--overview-opened").trim();
+  const flagColor = styles.getPropertyValue("--board-flag").trim();
+  const questionColor = styles.getPropertyValue("--board-question").trim();
+  const explodedColor = styles.getPropertyValue("--board-exploded").trim();
+  for (const sample of samples) {
+    context.beginPath();
+    sample.vertices.forEach((vertex, index) => {
+      const pointX = vertex.x * scale + offsetX;
+      const pointY = vertex.y * scale + offsetY;
+      if (index === 0) context.moveTo(pointX, pointY);
+      else context.lineTo(pointX, pointY);
+    });
+    context.closePath();
+    context.fillStyle =
+      sample.state === CellState.Flagged
+        ? flagColor
+        : sample.state === CellState.Question
+          ? questionColor
+          : sample.state === CellState.Exploded
+            ? explodedColor
+            : openedColor;
+    context.fill();
+  }
+}
+
+const savedFieldSection = (title: string, fields: SavedField[]): HTMLElement | null => {
+  if (fields.length === 0) return null;
+  const section = document.createElement("section");
+  section.className = "fields-section";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  section.append(heading);
+  const cards = document.createElement("div");
+  cards.className = "fields-grid";
+  for (const field of fields) {
+    const current = field.id === activeSavedFieldId;
+    const article = document.createElement("article");
+    article.className = "field-card";
+    article.dataset.fieldId = field.id;
+    if (current) article.dataset.current = "true";
+
+    const preview = document.createElement("canvas");
+    preview.className = "field-preview";
+    preview.role = "img";
+    preview.ariaLabel = `${TOPOLOGIES[field.model.topology].label} explored-field preview`;
+    article.append(preview);
+
+    const copy = document.createElement("div");
+    copy.className = "field-card-copy";
+    const titleRow = document.createElement("div");
+    titleRow.className = "field-card-title";
+    const titleText = document.createElement("h3");
+    titleText.textContent = `${TOPOLOGIES[field.model.topology].label} · ${field.model.mode}`;
+    titleRow.append(titleText);
+    if (current) {
+      const badge = document.createElement("span");
+      badge.textContent = "CURRENT";
+      titleRow.append(badge);
+    }
+    copy.append(titleRow);
+    const detail = document.createElement("p");
+    detail.textContent = `${formatDensity(field.model.density)} · Things ${field.model.thingsEnabled ? "on" : "off"} · ${savedFieldOpenedCells(field).toLocaleString()} opened`;
+    copy.append(detail);
+    const progress = document.createElement("p");
+    progress.className = "field-card-progress";
+    progress.textContent = `${field.model.health > 0 ? `${field.model.health} health` : "Field lost"} · ${field.model.score.toLocaleString()} score · ${relativeSavedTime(field.savedAt)}`;
+    copy.append(progress);
+
+    const actions = document.createElement("div");
+    actions.className = "field-card-actions";
+    if (!current) {
+      const resume = document.createElement("button");
+      resume.type = "button";
+      resume.dataset.fieldAction = "resume";
+      resume.textContent = "RESUME";
+      actions.append(resume);
+    }
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.dataset.fieldAction = "pin";
+    pin.textContent = field.pinned ? "RELEASE" : "KEEP";
+    pin.ariaPressed = String(field.pinned);
+    actions.append(pin);
+    if (!current) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.fieldAction = "delete";
+      remove.className = "field-delete";
+      remove.textContent = "DELETE";
+      actions.append(remove);
+    }
+    copy.append(actions);
+    article.append(copy);
+    cards.append(article);
+    requestAnimationFrame(() => drawSavedFieldThumbnail(preview, field));
+  }
+  section.append(cards);
+  return section;
+};
+
+async function renderSavedFields(): Promise<void> {
+  fieldsList.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "fields-empty";
+  loading.textContent = "Loading saved fields…";
+  fieldsList.append(loading);
+  const fields = await listSavedFields();
+  if (!fieldsDialog.open) {
+    fieldsList.replaceChildren();
+    return;
+  }
+  fieldsList.replaceChildren();
+  const current = fields.filter(({ id }) => id === activeSavedFieldId);
+  const kept = fields.filter(({ id, pinned }) => id !== activeSavedFieldId && pinned);
+  const recent = fields.filter(({ id, pinned }) => id !== activeSavedFieldId && !pinned);
+  for (const section of [savedFieldSection("Current", current), savedFieldSection("Kept", kept), savedFieldSection("Recent", recent)]) {
+    if (section) fieldsList.append(section);
+  }
+  if (fieldsList.childElementCount === 0) {
+    const empty = document.createElement("p");
+    empty.className = "fields-empty";
+    empty.textContent = "Your first field will appear here after it is saved.";
+    fieldsList.append(empty);
+  }
+}
+
+async function openSavedFields(): Promise<void> {
+  await flushGameSave(true);
+  fieldsDialog.showModal();
+  await renderSavedFields();
 }
 
 function scheduleGuardToast(x: number, y: number): void {
@@ -811,7 +1048,8 @@ function flushGameSave(force = false): Promise<void> {
         persistenceStatus = "saving";
         const saved = await saveActiveGame(next.snapshot);
         if (saved) {
-          lastSavedAt = next.snapshot.savedAt;
+          activeSavedFieldId = saved.id;
+          lastSavedAt = saved.savedAt;
           persistenceStatus = "saved";
         } else {
           persistenceStatus = "unavailable";
@@ -886,11 +1124,22 @@ function runGameOverAction(event: MouseEvent, button: HTMLButtonElement, action:
   action();
 }
 
+const createPersistedSnapshot = (): PersistedGame => ({
+  version: 1,
+  savedAt: Date.now(),
+  model: model.createSnapshot(),
+  view: renderer.createViewSnapshot(),
+});
+
 function newGame(
   mode: Mode = model.mode,
   topology: TopologyId = model.topologyId,
   density?: number,
 ): void {
+  window.clearTimeout(saveTimer);
+  saveTimer = 0;
+  pendingSave = null;
+  const previousSnapshot = createPersistedSnapshot();
   const requestedDensity =
     mode === "custom" ? (density ?? (model.mode === "custom" ? model.density : customDensity)) : density;
   model.reset(mode, randomSeed(), true, topology, requestedDensity, topology === "pentagonal" ? false : thingsEnabled);
@@ -905,10 +1154,84 @@ function newGame(
   renderer.home();
   updateStats();
   refreshCellLocator(true);
-  scheduleGameSave(0);
+  const nextSnapshot = createPersistedSnapshot();
+  nextSnapshot.savedAt = Math.max(nextSnapshot.savedAt, previousSnapshot.savedAt + 1);
+  persistenceStatus = "saving";
+  const archived = archiveAndCreateSavedField(previousSnapshot, nextSnapshot);
+  const operation = archived.then((transition) => {
+    if (!transition) {
+      persistenceStatus = "unavailable";
+      showToast("Could not archive the previous field");
+      return;
+    }
+    activeSavedFieldId = transition.field.id;
+    lastSavedAt = transition.field.savedAt;
+    persistenceStatus = "saved";
+    if (transition.previousId) {
+      showToast("Previous field saved", {
+        label: "RESUME PREVIOUS",
+        run: () => void resumeSavedField(transition.previousId as string),
+      });
+    }
+  });
+  fieldSwitch = operation;
+  void operation.finally(() => {
+    if (fieldSwitch === operation) fieldSwitch = null;
+  });
   showToast(
     `${TOPOLOGIES[topology].label} ${mode[0].toUpperCase()}${mode.slice(1)} · ${formatDensity(model.density)} field generated`,
   );
+}
+
+async function resumeSavedField(id: string): Promise<void> {
+  if (id === activeSavedFieldId) {
+    if (fieldsDialog.open) fieldsDialog.close();
+    return;
+  }
+  if (fieldSwitch) await fieldSwitch;
+  const operation = (async () => {
+    await flushGameSave(true);
+    const saved = await loadSavedField(id);
+    if (!saved) {
+      showToast("That saved field is no longer available");
+      return;
+    }
+    if (saved.model.thingsEnabled) await loadThingCatalog();
+    if (!model.restoreSnapshot(saved.model)) {
+      showToast("That saved field could not be restored");
+      return;
+    }
+    thingsEnabled = model.thingsEnabled;
+    renderer.syncThings();
+    renderer.restoreView(saved.view);
+    const activated = await activateSavedField(id);
+    if (!activated) {
+      persistenceStatus = "unavailable";
+      showToast("That saved field could not be activated");
+      return;
+    }
+    activeSavedFieldId = activated.id;
+    lastSavedAt = activated.savedAt;
+    persistenceStatus = "restored";
+    storageSet("infinite-mines-mode", model.mode);
+    storageSet("infinite-mines-topology", model.topologyId);
+    storageSet("infinite-mines-things", thingsEnabled ? "on" : "off");
+    if (model.mode === "custom") {
+      customDensity = model.density;
+      storageSet("infinite-mines-custom-density", String(customDensity));
+    }
+    updateStats();
+    updateThings();
+    refreshCellLocator(true);
+    if (fieldsDialog.open) fieldsDialog.close();
+    showToast(`${TOPOLOGIES[model.topologyId].label} ${model.mode} field resumed`);
+  })();
+  fieldSwitch = operation;
+  try {
+    await operation;
+  } finally {
+    if (fieldSwitch === operation) fieldSwitch = null;
+  }
 }
 
 async function switchField(
@@ -933,7 +1256,7 @@ async function switchField(
   const operation = (async () => {
     if (requestedThingsEnabled) await loadThingCatalog();
     await flushGameSave(true);
-    const saved = await loadGameSlot(topology, mode, requestedThingsEnabled);
+    const saved = await loadGameSlot(topology, mode, requestedThingsEnabled, requestedCustomDensity);
     const savedDensity = saved?.model.density ?? null;
     const restored =
       saved !== null &&
@@ -950,14 +1273,18 @@ async function switchField(
     if (restored && saved) {
       renderer.syncThings();
       renderer.restoreView(saved.view);
-      const activated = await saveActiveGame(saved);
-      lastSavedAt = saved.savedAt;
+      const activated = await activateSavedField(saved.id);
+      activeSavedFieldId = activated?.id ?? activeSavedFieldId;
+      lastSavedAt = activated?.savedAt ?? saved.savedAt;
       persistenceStatus = activated ? "restored" : "unavailable";
     } else {
       model.reset(mode, randomSeed(), true, topology, fallbackCustomDensity, requestedThingsEnabled);
       renderer.syncThings();
       renderer.home();
-      await flushGameSave(true);
+      const created = await createSavedField(createPersistedSnapshot());
+      activeSavedFieldId = created?.field.id ?? activeSavedFieldId;
+      lastSavedAt = created?.field.savedAt ?? lastSavedAt;
+      persistenceStatus = created ? "saved" : "unavailable";
     }
     if (mode === "custom") {
       customDensity = model.density;
@@ -1340,6 +1667,44 @@ element<HTMLButtonElement>("#overview-button").addEventListener("click", () => {
   });
 });
 element<HTMLButtonElement>("#overview-close").addEventListener("click", () => overviewDialog.close());
+element<HTMLButtonElement>("#fields-button").addEventListener("click", () => void openSavedFields());
+element<HTMLButtonElement>("#fields-close").addEventListener("click", () => fieldsDialog.close());
+fieldsDialog.addEventListener("close", () => fieldsList.replaceChildren());
+fieldsList.addEventListener("click", (event) => {
+  const button = (event.target as Element).closest<HTMLButtonElement>("button[data-field-action]");
+  const card = button?.closest<HTMLElement>("[data-field-id]");
+  const id = card?.dataset.fieldId;
+  if (!button || !id) return;
+  const action = button.dataset.fieldAction;
+  if (action === "resume") {
+    void resumeSavedField(id);
+    return;
+  }
+  if (action === "pin") {
+    button.disabled = true;
+    void setSavedFieldPinned(id, button.ariaPressed !== "true").then(() => renderSavedFields());
+    return;
+  }
+  if (action === "delete") {
+    if (button.dataset.confirm !== "true") {
+      button.dataset.confirm = "true";
+      button.textContent = "DELETE?";
+      button.ariaLabel = "Confirm delete saved field";
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        delete button.dataset.confirm;
+        button.textContent = "DELETE";
+        button.removeAttribute("aria-label");
+      }, 4_000);
+      return;
+    }
+    button.disabled = true;
+    void deleteSavedField(id).then(async (deleted) => {
+      showToast(deleted ? "Saved field deleted" : "The current field cannot be deleted");
+      await renderSavedFields();
+    });
+  }
+});
 element<HTMLButtonElement>("#help-button").addEventListener("click", () => helpDialog.showModal());
 element<HTMLButtonElement>("#help-close").addEventListener("click", () => helpDialog.close());
 cellLocator.addEventListener("click", () => void copyCellReference());
@@ -1480,7 +1845,7 @@ document.addEventListener(
   { capture: true },
 );
 
-for (const dialog of [settingsDialog, overviewDialog, helpDialog]) {
+for (const dialog of [settingsDialog, fieldsDialog, overviewDialog, helpDialog]) {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
@@ -1509,6 +1874,8 @@ declare global {
       newGame: (mode?: Mode, topology?: TopologyId, density?: number) => void;
       setThingsEnabled: (enabled: boolean) => Promise<void>;
       flushSave: () => Promise<void>;
+      listSavedFields: () => Promise<SavedField[]>;
+      resumeSavedField: (id: string) => Promise<void>;
     };
   }
 }
@@ -1556,6 +1923,7 @@ function getDiagnostics() {
     uiHidden,
     persistenceStatus,
     lastSavedAt,
+    activeSavedFieldId,
     canvasCount: document.querySelectorAll("canvas").length,
     domNodes: document.querySelectorAll("*").length,
   };
@@ -1576,6 +1944,8 @@ window.__infiniteMines = {
       enabled,
     ),
   flushSave: () => flushGameSave(true),
+  listSavedFields,
+  resumeSavedField,
 };
 
 updateThemeMode(false);
