@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-Run the repeatable production-browser interaction benchmark with `npm run benchmark`. It reports frame pacing, input-handler cost, WebGL frames/uploads, long tasks, and browser task/style/layout time for hover, drag, zoom, reveal, persistence, and idle paths. It also compares those interactions on 1,024-cell and 98,304-cell revealed fields and sweeps wheel zoom through the complete 25 px to 1 px range in both directions.
+Run the repeatable production-browser interaction benchmark with `npm run benchmark`. It reports frame pacing, input-handler cost, WebGL frames/uploads, long tasks, and browser task/style/layout time for hover, drag, zoom, reveal, persistence, and idle paths. It also compares those interactions on 1,024-cell and 98,304-cell revealed fields and sweeps continuous wheel zoom through the complete 25 px to 1 px playable range in both directions. Below that range, discrete sparse overview levels continue down to one display pixel per 8×8 nominal-cell region.
 
 Production build and tests:
 
@@ -58,12 +58,13 @@ The production build uses relative asset paths, so it works as a GitHub project 
 - At detailed zoom, sparse 8×8 CPU tiles are cached by version and only revealed or marked cells are compacted into the GPU instance buffer.
 - Number, flag, question, and explosion art is uploaded once as a compact sprite atlas.
 - Detailed cells render in one instanced WebGL draw. At pixel LOD, intersecting sparse chunks are packed into one tightly cropped integer state texture and drawn as one camera-transformed quad.
-- While wheel or pinch zoom is moving on any Euclidean field, a compact state texture is used as a transient screen-driven overview at every scale. This avoids submitting full polygon geometry per revealed cell through the dense 4–10 px transition; the exact detailed grid, glyphs, fog, and Things return 80 ms after wheel input stops or immediately when a pinch ends.
+- Wheel and pinch frames use the same renderer as the settled view at that scale. Things, clue glyphs, hover hints, borders, and fog never switch to a temporary low-detail surface while zoom is moving.
+- Below one CSS pixel per cell, zoom snaps through 2×2, 3×3, 4×4, 5×5, 6×6, 7×7, and 8×8 sparse aggregate levels. Each explored aggregate remains one stable display pixel; explosions, flags, Things, and questions stay visible by priority while ordinary opened clues are averaged. These levels are navigation-only because a subpixel cell cannot be targeted honestly; cell hover and play return at the exact 1×1 level.
 - Small cell actions retain the previous framebuffer and scissor rendering to a one-cell dependency halo. At 1×, sufficiently dense detail views scroll preserved color pixels for integral-pixel pans and shade only newly exposed strips; ordinary sparse, fractional, high-DPI, and pixel-LOD movement keeps the faster full-frame path.
 - During dragging, detailed instances and the overscanned pixel texture stay unchanged until the camera leaves their buffered range. Zoom, resize, theme changes, and large damage deliberately redraw the full frame.
 - Quarter-turn field rotation is a two-component vertex-shader transform with inverse CPU hit-testing and counter-rotated texture sampling, so it adds no cell iteration, DOM rotation, or draw call while cell graphics stay screen-upright.
 - The curved `{5,4}` field uses an exact anchored tile graph and a bounded, event-driven Canvas 2D pass. It visits at most 384 camera-local pentagons per frame, caches exact identities, and stops a mathematically unbounded hyperbolic zero-region after 128 cells per action so the infinite graph cannot monopolize the browser.
-- Zoom reaches one CSS pixel per cell. Glyphs and Things crossfade into state squares from 8px through 4px; the sparse texture takes over only after detail reaches zero, and borders disappear below 3px.
+- Playable zoom reaches one CSS pixel per cell, then the navigation-only aggregate map continues discretely to 8×8 cells per CSS pixel. Glyphs and Things crossfade into state squares from 8px through 4px; the sparse texture takes over only after detail reaches zero, and borders disappear below 3px.
 - Low-zoom state colors are alpha-weighted averages of the active theme's base cells and actual sprite atlas, so each pixel resembles its zoomed-in tile rather than a raw accent color.
 - Cell edges are snapped to the device-pixel grid and shared borders are generated in the shader at exactly one CSS pixel; glyphs come from a 64px antialiased atlas.
 - Retina backing resolution and the device-pixel edge lattice stay unchanged throughout navigation, so beginning or ending a drag never resnaps the grid.

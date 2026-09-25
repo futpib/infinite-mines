@@ -20,7 +20,7 @@ test("R12/R13 — zoom reaches one CSS pixel and low-zoom pixels encode tile sta
         cancelable: true,
         clientX: bounds.left + bounds.width / 2,
         clientY: bounds.top + bounds.height / 2,
-        deltaY: 10_000,
+        deltaY: -Math.log(0.04) / 0.0012,
       }),
     );
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -60,8 +60,8 @@ test("R12/R13 — zoom reaches one CSS pixel and low-zoom pixels encode tile sta
     };
   });
 
-  expect(result.view.zoom).toBe(0.04);
-  expect(result.diagnostics.cellSize).toBe(1);
+  expect(result.view.zoom).toBeCloseTo(0.04, 12);
+  expect(result.diagnostics.cellSize).toBeCloseTo(1, 12);
   expect(result.diagnostics.lod).toBe("pixel");
   expect(result.diagnostics.borderCssPixels).toBe(0);
   expect(result.diagnostics.glyphs).toBe(false);
@@ -69,6 +69,282 @@ test("R12/R13 — zoom reaches one CSS pixel and low-zoom pixels encode tile sta
   const colors = Object.values(result.colors);
   expect(new Set(colors.map((color) => color.join(","))).size).toBe(colors.length);
   for (const color of colors) expect(color).not.toEqual(hexToRgb(result.expected.background));
+});
+
+test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and blocks cell actions", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  await openDeterministicGame(page);
+  const report = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const canvas = document.querySelector<HTMLCanvasElement>("#board");
+    if (!canvas) throw new Error("Missing board");
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const hashBytes = (bytes: Uint8Array) => {
+      let hash = 0x811c9dc5;
+      for (const value of bytes) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const modelHash = () => hashBytes(new Uint8Array(api.model.createSnapshot().cells));
+    const framebufferHash = () => {
+      const gl = renderer.gl;
+      gl.finish();
+      const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return hashBytes(pixels);
+    };
+    const percentile = (values: number[], fraction: number) => {
+      const sorted = [...values].sort((left, right) => left - right);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0;
+    };
+
+    api.model.reset("beginner", 0x55aa_0001, false, "square", 0.18, false);
+    for (let y = -64; y < 64; y += 1) {
+      for (let x = -64; x < 64; x += 1) {
+        if (x !== 0 || y !== 0) api.model.store.set(x, y, 2);
+      }
+    }
+    api.model.store.set(1, 0, 10);
+    api.model.store.set(2, 0, 12);
+    renderer.restoreView({ version: 1, zoom: 0.04, panX: 0, panY: 0 });
+    await settle();
+    const focus = { x: canvas.clientWidth * 0.67, y: canvas.clientHeight * 0.61 };
+    const initialFocus = renderer.screenToCell(focus.x, focus.y);
+    const steps = [];
+    for (let blockSize = 1; blockSize <= 8; blockSize += 1) {
+      if (blockSize > 1) renderer.zoomAt(focus.x, focus.y, (blockSize - 1) / blockSize);
+      await settle();
+      steps.push({
+        blockSize,
+        focusCell: renderer.screenToCell(focus.x, focus.y),
+        diagnostics: api.diagnostics(),
+        view: renderer.createViewSnapshot(),
+      });
+    }
+
+    const priorityBefore = framebufferHash();
+    api.model.store.set(3, 0, 11);
+    renderer.requestRender();
+    await settle();
+    const priorityAfter = framebufferHash();
+    const beforeModel = modelHash();
+    const beforeFramebuffer = framebufferHash();
+    const beforePan = renderer.createViewSnapshot();
+    renderer.panBy(1, 0);
+    await settle();
+    renderer.panBy(-1, 0);
+    await settle();
+    const afterRoundTripFramebuffer = framebufferHash();
+    const intervals: number[] = [];
+    const beforeMotion = api.diagnostics();
+    await new Promise<void>((resolve) => {
+      let frame = 0;
+      let previous = 0;
+      const tick = (timestamp: number) => {
+        if (previous > 0) intervals.push(timestamp - previous);
+        previous = timestamp;
+        renderer.panBy(frame % 2 === 0 ? 1 : -1, 0);
+        frame += 1;
+        if (frame < 90) requestAnimationFrame(tick);
+        else requestAnimationFrame(() => resolve());
+      };
+      requestAnimationFrame(tick);
+    });
+    const afterMotion = api.diagnostics();
+    return {
+      initialFocus,
+      steps,
+      priorityBefore,
+      priorityAfter,
+      beforeModel,
+      beforeFramebuffer,
+      afterRoundTripFramebuffer,
+      beforePan,
+      afterPan: renderer.createViewSnapshot(),
+      frameP95: percentile(intervals, 0.95),
+      framesOver34Ms: intervals.filter((value) => value > 34).length,
+      uploads: afterMotion.instanceUploads - beforeMotion.instanceUploads,
+      frameCount: afterMotion.frameCount - beforeMotion.frameCount,
+    };
+  });
+
+  await testInfo.attach("discrete-overview-zoom.json", {
+    body: JSON.stringify(report, null, 2),
+    contentType: "application/json",
+  });
+  expect(report.steps.map((step) => step.diagnostics.overviewBlockSize)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(report.steps.map((step) => step.diagnostics.lod)).toEqual([
+    "pixel",
+    "overview",
+    "overview",
+    "overview",
+    "overview",
+    "overview",
+    "overview",
+    "overview",
+  ]);
+  for (const step of report.steps) {
+    expect(step.diagnostics.cellSize).toBeCloseTo(1 / step.blockSize, 10);
+    expect(step.diagnostics.drawCalls).toBe(1);
+    expect(step.diagnostics.glyphs).toBe(false);
+    expect(step.focusCell).toEqual(report.initialFocus);
+  }
+  expect(report.steps.at(-1)?.diagnostics.visibleCells).toBeGreaterThan(80_000_000);
+  expect(report.steps.at(-1)?.diagnostics.drawnCells).toBeLessThan(report.steps[0].diagnostics.drawnCells);
+  expect(report.steps.at(-1)?.diagnostics.hoveredCells).toBe(0);
+  expect(report.steps.at(-1)?.view.zoom).toBeCloseTo(0.005, 12);
+  expect(report.priorityAfter).toBe(report.priorityBefore);
+  expect(report.beforeFramebuffer).toBe(report.afterRoundTripFramebuffer);
+  expect(report.beforePan).toEqual(report.afterPan);
+  expect(report.frameP95).toBeLessThan(35);
+  expect(report.framesOver34Ms).toBe(0);
+  expect(report.uploads).toBe(0);
+  expect(report.frameCount).toBeGreaterThanOrEqual(90);
+
+  const board = page.locator("#board");
+  const boardBounds = await board.boundingBox();
+  if (!boardBounds) throw new Error("Missing board bounds");
+  const beforeClick = await page.evaluate(() => new Uint8Array(window.__infiniteMines.model.createSnapshot().cells));
+  await page.mouse.click(boardBounds.x + boardBounds.width / 2, boardBounds.y + boardBounds.height / 2, {
+    button: "right",
+  });
+  await expect(page.locator("#toast")).toContainText("8×8 overview — zoom in to play");
+  expect(await page.evaluate(() => new Uint8Array(window.__infiniteMines.model.createSnapshot().cells))).toEqual(beforeClick);
+  await expect(page.locator("#cell-locator")).toBeDisabled();
+  await expect(page.locator("#cell-state")).toHaveText("8×8 OVERVIEW · ZOOM IN TO PLAY");
+
+  await page.evaluate(() => window.__infiniteMines.flushSave());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().overviewBlockSize)).toBe(8);
+  expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
+    lod: "overview",
+    cellSize: 0.125,
+    overviewBlockSize: 8,
+    drawCalls: 1,
+  });
+  const displayRoundTrips = await page.evaluate(async () => {
+    const renderer = window.__infiniteMines.renderer;
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const framebufferHash = () => {
+      const gl = renderer.gl;
+      gl.finish();
+      const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let hash = 0x811c9dc5;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const originalTheme = document.documentElement.dataset.theme ?? "light";
+    const alternateTheme = originalTheme === "dark" ? "light" : "dark";
+    const baseline = framebufferHash();
+    renderer.setRotation(90);
+    await settle();
+    const rotated = window.__infiniteMines.diagnostics();
+    renderer.setRotation(0);
+    await settle();
+    const afterRotation = framebufferHash();
+    document.documentElement.dataset.theme = alternateTheme;
+    renderer.refreshTheme();
+    await settle();
+    const alternateThemeHash = framebufferHash();
+    document.documentElement.dataset.theme = originalTheme;
+    renderer.refreshTheme();
+    await settle();
+    return {
+      baseline,
+      rotated,
+      afterRotation,
+      alternateThemeHash,
+      afterTheme: framebufferHash(),
+    };
+  });
+  expect(displayRoundTrips.rotated).toMatchObject({ rotation: 90, overviewBlockSize: 8, drawCalls: 1 });
+  expect(displayRoundTrips.afterRotation).toBe(displayRoundTrips.baseline);
+  expect(displayRoundTrips.alternateThemeHash).not.toBe(displayRoundTrips.baseline);
+  expect(displayRoundTrips.afterTheme).toBe(displayRoundTrips.baseline);
+  const reverse = await page.evaluate(async () => {
+    const renderer = window.__infiniteMines.renderer;
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const blocks = [];
+    for (let blockSize = 7; blockSize >= 1; blockSize -= 1) {
+      renderer.zoomAt(renderer.canvas.clientWidth / 2, renderer.canvas.clientHeight / 2, (blockSize + 1) / blockSize);
+      await settle();
+      blocks.push(window.__infiniteMines.diagnostics().overviewBlockSize);
+    }
+    return { blocks, diagnostics: window.__infiniteMines.diagnostics(), input: renderer.cellInputEnabled };
+  });
+  expect(reverse.blocks).toEqual([7, 6, 5, 4, 3, 2, 1]);
+  expect(reverse.diagnostics).toMatchObject({ lod: "pixel", cellSize: 1, overviewBlockSize: 1 });
+  expect(reverse.input).toBe(true);
+  await page.mouse.move(boardBounds.x + boardBounds.width / 2, boardBounds.y + boardBounds.height / 2);
+  await expect(page.locator("#cell-locator")).toBeEnabled();
+
+  await page.mouse.wheel(0, -Math.log(0.5) / 0.0012);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().overviewBlockSize)).toBe(2);
+  await expect(page.locator("#cell-locator")).toBeDisabled();
+  await page.mouse.wheel(0, Math.log(0.5) / 0.0012);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().overviewBlockSize)).toBe(1);
+  await expect(page.locator("#cell-locator")).toBeEnabled();
+});
+
+test("R55 — every Euclidean topology shares the bounded 8×8 overview path", async ({ page }) => {
+  await openDeterministicGame(page);
+  const report = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const results: Record<
+      string,
+      {
+        beforeFocus: { x: number; y: number };
+        afterFocus: { x: number; y: number };
+        overview: ReturnType<typeof api.diagnostics>;
+        rotated: ReturnType<typeof api.diagnostics>;
+      }
+    > = {};
+    for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
+      api.model.reset("beginner", 0x55aa_0002, false, topology, undefined, false);
+      for (let y = -24; y <= 24; y += 1) {
+        for (let x = -24; x <= 24; x += 1) api.model.store.set(x, y, 2);
+      }
+      renderer.home();
+      renderer.setRotation(0);
+      renderer.restoreView({ version: 1, zoom: 0.04, panX: 0, panY: 0 });
+      const focus = { x: renderer.canvas.clientWidth * 0.61, y: renderer.canvas.clientHeight * 0.37 };
+      const beforeFocus = renderer.screenToCell(focus.x, focus.y);
+      renderer.zoomAt(focus.x, focus.y, 1 / 8);
+      await settle();
+      const afterFocus = renderer.screenToCell(focus.x, focus.y);
+      const overview = api.diagnostics();
+      renderer.setRotation(90);
+      await settle();
+      results[topology] = { beforeFocus, afterFocus, overview, rotated: api.diagnostics() };
+    }
+    return results;
+  });
+  for (const topology of ["square", "hexagonal", "triangular", "rhombille"] as const) {
+    const result = report[topology];
+    expect(result.afterFocus).toEqual(result.beforeFocus);
+    expect(result.overview).toMatchObject({
+      topology,
+      lod: "overview",
+      cellSize: 0.125,
+      overviewBlockSize: 8,
+      drawCalls: 1,
+      glyphs: false,
+      hoveredCells: 0,
+    });
+    expect(result.overview.drawnCells).toBeGreaterThan(0);
+    expect(result.overview.drawnCells).toBeLessThan(result.overview.storedCells);
+    expect(result.rotated).toMatchObject({ topology, rotation: 90, overviewBlockSize: 8, drawCalls: 1 });
+  }
 });
 
 test("R23 — detail glyphs crossfade continuously into state-color squares", async ({ page }) => {
@@ -1158,7 +1434,7 @@ test("R04/R12 — million-cell zoom and drag stay on one sparse GPU draw", async
         cancelable: true,
         clientX: bounds.left + bounds.width / 2,
         clientY: bounds.top + bounds.height / 2,
-        deltaY: 10_000,
+        deltaY: -Math.log(0.04) / 0.0012,
       }),
     );
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));

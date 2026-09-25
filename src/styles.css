@@ -693,6 +693,15 @@ a:focus-visible {
 
 .cell-locator:active { transform: scale(0.97); }
 
+.cell-locator:disabled {
+  border-color: var(--line);
+  background: var(--surface);
+  cursor: default;
+  opacity: 0.82;
+}
+
+.cell-locator:disabled:active { transform: none; }
+
 .cell-locator span {
   grid-row: span 2;
   color: var(--accent-strong);

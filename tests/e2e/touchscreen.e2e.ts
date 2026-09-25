@@ -235,6 +235,7 @@ test("R22 — two-finger touch pans and zooms focally without opening cells, the
   page.on("pageerror", (error) => errors.push(error));
   try {
     await openDeterministicGame(page);
+    await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().thingSpritesReady)).toBe(true);
     const bounds = await page.locator("#board").boundingBox();
     if (!bounds) throw new Error("Missing board bounds");
     const session = await context.newCDPSession(page);
@@ -266,12 +267,19 @@ test("R22 — two-finger touch pans and zooms focally without opening cells, the
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
     const during = await page.evaluate(() => ({
       view: window.__infiniteMines.renderer.createViewSnapshot(),
-      hoveredCells: window.__infiniteMines.diagnostics().hoveredCells,
+      diagnostics: window.__infiniteMines.diagnostics(),
     }));
     expect(during.view.zoom).toBeGreaterThan(1.9);
     expect(during.view.panX).toBeCloseTo(40, 5);
     expect(during.view.panY).toBeCloseTo(30, 5);
-    expect(during.hoveredCells).toBe(0);
+    expect(during.diagnostics).toMatchObject({
+      lod: "detail",
+      glyphs: true,
+      borderCssPixels: 1,
+      thingSpritesReady: true,
+      hoveredCells: 0,
+      drawCalls: 1,
+    });
 
     await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().pixelRatio)).toBe(2);
@@ -280,10 +288,18 @@ test("R22 — two-finger touch pans and zooms focally without opening cells, the
       openedCells: window.__infiniteMines.diagnostics().openedCells,
       score: window.__infiniteMines.diagnostics().score,
       storeVersion: window.__infiniteMines.model.store.version,
+      diagnostics: window.__infiniteMines.diagnostics(),
     }));
     expect(after.openedCells).toBe(before.openedCells);
     expect(after.score).toBe(before.score);
     expect(after.storeVersion).toBe(before.storeVersion);
+    expect(after.diagnostics).toMatchObject({
+      lod: during.diagnostics.lod,
+      glyphs: during.diagnostics.glyphs,
+      borderCssPixels: during.diagnostics.borderCssPixels,
+      thingSpritesReady: during.diagnostics.thingSpritesReady,
+      drawCalls: during.diagnostics.drawCalls,
+    });
 
     await page.evaluate(() => window.__infiniteMines.flushSave());
     await page.reload();
@@ -461,7 +477,7 @@ test("R47 — the board-scale neighborhood stays topology-aware and usable at pi
 
     await page.evaluate(() => {
       const renderer = window.__infiniteMines.renderer;
-      renderer.zoomAt(195, 422, 0.001);
+      renderer.restoreView({ version: 1, zoom: 0.04, panX: renderer.panX, panY: renderer.panY });
     });
     await expect.poll(() => page.evaluate(() => window.__infiniteMines.renderer.cellSize)).toBe(1);
     const pixelTarget = await page.evaluate(() => {

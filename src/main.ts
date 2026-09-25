@@ -10,6 +10,7 @@ import {
   GameModel,
   Mode,
   MODES,
+  floorDiv,
   isOpened,
   isValidDensity,
   openedClue,
@@ -262,7 +263,6 @@ let pointerOnBoard = false;
 let boardWidth = canvas.clientWidth;
 let boardHeight = canvas.clientHeight;
 let hoverVisualKey = "";
-let zoomHoverTimer = 0;
 let uiHidden = false;
 let gameplayInteractionCount = 0;
 let gameOverPointerAction: HTMLButtonElement | null = null;
@@ -800,6 +800,29 @@ function updateHoverPreview(
 }
 
 function updateLocatorText(): void {
+  const overviewBlockSize = renderer.overviewBlockSize;
+  if (overviewBlockSize > 1) {
+    const startX = floorDiv(locatedCell.x, overviewBlockSize) * overviewBlockSize;
+    const startY = floorDiv(locatedCell.y, overviewBlockSize) * overviewBlockSize;
+    const endX = startX + overviewBlockSize - 1;
+    const endY = startY + overviewBlockSize - 1;
+    const signature = `overview:${overviewBlockSize}:${startX},${startY}`;
+    if (signature === locatorSignature) {
+      locatorTextUpdatedAt = performance.now();
+      return;
+    }
+    locatorSignature = signature;
+    locatorTextUpdatedAt = performance.now();
+    cellCoordinate.textContent = `${startX}…${endX}, ${startY}…${endY}`;
+    cellState.textContent = `${overviewBlockSize}×${overviewBlockSize} OVERVIEW · ZOOM IN TO PLAY`;
+    cellLocator.ariaLabel = `${overviewBlockSize} by ${overviewBlockSize} cell overview region; zoom in to play`;
+    cellLocator.title = "Zoom in to 1×1 cells to interact";
+    cellLocator.disabled = true;
+    cellLocator.dataset.x = String(startX);
+    cellLocator.dataset.y = String(startY);
+    cellLocator.dataset.state = "overview";
+    return;
+  }
   const state = describeVisibleCell(locatedCell.x, locatedCell.y);
   const signature = `${locatedCell.x},${locatedCell.y}:${state}`;
   if (signature === locatorSignature) {
@@ -811,6 +834,8 @@ function updateLocatorText(): void {
   cellCoordinate.textContent = `${locatedCell.x}, ${locatedCell.y}`;
   cellState.textContent = `${state.toUpperCase()} · COPY`;
   cellLocator.ariaLabel = `Copy reference for cell ${locatedCell.x}, ${locatedCell.y}`;
+  cellLocator.title = "Copy cell reference";
+  cellLocator.disabled = false;
   cellLocator.dataset.x = String(locatedCell.x);
   cellLocator.dataset.y = String(locatedCell.y);
   cellLocator.dataset.state = state;
@@ -838,6 +863,11 @@ function refreshCellLocator(forceText = false, showHover = true): void {
     return;
   }
   locatedCell = renderer.screenToCell(locatorScreen.x, locatorScreen.y);
+  if (!renderer.cellInputEnabled) {
+    updateHoverPreview([]);
+    scheduleLocatorText(forceText);
+    return;
+  }
   const affectedCells =
     hoverMode === "affected" ? model.previewClickCells(locatedCell.x, locatedCell.y) : [{ ...locatedCell }];
   const hintCells: Array<{ x: number; y: number }> = [];
@@ -1352,6 +1382,7 @@ interface PointerGesture {
   mark: boolean;
   reveal: boolean;
   onField: boolean;
+  overviewOnly: boolean;
   touch: boolean;
   cellX: number;
   cellY: number;
@@ -1399,7 +1430,6 @@ const beginPinch = (): void => {
     centerY: (first.localY + second.localY) / 2,
   };
   canvas.classList.add("is-panning");
-  renderer.beginZoomMotion();
   updateHoverPreview([]);
   hideTouchPreview();
 };
@@ -1430,7 +1460,6 @@ const finishPinchTouch = (event: PointerEvent): boolean => {
   pinch = null;
   gesture = null;
   canvas.classList.remove("is-panning");
-  renderer.endZoomMotion();
   renderer.finishPan();
   const point = localPoint(event);
   locateCellAt(point.x, point.y, true, false);
@@ -1443,11 +1472,6 @@ const finishPinchTouch = (event: PointerEvent): boolean => {
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 && event.button !== 2) return;
   cancelGuardToast();
-  window.clearTimeout(zoomHoverTimer);
-  if (zoomHoverTimer !== 0) {
-    zoomHoverTimer = 0;
-    renderer.endZoomMotion();
-  }
   canvas.classList.remove("is-panning");
   pointerOnBoard = true;
   const point = localPoint(event);
@@ -1466,12 +1490,16 @@ canvas.addEventListener("pointerdown", (event) => {
     }
   }
   const onField = renderer.containsScreenPoint(point.x, point.y);
+  const overviewOnly = onField && !renderer.cellInputEnabled;
   const cell = onField ? renderer.screenToCell(point.x, point.y) : locatedCell;
   const state = model.getState(cell.x, cell.y);
   const revealModifier = event.ctrlKey || event.metaKey;
   const directPointer = event.pointerType !== "mouse";
   const touch = event.pointerType === "touch";
-  const concealed = onField && (state === CellState.Covered || state === CellState.Flagged || state === CellState.Question);
+  const concealed =
+    onField &&
+    !overviewOnly &&
+    (state === CellState.Covered || state === CellState.Flagged || state === CellState.Question);
   const guardedTouchMark = touch && !touchRevealTool && concealed;
   const mark = !revealModifier && (event.button === 2 || event.shiftKey || guardedTouchMark);
   const reveal = touch ? touchRevealTool || isOpened(state) : directPointer || revealModifier || controlsMode === "classic";
@@ -1488,6 +1516,7 @@ canvas.addEventListener("pointerdown", (event) => {
     mark,
     reveal,
     onField,
+    overviewOnly,
     touch,
     cellX: cell.x,
     cellY: cell.y,
@@ -1565,6 +1594,11 @@ const finishPointer = (event: PointerEvent): void => {
     scheduleGameSave();
     return;
   }
+  if (completed.overviewOnly) {
+    showToast(`${renderer.overviewBlockSize}×${renderer.overviewBlockSize} overview — zoom in to play`);
+    refreshCellLocator(true);
+    return;
+  }
   if (!completed.onField) {
     refreshCellLocator(true);
     return;
@@ -1601,6 +1635,7 @@ canvas.addEventListener("pointerup", (event) => {
 });
 canvas.addEventListener("dblclick", (event) => {
   if (controlsMode !== "guarded" || event.button !== 0 || event.shiftKey) return;
+  if (!renderer.cellInputEnabled) return;
   if (!renderer.containsScreenPoint(event.offsetX, event.offsetY)) return;
   const cell = renderer.screenToCell(event.offsetX, event.offsetY);
   if (!requiresRevealGuard(model.getState(cell.x, cell.y))) return;
@@ -1641,15 +1676,8 @@ canvas.addEventListener(
   (event) => {
     event.preventDefault();
     const point = localPoint(event);
-    renderer.beginZoomMotion();
     renderer.zoomAt(point.x, point.y, Math.exp(-event.deltaY * 0.0012));
-    locateCellAt(point.x, point.y, false, false);
-    window.clearTimeout(zoomHoverTimer);
-    zoomHoverTimer = window.setTimeout(() => {
-      zoomHoverTimer = 0;
-      renderer.endZoomMotion();
-      if (!gesture && pointerOnBoard) refreshCellLocator();
-    }, 80);
+    locateCellAt(point.x, point.y);
     scheduleGameSave();
   },
   { passive: false },
