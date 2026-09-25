@@ -498,6 +498,344 @@ test("R24 — interaction cost stays bounded with a densely revealed field", asy
   expect(report.large.interaction.instanceUploads).toBe(0);
 });
 
+test("R54 — full-range wheel zoom stays frame-paced on a dense Square field", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await openDeterministicGame(page);
+
+  const report = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const canvas = document.querySelector<HTMLCanvasElement>("#board");
+    if (!canvas) throw new Error("Missing board");
+
+    const percentile = (values: number[], fraction: number) => {
+      if (values.length === 0) return 0;
+      const sorted = [...values].sort((left, right) => left - right);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+    };
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const framebufferHash = () => {
+      const gl = renderer.gl;
+      const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let hash = 0x811c9dc5;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const modelHash = () => {
+      const cells = new Uint8Array(api.model.createSnapshot().cells);
+      let hash = 0x811c9dc5;
+      for (const value of cells) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const sweep = async (start: number, end: number) => {
+      renderer.zoom = start;
+      renderer.requestRender();
+      await settle();
+      const before = api.diagnostics();
+      const factor = Math.exp(Math.log(end / start) / 120);
+      const deltaY = -Math.log(factor) / 0.0012;
+      const bounds = canvas.getBoundingClientRect();
+      const intervals: number[] = [];
+      const input: number[] = [];
+      const renders: number[] = [];
+      let previousTimestamp = 0;
+      let previousFrame = before.frameCount;
+      let motionViolations = 0;
+      let longTasks = 0;
+      const observer = new PerformanceObserver((list) => {
+        longTasks += list.getEntries().length;
+      });
+      try {
+        observer.observe({ entryTypes: ["longtask"] });
+      } catch {
+        // Timing and renderer-state assertions still cover engines without Long Tasks.
+      }
+
+      await new Promise<void>((resolve) => {
+        let frame = 0;
+        const tick = (timestamp: number) => {
+          if (previousTimestamp > 0) intervals.push(timestamp - previousTimestamp);
+          previousTimestamp = timestamp;
+          const diagnostics = api.diagnostics();
+          if (diagnostics.frameCount !== previousFrame) {
+            renders.push(diagnostics.frameMs);
+            previousFrame = diagnostics.frameCount;
+            if (!diagnostics.zoomMotion || diagnostics.lod !== "pixel" || diagnostics.drawCalls !== 1) {
+              motionViolations += 1;
+            }
+          }
+          const startedAt = performance.now();
+          canvas.dispatchEvent(
+            new WheelEvent("wheel", {
+              bubbles: true,
+              cancelable: true,
+              clientX: bounds.left + bounds.width / 2,
+              clientY: bounds.top + bounds.height / 2,
+              deltaY,
+            }),
+          );
+          input.push(performance.now() - startedAt);
+          frame += 1;
+          if (frame < 120) requestAnimationFrame(tick);
+          else resolve();
+        };
+        requestAnimationFrame(tick);
+      });
+      await settle();
+      const active = api.diagnostics();
+      observer.disconnect();
+      await new Promise<void>((resolve) => setTimeout(resolve, 120));
+      await settle();
+      const settled = api.diagnostics();
+      return {
+        frameP95: percentile(intervals, 0.95),
+        inputP95: percentile(input, 0.95),
+        renderP95: percentile(renders, 0.95),
+        framesOver34Ms: intervals.filter((value) => value > 34).length,
+        webglFrames: active.frameCount - before.frameCount,
+        instanceUploads: active.instanceUploads - before.instanceUploads,
+        motionViolations,
+        longTasks,
+        active,
+        settled,
+      };
+    };
+
+    api.model.reset("beginner", 0x7540_0001, false, "square", 0.18, true);
+    for (let y = -128; y < 128; y += 1) {
+      for (let x = -192; x < 192; x += 1) api.model.store.set(x, y, 2);
+    }
+    renderer.syncThings();
+    await renderer.waitForThingSprites();
+    renderer.home();
+    await settle();
+    const beforeModel = modelHash();
+    const beforeFramebuffer = framebufferHash();
+    const out = await sweep(1, 0.04);
+    const inward = await sweep(0.04, 1);
+    const afterModel = modelHash();
+    renderer.home();
+    await settle();
+    const afterFramebuffer = framebufferHash();
+    const bounds = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        clientX: bounds.left + bounds.width / 2,
+        clientY: bounds.top + bounds.height / 2,
+        deltaY: 20,
+      }),
+    );
+    await settle();
+    const interruptedDuring = api.diagnostics().zoomMotion;
+    canvas.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        clientX: bounds.left + bounds.width / 2,
+        clientY: bounds.top + bounds.height / 2,
+        pointerId: 754,
+        pointerType: "mouse",
+      }),
+    );
+    canvas.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        button: 0,
+        clientX: bounds.left + bounds.width / 2,
+        clientY: bounds.top + bounds.height / 2,
+        pointerId: 754,
+        pointerType: "mouse",
+      }),
+    );
+    await settle();
+    const interruptedAfter = api.diagnostics().zoomMotion;
+    return {
+      beforeModel,
+      afterModel,
+      beforeFramebuffer,
+      afterFramebuffer,
+      out,
+      inward,
+      interruptedDuring,
+      interruptedAfter,
+    };
+  });
+
+  console.log(`\nFULL_RANGE_ZOOM_BENCHMARK ${JSON.stringify(report, null, 2)}`);
+  await testInfo.attach("full-range-zoom-benchmark.json", {
+    body: JSON.stringify(report, null, 2),
+    contentType: "application/json",
+  });
+
+  for (const sweep of [report.out, report.inward]) {
+    expect(sweep.frameP95).toBeLessThan(35);
+    expect(sweep.inputP95).toBeLessThan(8);
+    expect(sweep.renderP95).toBeLessThan(12);
+    expect(sweep.framesOver34Ms).toBe(0);
+    expect(sweep.webglFrames).toBeGreaterThanOrEqual(120);
+    expect(sweep.instanceUploads).toBeLessThanOrEqual(10);
+    expect(sweep.motionViolations).toBe(0);
+    expect(sweep.longTasks).toBe(0);
+    expect(sweep.active.zoomMotion).toBe(true);
+    expect(sweep.active.lod).toBe("pixel");
+    expect(sweep.settled.zoomMotion).toBe(false);
+  }
+  expect(report.out.settled.cellSize).toBe(1);
+  expect(report.inward.settled.cellSize).toBeCloseTo(25, 6);
+  expect(report.inward.settled.lod).toBe("detail");
+  expect(report.inward.settled.glyphs).toBe(true);
+  expect(report.inward.settled.thingSpritesReady).toBe(true);
+  expect(report.beforeModel).toBe(report.afterModel);
+  expect(report.beforeFramebuffer).toBe(report.afterFramebuffer);
+  expect(report.interruptedDuring).toBe(true);
+  expect(report.interruptedAfter).toBe(false);
+});
+
+test("R54 — full-range motion LOD covers every Euclidean topology", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await openDeterministicGame(page);
+
+  const report = await page.evaluate(async () => {
+    const api = window.__infiniteMines;
+    const renderer = api.renderer;
+    const settle = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const percentile = (values: number[], fraction: number) => {
+      const sorted = [...values].sort((left, right) => left - right);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0;
+    };
+    const framebufferHash = () => {
+      const gl = renderer.gl;
+      const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let hash = 0x811c9dc5;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const modelHash = () => {
+      const cells = new Uint8Array(api.model.createSnapshot().cells);
+      let hash = 0x811c9dc5;
+      for (const value of cells) hash = Math.imul(hash ^ value, 0x01000193);
+      return hash >>> 0;
+    };
+    const sweep = async (start: number, end: number) => {
+      renderer.zoom = start;
+      renderer.requestRender();
+      await settle();
+      const before = api.diagnostics();
+      const intervals: number[] = [];
+      const factor = Math.exp(Math.log(end / start) / 60);
+      let previous = 0;
+      let motionViolations = 0;
+      renderer.beginZoomMotion();
+      await new Promise<void>((resolve) => {
+        let frame = 0;
+        const tick = (timestamp: number) => {
+          if (previous > 0) intervals.push(timestamp - previous);
+          previous = timestamp;
+          const diagnostics = api.diagnostics();
+          if (frame > 0 && (!diagnostics.zoomMotion || diagnostics.lod !== "pixel" || diagnostics.drawCalls !== 1)) {
+            motionViolations += 1;
+          }
+          renderer.zoomAt(renderer.canvas.clientWidth / 2, renderer.canvas.clientHeight / 2, factor);
+          frame += 1;
+          if (frame < 60) requestAnimationFrame(tick);
+          else resolve();
+        };
+        requestAnimationFrame(tick);
+      });
+      await settle();
+      const active = api.diagnostics();
+      renderer.endZoomMotion();
+      await settle();
+      const settled = api.diagnostics();
+      return {
+        frameP95: percentile(intervals, 0.95),
+        framesOver34Ms: intervals.filter((value) => value > 34).length,
+        uploads: active.instanceUploads - before.instanceUploads,
+        motionViolations,
+        active,
+        settled,
+      };
+    };
+
+    const results = {} as Record<
+      string,
+      {
+        openedCells: number;
+        beforeModel: number;
+        afterModel: number;
+        beforeFramebuffer: number;
+        afterFramebuffer: number;
+        out: Awaited<ReturnType<typeof sweep>>;
+        inward: Awaited<ReturnType<typeof sweep>>;
+      }
+    >;
+    for (const topology of ["hexagonal", "triangular", "rhombille"] as const) {
+      api.model.reset("beginner", 0x7540_0002, true, topology, undefined, true);
+      renderer.syncThings();
+      await renderer.waitForThingSprites();
+      renderer.home();
+      await settle();
+      let loadedSprites = -1;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        await settle();
+        const nextLoadedSprites = api.diagnostics().thingSpritesLoaded;
+        if (nextLoadedSprites === loadedSprites) break;
+        loadedSprites = nextLoadedSprites;
+      }
+      const beforeModel = modelHash();
+      const beforeFramebuffer = framebufferHash();
+      const out = await sweep(1, 0.04);
+      const inward = await sweep(0.04, 1);
+      const afterModel = modelHash();
+      renderer.home();
+      await settle();
+      results[topology] = {
+        openedCells: api.model.store.openedCells,
+        beforeModel,
+        afterModel,
+        beforeFramebuffer,
+        afterFramebuffer: framebufferHash(),
+        out,
+        inward,
+      };
+    }
+    return results;
+  });
+
+  console.log(`\nTOPOLOGY_ZOOM_BENCHMARK ${JSON.stringify(report, null, 2)}`);
+  await testInfo.attach("topology-zoom-benchmark.json", {
+    body: JSON.stringify(report, null, 2),
+    contentType: "application/json",
+  });
+  for (const topology of ["hexagonal", "triangular", "rhombille"] as const) {
+    const result = report[topology];
+    expect(result.openedCells).toBeGreaterThan(0);
+    expect(result.beforeModel).toBe(result.afterModel);
+    expect(result.beforeFramebuffer).toBe(result.afterFramebuffer);
+    for (const sweep of [result.out, result.inward]) {
+      expect(sweep.frameP95).toBeLessThan(35);
+      expect(sweep.framesOver34Ms).toBe(0);
+      expect(sweep.uploads).toBeLessThanOrEqual(1);
+      expect(sweep.motionViolations).toBe(0);
+      expect(sweep.active.zoomMotion).toBe(true);
+      expect(sweep.active.lod).toBe("pixel");
+      expect(sweep.active.drawCalls).toBe(1);
+      expect(sweep.settled.zoomMotion).toBe(false);
+    }
+    expect(result.inward.settled.lod).toBe("detail");
+    expect(result.inward.settled.glyphs).toBe(true);
+    expect(result.inward.settled.thingSpritesReady).toBe(true);
+  }
+});
+
 test("R33 — the FPS counter observes active rendering without keeping the renderer awake", async ({ page }) => {
   await openDeterministicGame(page);
   const counter = page.locator("#fps-counter");

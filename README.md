@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-Run the repeatable production-browser interaction benchmark with `npm run benchmark`. It reports frame pacing, input-handler cost, WebGL frames/uploads, long tasks, and browser task/style/layout time for hover, drag, zoom, reveal, persistence, and idle paths. It also compares those interactions on 1,024-cell and 98,304-cell revealed fields.
+Run the repeatable production-browser interaction benchmark with `npm run benchmark`. It reports frame pacing, input-handler cost, WebGL frames/uploads, long tasks, and browser task/style/layout time for hover, drag, zoom, reveal, persistence, and idle paths. It also compares those interactions on 1,024-cell and 98,304-cell revealed fields and sweeps wheel zoom through the complete 25 px to 1 px range in both directions.
 
 Production build and tests:
 
@@ -58,6 +58,7 @@ The production build uses relative asset paths, so it works as a GitHub project 
 - At detailed zoom, sparse 8×8 CPU tiles are cached by version and only revealed or marked cells are compacted into the GPU instance buffer.
 - Number, flag, question, and explosion art is uploaded once as a compact sprite atlas.
 - Detailed cells render in one instanced WebGL draw. At pixel LOD, intersecting sparse chunks are packed into one tightly cropped integer state texture and drawn as one camera-transformed quad.
+- While wheel or pinch zoom is moving on any Euclidean field, a compact state texture is used as a transient screen-driven overview at every scale. This avoids submitting full polygon geometry per revealed cell through the dense 4–10 px transition; the exact detailed grid, glyphs, fog, and Things return 80 ms after wheel input stops or immediately when a pinch ends.
 - Small cell actions retain the previous framebuffer and scissor rendering to a one-cell dependency halo. At 1×, sufficiently dense detail views scroll preserved color pixels for integral-pixel pans and shade only newly exposed strips; ordinary sparse, fractional, high-DPI, and pixel-LOD movement keeps the faster full-frame path.
 - During dragging, detailed instances and the overscanned pixel texture stay unchanged until the camera leaves their buffered range. Zoom, resize, theme changes, and large damage deliberately redraw the full frame.
 - Quarter-turn field rotation is a two-component vertex-shader transform with inverse CPU hit-testing and counter-rotated texture sampling, so it adds no cell iteration, DOM rotation, or draw call while cell graphics stay screen-upright.

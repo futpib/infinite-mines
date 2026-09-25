@@ -47,6 +47,7 @@ export interface RenderDiagnostics {
   drawCalls: number;
   instanceUploads: number;
   pixelRatio: number;
+  zoomMotion: boolean;
   hoveredCells: number;
   fps: number | null;
   redrawMode: "full" | "damage" | "pan" | "none";
@@ -73,6 +74,8 @@ const DETAIL_FADE_END = 8;
 const SPARSE_LOD_THRESHOLD = DETAIL_FADE_START;
 const SPARSE_ANCHOR_CELLS = 1024;
 const PIXEL_LOD_OVERSCAN_CSS = 256;
+const GENERIC_MOTION_TEXTURE_SCALE = 2;
+const GENERIC_MOTION_TEXTURE_MAX = 4096;
 const RENDER_TILE_CELLS = STATE_TILE_SIZE;
 const CELLS_PER_TILE = RENDER_TILE_CELLS * RENDER_TILE_CELLS;
 const CACHED_CELL_FLOATS = 4;
@@ -544,6 +547,45 @@ void main() {
   outColor = vec4(mix(stateColor, detailed, detailMix), 1.0);
 }`;
 
+const GENERIC_MOTION_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+uniform vec2 u_viewport;
+uniform vec2 u_cameraWorld;
+uniform vec2 u_rotation;
+uniform vec2 u_textureOrigin;
+uniform vec2 u_textureWorldSize;
+uniform float u_cellSize;
+
+out vec2 v_textureUv;
+
+void main() {
+  vec2 corner = vec2(
+    gl_VertexID == 1 || gl_VertexID == 4 || gl_VertexID == 5 ? 1.0 : 0.0,
+    gl_VertexID == 2 || gl_VertexID == 3 || gl_VertexID == 5 ? 1.0 : 0.0
+  );
+  mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
+  vec2 world = u_textureOrigin + corner * u_textureWorldSize;
+  vec2 pixel = u_viewport * 0.5 + rotation * (world - u_cameraWorld) * u_cellSize;
+  vec2 clip = pixel / u_viewport * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_textureUv = corner;
+}`;
+
+const GENERIC_MOTION_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_stateTexture;
+
+in vec2 v_textureUv;
+out vec4 outColor;
+
+void main() {
+  vec4 state = texture(u_stateTexture, v_textureUv);
+  if (state.a <= 0.0) discard;
+  outColor = vec4(state.rgb, 1.0);
+}`;
+
 const PIXEL_VERTEX_SHADER = `#version 300 es
 precision highp float;
 precision highp int;
@@ -610,6 +652,7 @@ interface VisibleTile {
 interface GlResources {
   program: WebGLProgram;
   genericProgram: WebGLProgram;
+  genericMotionProgram: WebGLProgram;
   pixelProgram: WebGLProgram;
   vertexArray: WebGLVertexArrayObject;
   genericVertexArray: WebGLVertexArrayObject;
@@ -620,6 +663,7 @@ interface GlResources {
   genericAtlasTexture: WebGLTexture;
   thingAtlasTexture: WebGLTexture;
   stateTexture: WebGLTexture;
+  genericMotionTexture: WebGLTexture;
   scratchTexture: WebGLTexture;
   scratchFramebuffer: WebGLFramebuffer;
   viewportUniform: WebGLUniformLocation;
@@ -650,6 +694,12 @@ interface GlResources {
   genericMarkedUniform: WebGLUniformLocation;
   genericExplodedUniform: WebGLUniformLocation;
   genericLodColorsUniform: WebGLUniformLocation;
+  genericMotionViewportUniform: WebGLUniformLocation;
+  genericMotionCameraWorldUniform: WebGLUniformLocation;
+  genericMotionRotationUniform: WebGLUniformLocation;
+  genericMotionTextureOriginUniform: WebGLUniformLocation;
+  genericMotionTextureWorldSizeUniform: WebGLUniformLocation;
+  genericMotionCellSizeUniform: WebGLUniformLocation;
   pixelViewportUniform: WebGLUniformLocation;
   pixelCameraCellUniform: WebGLUniformLocation;
   pixelRotationUniform: WebGLUniformLocation;
@@ -750,6 +800,7 @@ export class WebGLRenderer {
     drawCalls: 0,
     instanceUploads: 0,
     pixelRatio: 1,
+    zoomMotion: false,
     hoveredCells: 0,
     fps: null,
     redrawMode: "none",
@@ -777,12 +828,19 @@ export class WebGLRenderer {
   private previousFrameStartedAt = 0;
   private smoothedFrameInterval = 0;
   private frameObserver: ((diagnostics: Readonly<RenderDiagnostics>) => void) | null = null;
+  private zoomMotionActive = false;
   private cachedGeneration = -1;
   private range: TileRange | null = null;
   private pixelTextureOriginX = 0;
   private pixelTextureOriginY = 0;
   private pixelTextureWidth = 1;
   private pixelTextureHeight = 1;
+  private genericMotionTextureOriginX = 0;
+  private genericMotionTextureOriginY = 0;
+  private genericMotionTextureWorldWidth = 1;
+  private genericMotionTextureWorldHeight = 1;
+  private genericMotionLodColors = new Float32Array(SPRITE_COUNT * 3);
+  private genericMotionArtifactRgb: [number, number, number] = [0, 0, 0];
   private genericAnchorWorldX = 0;
   private genericAnchorWorldY = 0;
   private readonly tileCache = new Map<string, CachedTile>();
@@ -968,6 +1026,7 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.resources.genericAtlasTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, genericAtlas);
     this.applyTheme(this.resources, atlas, genericAtlas);
+    if (this.zoomMotionActive && this.model.topologyId !== "square") this.range = null;
     this.requestRender();
   }
 
@@ -1007,6 +1066,20 @@ export class WebGLRenderer {
 
   finishPan(): void {
     // Panning has no temporary render state, so release must remain redraw-free.
+  }
+
+  beginZoomMotion(): void {
+    if (this.zoomMotionActive) return;
+    this.zoomMotionActive = true;
+    this.retainedFrame = false;
+    this.requestRender();
+  }
+
+  endZoomMotion(): void {
+    if (!this.zoomMotionActive) return;
+    this.zoomMotionActive = false;
+    this.retainedFrame = false;
+    this.requestRender();
   }
 
   zoomAt(screenX: number, screenY: number, factor: number): void {
@@ -1219,7 +1292,12 @@ export class WebGLRenderer {
     const centerWorldY = squareTopology ? cameraWorldY + 0.5 : cameraWorldY;
     const detailMix = this.detailMix(cellSize);
     const pixelLod = cellSize <= SPARSE_LOD_THRESHOLD;
-    const usePixelTexture = squareTopology && pixelLod;
+    // A square field can be sampled from its compact state texture while zoom
+    // input is active. This keeps work proportional to screen pixels instead
+    // of submitting six vertices for every visible explored cell. The exact
+    // detailed pass returns as soon as the wheel or pinch gesture settles.
+    const usePixelTexture = squareTopology && (pixelLod || this.zoomMotionActive);
+    const useGenericMotion = !squareTopology && this.zoomMotionActive;
     let anchorX: number;
     let anchorY: number;
     let minX: number;
@@ -1232,12 +1310,20 @@ export class WebGLRenderer {
     let requiredMaxY: number;
     if (!squareTopology) {
       const visibleWorldBounds = this.worldViewportBounds(0);
-      const overscanCss = pixelLod ? PIXEL_LOD_OVERSCAN_CSS : cellSize * RENDER_TILE_CELLS;
+      const viewportExtent = Math.max(this.width, this.height);
+      const overscanCss = useGenericMotion
+        ? Math.max(
+            PIXEL_LOD_OVERSCAN_CSS,
+            (viewportExtent / 2 + PIXEL_LOD_OVERSCAN_CSS) * (cellSize / MIN_CELL_SIZE) - viewportExtent / 2,
+          )
+        : pixelLod
+          ? PIXEL_LOD_OVERSCAN_CSS
+          : cellSize * RENDER_TILE_CELLS;
       const renderWorldBounds = this.worldViewportBounds(overscanCss);
       const required = this.model.topology.cellRangeForWorldBounds(visibleWorldBounds);
       const rendered = this.model.topology.cellRangeForWorldBounds(renderWorldBounds);
       const anchorCell = this.model.topology.hitTest(cameraWorldX, cameraWorldY);
-      const anchorCells = pixelLod ? SPARSE_ANCHOR_CELLS : RENDER_TILE_CELLS * 8;
+      const anchorCells = pixelLod || useGenericMotion ? SPARSE_ANCHOR_CELLS : RENDER_TILE_CELLS * 8;
       const anchorCellX = floorDiv(anchorCell.x + anchorCells / 2, anchorCells) * anchorCells;
       const anchorCellY = floorDiv(anchorCell.y + anchorCells / 2, anchorCells) * anchorCells;
       anchorX = anchorCellX / RENDER_TILE_CELLS;
@@ -1250,7 +1336,7 @@ export class WebGLRenderer {
       requiredMinY = required.minY;
       requiredMaxX = required.maxX;
       requiredMaxY = required.maxY;
-    } else if (pixelLod) {
+    } else if (usePixelTexture) {
       const anchorWorldX =
         floorDiv(Math.floor(centerWorldX) + SPARSE_ANCHOR_CELLS / 2, SPARSE_ANCHOR_CELLS) * SPARSE_ANCHOR_CELLS;
       const anchorWorldY =
@@ -1282,10 +1368,11 @@ export class WebGLRenderer {
       requiredMaxY = maxY;
     }
 
-    const lod = pixelLod ? "pixel" : "detail";
+    const lod = usePixelTexture || pixelLod || useGenericMotion ? "pixel" : "detail";
     if (this.rangeChanged(lod, anchorX, anchorY, requiredMinX, requiredMinY, requiredMaxX, requiredMaxY)) {
-      if (!squareTopology) this.rebuildGenericInstances(anchorX, anchorY, minX, minY, maxX, maxY);
-      else if (pixelLod) this.rebuildPixelTexture(anchorX, anchorY, minX, minY, maxX, maxY);
+      if (useGenericMotion) this.rebuildGenericMotionTexture(anchorX, anchorY, minX, minY, maxX, maxY);
+      else if (!squareTopology) this.rebuildGenericInstances(anchorX, anchorY, minX, minY, maxX, maxY);
+      else if (usePixelTexture) this.rebuildPixelTexture(anchorX, anchorY, minX, minY, maxX, maxY);
       else this.rebuildInstances(anchorX, anchorY, minX, minY, maxX, maxY);
     }
 
@@ -1369,7 +1456,15 @@ export class WebGLRenderer {
     } else {
       this.smoothedFrameInterval = 0;
     }
-    const drawCalls = this.drawScene(usePixelTexture, !squareTopology, relativeCameraX, relativeCameraY, cellSize, drawRects);
+    const drawCalls = this.drawScene(
+      usePixelTexture,
+      !squareTopology,
+      useGenericMotion,
+      relativeCameraX,
+      relativeCameraY,
+      cellSize,
+      drawRects,
+    );
     if (redrawMode === "full") this.fullRedraws += 1;
     else if (redrawMode === "damage") this.damageRedraws += 1;
     else this.panRedraws += 1;
@@ -1384,7 +1479,7 @@ export class WebGLRenderer {
       lod,
       cellSize,
       borderCssPixels: cellSize >= 3 ? 1 : 0,
-      glyphs: detailMix > 0,
+      glyphs: detailMix > 0 && !usePixelTexture && !useGenericMotion,
       thingSprites: this.model.thingsEnabled ? THING_CATALOG_COUNT : 0,
       thingSpritesLoaded: this.model.thingsEnabled
         ? this.thingAtlasSlots.filter((slot) => slot?.ready).length
@@ -1405,6 +1500,7 @@ export class WebGLRenderer {
       drawCalls,
       instanceUploads: this.instanceUploads,
       pixelRatio: this.dpr,
+      zoomMotion: this.zoomMotionActive,
       hoveredCells: this.hoverCells.length,
       fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
       redrawMode,
@@ -1469,6 +1565,7 @@ export class WebGLRenderer {
       drawCalls: 1,
       instanceUploads: frame.visibleCells,
       pixelRatio: this.dpr,
+      zoomMotion: this.zoomMotionActive,
       hoveredCells: this.hoverCells.length,
       fps: this.smoothedFrameInterval > 0 ? Math.min(999, Math.round(1000 / this.smoothedFrameInterval)) : null,
       // The curved pass currently redraws the complete bounded projection for every
@@ -1487,6 +1584,7 @@ export class WebGLRenderer {
   private drawScene(
     pixelTexture: boolean,
     genericTopology: boolean,
+    genericMotion: boolean,
     relativeCameraX: number,
     relativeCameraY: number,
     cellSize: number,
@@ -1498,7 +1596,7 @@ export class WebGLRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(...this.theme.backgroundRgb, 1);
-    if (pixelTexture) {
+    if (pixelTexture || genericMotion) {
       gl.disable(gl.BLEND);
     } else {
       // Premultiplied Thing texels keep antialiased edges color-correct while
@@ -1518,6 +1616,25 @@ export class WebGLRenderer {
       gl.uniform1f(resources.pixelDprUniform, this.dpr);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, resources.stateTexture);
+    } else if (genericMotion) {
+      gl.useProgram(resources.genericMotionProgram);
+      gl.bindVertexArray(resources.pixelVertexArray);
+      gl.uniform2f(resources.genericMotionViewportUniform, this.width, this.height);
+      gl.uniform2f(resources.genericMotionCameraWorldUniform, relativeCameraX, relativeCameraY);
+      gl.uniform2f(resources.genericMotionRotationUniform, rotation.cos, rotation.sin);
+      gl.uniform2f(
+        resources.genericMotionTextureOriginUniform,
+        this.genericMotionTextureOriginX,
+        this.genericMotionTextureOriginY,
+      );
+      gl.uniform2f(
+        resources.genericMotionTextureWorldSizeUniform,
+        this.genericMotionTextureWorldWidth,
+        this.genericMotionTextureWorldHeight,
+      );
+      gl.uniform1f(resources.genericMotionCellSizeUniform, cellSize);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, resources.genericMotionTexture);
     } else if (genericTopology) {
       gl.useProgram(resources.genericProgram);
       gl.bindVertexArray(resources.genericVertexArray);
@@ -1557,7 +1674,7 @@ export class WebGLRenderer {
       if (!fullFrame) gl.scissor(rect.x, rect.y, rect.width, rect.height);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (this.instanceCount === 0) continue;
-      if (pixelTexture) gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (pixelTexture || genericMotion) gl.drawArrays(gl.TRIANGLES, 0, 6);
       else gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
       drawCalls += 1;
     }
@@ -1920,6 +2037,119 @@ export class WebGLRenderer {
       cells.push({ x: thing.x + offsets[index], y: thing.y + offsets[index + 1] });
     }
     return cells;
+  }
+
+  private rebuildGenericMotionTexture(
+    anchorX: number,
+    anchorY: number,
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+  ): void {
+    const topology = this.model.topology;
+    const anchorCellX = anchorX * RENDER_TILE_CELLS;
+    const anchorCellY = anchorY * RENDER_TILE_CELLS;
+    const anchor = topology.geometry(anchorCellX, anchorCellY).center;
+    this.genericAnchorWorldX = anchor.x;
+    this.genericAnchorWorldY = anchor.y;
+    const cells: Array<{
+      x: number;
+      y: number;
+      state: CellState;
+      vertices: ReadonlyArray<WorldPoint>;
+    }> = [];
+    let worldMinX = Number.POSITIVE_INFINITY;
+    let worldMinY = Number.POSITIVE_INFINITY;
+    let worldMaxX = Number.NEGATIVE_INFINITY;
+    let worldMaxY = Number.NEGATIVE_INFINITY;
+    this.model.store.forEachNonZeroInBounds(minX, minY, maxX, maxY, (x, y, state) => {
+      const vertices = topology.geometry(x, y).vertices;
+      cells.push({ x, y, state, vertices });
+      for (const vertex of vertices) {
+        worldMinX = Math.min(worldMinX, vertex.x);
+        worldMinY = Math.min(worldMinY, vertex.y);
+        worldMaxX = Math.max(worldMaxX, vertex.x);
+        worldMaxY = Math.max(worldMaxY, vertex.y);
+      }
+    });
+
+    if (cells.length === 0) {
+      worldMinX = anchor.x;
+      worldMinY = anchor.y;
+      worldMaxX = anchor.x + 1;
+      worldMaxY = anchor.y + 1;
+    } else {
+      worldMinX -= 0.01;
+      worldMinY -= 0.01;
+      worldMaxX += 0.01;
+      worldMaxY += 0.01;
+    }
+    const worldWidth = Math.max(0.001, worldMaxX - worldMinX);
+    const worldHeight = Math.max(0.001, worldMaxY - worldMinY);
+    const textureScale = Math.min(
+      GENERIC_MOTION_TEXTURE_SCALE,
+      GENERIC_MOTION_TEXTURE_MAX / worldWidth,
+      GENERIC_MOTION_TEXTURE_MAX / worldHeight,
+    );
+    const textureWidth = Math.max(1, Math.ceil(worldWidth * textureScale));
+    const textureHeight = Math.max(1, Math.ceil(worldHeight * textureScale));
+    const textureWorldWidth = textureWidth / textureScale;
+    const textureWorldHeight = textureHeight / textureScale;
+    const canvas = document.createElement("canvas");
+    canvas.width = textureWidth;
+    canvas.height = textureHeight;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) throw new Error("Unable to rasterize topology motion texture");
+    context.imageSmoothingEnabled = false;
+    for (const cell of cells) {
+      const sprite = this.spriteFor(cell.state);
+      const artifact = cell.state === CellState.Opened && this.model.artifactAt(cell.x, cell.y);
+      const color = artifact
+        ? this.genericMotionArtifactRgb
+        : ([
+            this.genericMotionLodColors[sprite * 3],
+            this.genericMotionLodColors[sprite * 3 + 1],
+            this.genericMotionLodColors[sprite * 3 + 2],
+          ] as const);
+      context.fillStyle = `rgb(${Math.round(color[0] * 255)} ${Math.round(color[1] * 255)} ${Math.round(color[2] * 255)})`;
+      context.beginPath();
+      for (let index = 0; index < cell.vertices.length; index += 1) {
+        const vertex = cell.vertices[index];
+        const pixelX = (vertex.x - worldMinX) * textureScale;
+        const pixelY = (vertex.y - worldMinY) * textureScale;
+        if (index === 0) context.moveTo(pixelX, pixelY);
+        else context.lineTo(pixelX, pixelY);
+      }
+      context.closePath();
+      context.fill();
+    }
+
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.resources.genericMotionTexture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.instanceUploads += 1;
+    this.instanceCount = cells.length;
+    this.frontierCellCount = 0;
+    this.frontierEdgeCount = 0;
+    this.genericMotionTextureOriginX = worldMinX - anchor.x;
+    this.genericMotionTextureOriginY = worldMinY - anchor.y;
+    this.genericMotionTextureWorldWidth = textureWorldWidth;
+    this.genericMotionTextureWorldHeight = textureWorldHeight;
+    this.range = {
+      lod: "pixel",
+      anchorX,
+      anchorY,
+      minX,
+      minY,
+      maxX,
+      maxY,
+      generation: this.model.store.generation,
+      version: this.model.store.version,
+    };
+    this.trimTileCache(MAX_CACHED_TILES);
   }
 
   private rebuildGenericInstances(
@@ -2705,6 +2935,7 @@ export class WebGLRenderer {
     const gl = this.gl;
     const program = requireProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     const genericProgram = requireProgram(gl, GENERIC_VERTEX_SHADER, GENERIC_FRAGMENT_SHADER);
+    const genericMotionProgram = requireProgram(gl, GENERIC_MOTION_VERTEX_SHADER, GENERIC_MOTION_FRAGMENT_SHADER);
     const pixelProgram = requireProgram(gl, PIXEL_VERTEX_SHADER, PIXEL_FRAGMENT_SHADER);
     const vertexArray = gl.createVertexArray();
     const genericVertexArray = gl.createVertexArray();
@@ -2716,6 +2947,7 @@ export class WebGLRenderer {
     const genericAtlasTexture = gl.createTexture();
     const thingAtlasTexture = gl.createTexture();
     const stateTexture = gl.createTexture();
+    const genericMotionTexture = gl.createTexture();
     const scratchTexture = gl.createTexture();
     const scratchFramebuffer = gl.createFramebuffer();
     if (
@@ -2729,6 +2961,7 @@ export class WebGLRenderer {
       !genericAtlasTexture ||
       !thingAtlasTexture ||
       !stateTexture ||
+      !genericMotionTexture ||
       !scratchTexture ||
       !scratchFramebuffer
     ) {
@@ -2817,6 +3050,13 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.bindTexture(gl.TEXTURE_2D, genericMotionTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     gl.bindTexture(gl.TEXTURE_2D, scratchTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -2843,6 +3083,8 @@ export class WebGLRenderer {
     gl.useProgram(genericProgram);
     gl.uniform1i(requireUniform(gl, genericProgram, "u_atlas"), 0);
     gl.uniform1i(requireUniform(gl, genericProgram, "u_thingAtlas"), 2);
+    gl.useProgram(genericMotionProgram);
+    gl.uniform1i(requireUniform(gl, genericMotionProgram, "u_stateTexture"), 3);
     gl.useProgram(pixelProgram);
     gl.uniform1i(requireUniform(gl, pixelProgram, "u_stateTexture"), 1);
     gl.disable(gl.BLEND);
@@ -2852,6 +3094,7 @@ export class WebGLRenderer {
     const resources = {
       program,
       genericProgram,
+      genericMotionProgram,
       pixelProgram,
       vertexArray,
       genericVertexArray,
@@ -2862,6 +3105,7 @@ export class WebGLRenderer {
       genericAtlasTexture,
       thingAtlasTexture,
       stateTexture,
+      genericMotionTexture,
       scratchTexture,
       scratchFramebuffer,
       viewportUniform: requireUniform(gl, program, "u_viewport"),
@@ -2892,6 +3136,12 @@ export class WebGLRenderer {
       genericMarkedUniform: requireUniform(gl, genericProgram, "u_marked"),
       genericExplodedUniform: requireUniform(gl, genericProgram, "u_exploded"),
       genericLodColorsUniform: requireUniform(gl, genericProgram, "u_lodColors[0]"),
+      genericMotionViewportUniform: requireUniform(gl, genericMotionProgram, "u_viewport"),
+      genericMotionCameraWorldUniform: requireUniform(gl, genericMotionProgram, "u_cameraWorld"),
+      genericMotionRotationUniform: requireUniform(gl, genericMotionProgram, "u_rotation"),
+      genericMotionTextureOriginUniform: requireUniform(gl, genericMotionProgram, "u_textureOrigin"),
+      genericMotionTextureWorldSizeUniform: requireUniform(gl, genericMotionProgram, "u_textureWorldSize"),
+      genericMotionCellSizeUniform: requireUniform(gl, genericMotionProgram, "u_cellSize"),
       pixelViewportUniform: requireUniform(gl, pixelProgram, "u_viewport"),
       pixelCameraCellUniform: requireUniform(gl, pixelProgram, "u_cameraCell"),
       pixelRotationUniform: requireUniform(gl, pixelProgram, "u_rotation"),
@@ -2944,6 +3194,8 @@ export class WebGLRenderer {
     gl.uniform3fv(resources.genericMarkedUniform, hexToRgb(this.theme.marked));
     gl.uniform3fv(resources.genericExplodedUniform, hexToRgb(this.theme.exploded));
     gl.uniform3fv(resources.genericLodColorsUniform, genericLodColors);
+    this.genericMotionArtifactRgb = artifactLod;
+    this.genericMotionLodColors = new Float32Array(genericLodColors);
     gl.useProgram(resources.pixelProgram);
     gl.uniform3fv(resources.pixelLodArtifactUniform, artifactLod);
     gl.uniform3fv(resources.pixelLodColorsUniform, lodColors);

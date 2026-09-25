@@ -1399,6 +1399,7 @@ const beginPinch = (): void => {
     centerY: (first.localY + second.localY) / 2,
   };
   canvas.classList.add("is-panning");
+  renderer.beginZoomMotion();
   updateHoverPreview([]);
   hideTouchPreview();
 };
@@ -1429,6 +1430,7 @@ const finishPinchTouch = (event: PointerEvent): boolean => {
   pinch = null;
   gesture = null;
   canvas.classList.remove("is-panning");
+  renderer.endZoomMotion();
   renderer.finishPan();
   const point = localPoint(event);
   locateCellAt(point.x, point.y, true, false);
@@ -1442,6 +1444,10 @@ canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 && event.button !== 2) return;
   cancelGuardToast();
   window.clearTimeout(zoomHoverTimer);
+  if (zoomHoverTimer !== 0) {
+    zoomHoverTimer = 0;
+    renderer.endZoomMotion();
+  }
   canvas.classList.remove("is-panning");
   pointerOnBoard = true;
   const point = localPoint(event);
@@ -1635,11 +1641,13 @@ canvas.addEventListener(
   (event) => {
     event.preventDefault();
     const point = localPoint(event);
+    renderer.beginZoomMotion();
     renderer.zoomAt(point.x, point.y, Math.exp(-event.deltaY * 0.0012));
     locateCellAt(point.x, point.y, false, false);
     window.clearTimeout(zoomHoverTimer);
     zoomHoverTimer = window.setTimeout(() => {
       zoomHoverTimer = 0;
+      renderer.endZoomMotion();
       if (!gesture && pointerOnBoard) refreshCellLocator();
     }, 80);
     scheduleGameSave();
