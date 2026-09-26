@@ -1121,7 +1121,9 @@ export class WebGLRenderer {
     const clamped = Math.max(MIN_ZOOM, Math.min(2.2, zoom));
     const cellSize = BASE_CELL_SIZE * clamped;
     if (cellSize >= 1 - 1e-9) return cellSize < 1 ? 1 / BASE_CELL_SIZE : clamped;
-    const blockSize = Math.max(2, Math.min(MAX_OVERVIEW_BLOCK_SIZE, Math.round(1 / cellSize)));
+    // Keep 1×1 in the same rounding band as later tiers so crossing below
+    // one pixel accumulates gesture travel before the first overview step.
+    const blockSize = Math.max(1, Math.min(MAX_OVERVIEW_BLOCK_SIZE, Math.round(1 / cellSize)));
     return 1 / (BASE_CELL_SIZE * blockSize);
   }
 
