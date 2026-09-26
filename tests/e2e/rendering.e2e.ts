@@ -71,7 +71,7 @@ test("R12/R13 — zoom reaches one CSS pixel and low-zoom pixels encode tile sta
   for (const color of colors) expect(color).not.toEqual(hexToRgb(result.expected.background));
 });
 
-test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and blocks cell actions", async ({
+test("R55 — subpixel overview uses discrete 1×1 through 64×64 aggregates and blocks cell actions", async ({
   page,
 }, testInfo) => {
   test.setTimeout(60_000);
@@ -114,7 +114,7 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
     const focus = { x: canvas.clientWidth * 0.67, y: canvas.clientHeight * 0.61 };
     const initialFocus = renderer.screenToCell(focus.x, focus.y);
     const steps = [];
-    for (let blockSize = 1; blockSize <= 8; blockSize += 1) {
+    for (let blockSize = 1; blockSize <= 64; blockSize += 1) {
       if (blockSize > 1) renderer.zoomAt(focus.x, focus.y, (blockSize - 1) / blockSize);
       await settle();
       steps.push({
@@ -175,27 +175,18 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
     body: JSON.stringify(report, null, 2),
     contentType: "application/json",
   });
-  expect(report.steps.map((step) => step.diagnostics.overviewBlockSize)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-  expect(report.steps.map((step) => step.diagnostics.lod)).toEqual([
-    "pixel",
-    "overview",
-    "overview",
-    "overview",
-    "overview",
-    "overview",
-    "overview",
-    "overview",
-  ]);
+  expect(report.steps.map((step) => step.diagnostics.overviewBlockSize)).toEqual(Array.from({ length: 64 }, (_, index) => index + 1));
+  expect(report.steps.map((step) => step.diagnostics.lod)).toEqual(["pixel", ...Array(63).fill("overview")]);
   for (const step of report.steps) {
     expect(step.diagnostics.cellSize).toBeCloseTo(1 / step.blockSize, 10);
     expect(step.diagnostics.drawCalls).toBe(1);
     expect(step.diagnostics.glyphs).toBe(false);
     expect(step.focusCell).toEqual(report.initialFocus);
   }
-  expect(report.steps.at(-1)?.diagnostics.visibleCells).toBeGreaterThan(80_000_000);
+  expect(report.steps.at(-1)?.diagnostics.visibleCells).toBeGreaterThan(5_000_000_000);
   expect(report.steps.at(-1)?.diagnostics.drawnCells).toBeLessThan(report.steps[0].diagnostics.drawnCells);
   expect(report.steps.at(-1)?.diagnostics.hoveredCells).toBe(0);
-  expect(report.steps.at(-1)?.view.zoom).toBeCloseTo(0.005, 12);
+  expect(report.steps.at(-1)?.view.zoom).toBeCloseTo(1 / (25 * 64), 12);
   expect(report.priorityAfter).toBe(report.priorityBefore);
   expect(report.beforeFramebuffer).toBe(report.afterRoundTripFramebuffer);
   expect(report.beforePan).toEqual(report.afterPan);
@@ -211,19 +202,19 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
   await page.mouse.click(boardBounds.x + boardBounds.width / 2, boardBounds.y + boardBounds.height / 2, {
     button: "right",
   });
-  await expect(page.locator("#toast")).toContainText("8×8 overview — zoom in to play");
+  await expect(page.locator("#toast")).toContainText("64×64 overview — zoom in to play");
   expect(await page.evaluate(() => new Uint8Array(window.__infiniteMines.model.createSnapshot().cells))).toEqual(beforeClick);
   await expect(page.locator("#cell-locator")).toBeDisabled();
-  await expect(page.locator("#cell-state")).toHaveText("8×8 OVERVIEW · ZOOM IN TO PLAY");
+  await expect(page.locator("#cell-state")).toHaveText("64×64 OVERVIEW · ZOOM IN TO PLAY");
 
   await page.evaluate(() => window.__infiniteMines.flushSave());
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().persistenceStatus)).toBe("restored");
-  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().overviewBlockSize)).toBe(8);
+  await expect.poll(() => page.evaluate(() => window.__infiniteMines.diagnostics().overviewBlockSize)).toBe(64);
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics())).toMatchObject({
     lod: "overview",
-    cellSize: 0.125,
-    overviewBlockSize: 8,
+    cellSize: 1 / 64,
+    overviewBlockSize: 64,
     drawCalls: 1,
   });
   const displayRoundTrips = await page.evaluate(async () => {
@@ -263,7 +254,7 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
       afterTheme: framebufferHash(),
     };
   });
-  expect(displayRoundTrips.rotated).toMatchObject({ rotation: 90, overviewBlockSize: 8, drawCalls: 1 });
+  expect(displayRoundTrips.rotated).toMatchObject({ rotation: 90, overviewBlockSize: 64, drawCalls: 1 });
   expect(displayRoundTrips.afterRotation).toBe(displayRoundTrips.baseline);
   expect(displayRoundTrips.alternateThemeHash).not.toBe(displayRoundTrips.baseline);
   expect(displayRoundTrips.afterTheme).toBe(displayRoundTrips.baseline);
@@ -272,14 +263,14 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
     const settle = () =>
       new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const blocks = [];
-    for (let blockSize = 7; blockSize >= 1; blockSize -= 1) {
+    for (let blockSize = 63; blockSize >= 1; blockSize -= 1) {
       renderer.zoomAt(renderer.canvas.clientWidth / 2, renderer.canvas.clientHeight / 2, (blockSize + 1) / blockSize);
       await settle();
       blocks.push(window.__infiniteMines.diagnostics().overviewBlockSize);
     }
     return { blocks, diagnostics: window.__infiniteMines.diagnostics(), input: renderer.cellInputEnabled };
   });
-  expect(reverse.blocks).toEqual([7, 6, 5, 4, 3, 2, 1]);
+  expect(reverse.blocks).toEqual(Array.from({ length: 63 }, (_, index) => 63 - index));
   expect(reverse.diagnostics).toMatchObject({ lod: "pixel", cellSize: 1, overviewBlockSize: 1 });
   expect(reverse.input).toBe(true);
   await page.mouse.move(boardBounds.x + boardBounds.width / 2, boardBounds.y + boardBounds.height / 2);
@@ -293,7 +284,7 @@ test("R55 — subpixel overview uses discrete 1×1 through 8×8 aggregates and b
   await expect(page.locator("#cell-locator")).toBeEnabled();
 });
 
-test("R55 — every Euclidean topology shares the bounded 8×8 overview path", async ({ page }) => {
+test("R55 — every Euclidean topology shares the bounded 64×64 overview path", async ({ page }) => {
   await openDeterministicGame(page);
   const report = await page.evaluate(async () => {
     const api = window.__infiniteMines;
@@ -319,7 +310,7 @@ test("R55 — every Euclidean topology shares the bounded 8×8 overview path", a
       renderer.restoreView({ version: 1, zoom: 0.04, panX: 0, panY: 0 });
       const focus = { x: renderer.canvas.clientWidth * 0.61, y: renderer.canvas.clientHeight * 0.37 };
       const beforeFocus = renderer.screenToCell(focus.x, focus.y);
-      renderer.zoomAt(focus.x, focus.y, 1 / 8);
+      renderer.zoomAt(focus.x, focus.y, 1 / 64);
       await settle();
       const afterFocus = renderer.screenToCell(focus.x, focus.y);
       const overview = api.diagnostics();
@@ -335,15 +326,15 @@ test("R55 — every Euclidean topology shares the bounded 8×8 overview path", a
     expect(result.overview).toMatchObject({
       topology,
       lod: "overview",
-      cellSize: 0.125,
-      overviewBlockSize: 8,
+      cellSize: 1 / 64,
+      overviewBlockSize: 64,
       drawCalls: 1,
       glyphs: false,
       hoveredCells: 0,
     });
     expect(result.overview.drawnCells).toBeGreaterThan(0);
     expect(result.overview.drawnCells).toBeLessThan(result.overview.storedCells);
-    expect(result.rotated).toMatchObject({ topology, rotation: 90, overviewBlockSize: 8, drawCalls: 1 });
+    expect(result.rotated).toMatchObject({ topology, rotation: 90, overviewBlockSize: 64, drawCalls: 1 });
   }
 });
 

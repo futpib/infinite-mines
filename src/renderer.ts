@@ -67,7 +67,7 @@ export const isFieldRotation = (value: unknown): value is FieldRotation =>
   typeof value === "number" && FIELD_ROTATIONS.includes(value as FieldRotation);
 
 const BASE_CELL_SIZE = 25;
-const MAX_OVERVIEW_BLOCK_SIZE = 8;
+const MAX_OVERVIEW_BLOCK_SIZE = 64;
 const MIN_CELL_SIZE = 1 / MAX_OVERVIEW_BLOCK_SIZE;
 const MIN_ZOOM = MIN_CELL_SIZE / BASE_CELL_SIZE;
 const DETAIL_FADE_START = 4;

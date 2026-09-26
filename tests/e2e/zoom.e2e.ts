@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { openDeterministicGame } from "./helpers";
 
 for (const input of ["wheel", "pinch"] as const) {
-  test(`R55 — ${input} accumulates travel at 1×1 before entering overview`, async ({ browser }) => {
+  test(`R55 — ${input} holds at 1×1 and navigates through the 64×64 limit`, async ({ browser }) => {
     const context = await browser.newContext({
       viewport: input === "pinch" ? { width: 390, height: 844 } : { width: 1440, height: 900 },
       hasTouch: input === "pinch",
@@ -14,6 +14,7 @@ for (const input of ["wheel", "pinch"] as const) {
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
     page.on("requestfailed", (request) => errors.push(request.url()));
+    page.on("response", (response) => { if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`); });
     try {
       await openDeterministicGame(page);
       const focus = { x: input === "pinch" ? 205 : 840, y: 520 };
@@ -63,6 +64,26 @@ for (const input of ["wheel", "pinch"] as const) {
       if (input === "pinch") {
         await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       }
+      await page.evaluate((point) => {
+        const renderer = window.__infiniteMines.renderer;
+        renderer.zoomAt(point.x, point.y, 1 / (32 * renderer.cellSize));
+      }, focus);
+      distance = 240;
+      if (input === "pinch") {
+        await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touchPoints() });
+      }
+      await zoom(0.8, 1 / 40);
+      await zoom(0.8, 1 / 50);
+      await zoom(0.75, 1 / 64);
+      await zoom(0.8, 1 / 64); // Input clamps at the final tier without accumulating overshoot.
+      await zoom(1.28, 1 / 50);
+      await zoom(50 / 64, 1 / 64);
+      if (input === "pinch") {
+        await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      }
+      await page.evaluate(() => window.__infiniteMines.flushSave());
+      await page.reload();
+      await expect.poll(() => page.evaluate(() => window.__infiniteMines?.diagnostics().overviewBlockSize)).toBe(64);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(errors).toEqual([]);
     } finally {

@@ -539,23 +539,39 @@ export class CellStore {
     const minChunkY = floorDiv(minY, CHUNK_SIZE);
     const maxChunkX = floorDiv(maxX, CHUNK_SIZE);
     const maxChunkY = floorDiv(maxY, CHUNK_SIZE);
+    // Wide overview views can contain millions of empty chunk coordinates.
+    // Visit allocated chunks instead when that is the smaller search space.
+    if ((maxChunkX - minChunkX + 1) * (maxChunkY - minChunkY + 1) > this.chunks.size) {
+      for (const [key, chunk] of this.chunks) {
+        const separator = key.indexOf(",");
+        const chunkX = Number(key.slice(0, separator));
+        const chunkY = Number(key.slice(separator + 1));
+        if (chunkX < minChunkX || chunkX > maxChunkX || chunkY < minChunkY || chunkY > maxChunkY) continue;
+        visitChunk(chunk, chunkX, chunkY);
+      }
+      return;
+    }
     for (let chunkY = minChunkY; chunkY <= maxChunkY; chunkY += 1) {
       for (let chunkX = minChunkX; chunkX <= maxChunkX; chunkX += 1) {
         const chunk = this.chunks.get(`${chunkX},${chunkY}`);
         if (!chunk) continue;
-        const originX = chunkX * CHUNK_SIZE;
-        const originY = chunkY * CHUNK_SIZE;
-        const startX = Math.max(0, minX - originX);
-        const startY = Math.max(0, minY - originY);
-        const endX = Math.min(CHUNK_SIZE - 1, maxX - originX);
-        const endY = Math.min(CHUNK_SIZE - 1, maxY - originY);
-        for (let localY = startY; localY <= endY; localY += 1) {
-          const rowOffset = localY * CHUNK_SIZE;
-          for (let localX = startX; localX <= endX; localX += 1) {
-            const state = chunk.cells[rowOffset + localX] as CellState;
-            if (state === CellState.Covered || state === CellState.Queued) continue;
-            visitor(originX + localX, originY + localY, state);
-          }
+        visitChunk(chunk, chunkX, chunkY);
+      }
+    }
+
+    function visitChunk(chunk: StateChunk, chunkX: number, chunkY: number): void {
+      const originX = chunkX * CHUNK_SIZE;
+      const originY = chunkY * CHUNK_SIZE;
+      const startX = Math.max(0, minX - originX);
+      const startY = Math.max(0, minY - originY);
+      const endX = Math.min(CHUNK_SIZE - 1, maxX - originX);
+      const endY = Math.min(CHUNK_SIZE - 1, maxY - originY);
+      for (let localY = startY; localY <= endY; localY += 1) {
+        const rowOffset = localY * CHUNK_SIZE;
+        for (let localX = startX; localX <= endX; localX += 1) {
+          const state = chunk.cells[rowOffset + localX] as CellState;
+          if (state === CellState.Covered || state === CellState.Queued) continue;
+          visitor(originX + localX, originY + localY, state);
         }
       }
     }

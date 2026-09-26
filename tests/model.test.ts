@@ -416,6 +416,34 @@ describe("compact chunk state", () => {
     expect(restored.openedCells).toBe(2);
   });
 
+  it("keeps wide sparse queries bounded and clips signed chunk edges exactly", () => {
+    const store = new CellStore();
+    store.set(64, 64, CellState.Exploded);
+    store.set(-65, -65, CellState.Flagged);
+    store.set(-64, -64, CellState.Opened2);
+    store.set(63, 63, CellState.Question);
+    store.set(10, 10, CellState.Queued);
+    store.set(1_000_001, 0, CellState.Flagged);
+    const originalGet = Map.prototype.get;
+    let lookups = 0;
+    const lookup = vi.spyOn(Map.prototype, "get").mockImplementation(function (this: Map<unknown, unknown>, key: unknown) {
+      if (++lookups > 100) throw new Error("Sparse query scanned empty world chunks");
+      return originalGet.call(this, key);
+    });
+    const visited: Array<[number, number, CellState]> = [];
+    try {
+      store.forEachNonZeroInBounds(-64, -64, 1_000_000, 1_000_000, (x, y, state) => visited.push([x, y, state]));
+    } finally {
+      lookup.mockRestore();
+    }
+    expect(visited.sort(([x1], [x2]) => x1 - x2)).toEqual([
+      [-64, -64, CellState.Opened2],
+      [63, 63, CellState.Question],
+      [64, 64, CellState.Exploded],
+    ]);
+    expect(store.nonZeroCells).toBe(6);
+  });
+
   it("iterates only nonzero cells inside bounded world coordinates", () => {
     const store = new CellStore();
     store.set(-65, -65, CellState.Opened1);
