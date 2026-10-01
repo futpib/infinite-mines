@@ -43,7 +43,7 @@ Both implementations already reach the roughly 60Hz display cadence when warmed 
 
 The pinned CI run passed 43/43 unit tests and 78/79 browser tests, including the new 576-case byte-for-byte comparison against the original instanced path across themes, topologies, rotations, zoom levels, fractional DPR, loaded Things, and capacity fallback. The existing R31 Retina pan timing check remains above its unchanged 35ms ceiling at 50.1ms; its framebuffer correctness assertions pass. R54 motion/settled quality, R56 crowded-artwork idle behavior, and desktop/mobile zoom tests pass.
 
-The same 576-case framebuffer matrix also passed byte-for-byte on the NVIDIA GPU.
+The same 576-case framebuffer matrix also passed byte-for-byte on the NVIDIA GPU. All nine deployed LAN checks passed on hardware Chromium, covering full-quality wheel zoom, crowded artwork on four topologies, delayed loads after mobile pinch, and wheel/pinch navigation through 64×64. A separate live check returned HTTP 200, exact framebuffer recovery after forced WebGL context loss, and zero console/page/request/WebGL errors or overflow across desktop/mobile widths and both themes.
 
 The extra cached cell-data texture costs 32 bytes per Square cell or 64 per polygon cell, plus at most one row of padding. It is rebuilt only with the existing geometry cache; it does not duplicate every vertex or upload on each zoom frame. The original instance buffers remain available for the texture-capacity fallback and parity tests.
 
