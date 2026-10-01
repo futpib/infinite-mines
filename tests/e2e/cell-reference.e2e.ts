@@ -51,7 +51,7 @@ test("R16 — cell coordinates produce a safe, reproducible clipboard reference"
   expect(reference).not.toContain("concealed mine");
 });
 
-test("R18 — subtle compositor markers preview covered, chord, and auto-flag click footprints", async ({ page }) => {
+test("R18 — visible compositor markers preview covered, chord, and auto-flag click footprints", async ({ page }) => {
   await openDeterministicGame(page);
   const covered = await findCell(page, "covered");
   const coveredPoint = await worldPoint(page, covered);
@@ -87,16 +87,31 @@ test("R18 — subtle compositor markers preview covered, chord, and auto-flag cl
   await expect(page.locator("#hover-overlay .hover-cell.is-visible")).toHaveCount(5);
   const outline = await markers.first().evaluate((marker) => {
     const styles = getComputedStyle(marker);
+    const palette = getComputedStyle(document.documentElement);
+    const border = styles.borderColor.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+    const opacity = Number(styles.opacity);
+    const luminance = (rgb: number[]) => rgb.map((channel) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const contrast = ["--board-bg", "--board-cell", "--board-marked"].map((property) => {
+      const hex = palette.getPropertyValue(property).trim();
+      const background = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+      const blended = border.map((channel, index) => channel * opacity + background[index] * (1 - opacity));
+      const light = luminance(background);
+      const dark = luminance(blended);
+      return (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05);
+    });
     return {
       borderWidth: styles.borderWidth,
       borderColor: styles.borderColor,
-      opacity: styles.opacity,
+      contrast,
       transform: styles.transform,
     };
   });
   expect(outline.borderWidth).toBe("1px");
   expect(outline.borderColor).not.toBe("rgba(0, 0, 0, 0)");
-  expect(Number(outline.opacity)).toBeLessThan(0.5);
+  for (const contrast of outline.contrast) expect(contrast).toBeGreaterThanOrEqual(3);
   expect(outline.transform).not.toBe("none");
   expect(await page.evaluate(() => window.__infiniteMines.diagnostics().hoveredCells)).toBe(5);
 

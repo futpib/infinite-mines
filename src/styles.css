@@ -34,6 +34,8 @@
   --board-cell-border: #858c8b;
   --board-cell-highlight: #ece8df;
   --board-hover: #078f88;
+  --board-hover-border: #00645f;
+  --board-hover-border-opacity: 1;
   --board-hint: #8658c7;
   --board-marked: #f8f4eb;
   --board-flag: #ef654e;
@@ -83,6 +85,8 @@
     --board-cell-border: #4a5960;
     --board-cell-highlight: #354249;
     --board-hover: #77e2d9;
+    --board-hover-border: #77e2d9;
+    --board-hover-border-opacity: 0.32;
     --board-hint: #c3a1ff;
     --board-marked: #1b2428;
     --board-flag: #ff7966;
@@ -307,13 +311,16 @@ a:focus-visible {
   width: var(--hover-cell-size, 25px);
   height: var(--hover-cell-size, 25px);
   transform: translate3d(-100px, -100px, 0);
-  border: 1px solid var(--board-hover);
+  border: 1px solid var(--board-hover-border);
   opacity: 0;
   contain: strict;
   will-change: transform, opacity;
 }
 
 .hover-cell.is-visible { opacity: 0.32; }
+
+/* Outlines need contrast against the grid; polygon and pixel fills stay translucent. */
+.hover-cell.is-visible:not(.is-polygon) { opacity: var(--board-hover-border-opacity); }
 
 .hover-cell.is-polygon.is-affected {
   border: 0;
