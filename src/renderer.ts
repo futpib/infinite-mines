@@ -80,6 +80,7 @@ const CELLS_PER_TILE = RENDER_TILE_CELLS * RENDER_TILE_CELLS;
 const CACHED_CELL_FLOATS = 4;
 const INSTANCE_FLOATS = 5;
 const GENERIC_INSTANCE_FLOATS = 14;
+const CELL_DATA_TEXTURE_WIDTH = 1024;
 const SQUARE_MAX_CLUE_SPRITE = 8;
 const SQUARE_FLAG_SPRITE = 9;
 const SQUARE_QUESTION_SPRITE = 10;
@@ -158,6 +159,20 @@ const hexToRgb = (color: string): [number, number, number] => {
   ];
 };
 
+const BATCHED_CELL_VERTEX = `
+uniform bool u_batchedCells;
+uniform highp sampler2D u_cellData;
+
+vec4 cellData(int texel) {
+  return texelFetch(u_cellData, ivec2(texel & ${CELL_DATA_TEXTURE_WIDTH - 1}, texel >> ${Math.log2(CELL_DATA_TEXTURE_WIDTH)}), 0);
+}
+
+vec2 cellCorner() {
+  int vertex = gl_VertexID % 6;
+  return vec2(vertex == 1 || vertex >= 4 ? 1.0 : 0.0, vertex >= 2 && vertex != 4 ? 1.0 : 0.0);
+}
+`;
+
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
 
@@ -176,14 +191,21 @@ flat out float v_sprite;
 flat out float v_cellKind;
 flat out float v_edges;
 
+${BATCHED_CELL_VERTEX}
+
 void main() {
-  bool thingCell = a_cell.w > 2.5 && a_cell.w < 3.5;
+  int texel = (gl_VertexID / 6) * 2;
+  vec2 corner = u_batchedCells ? cellCorner() : a_corner;
+  vec4 cell = u_batchedCells ? cellData(texel) : a_cell;
+  float cellEdges = u_batchedCells ? cellData(texel + 1).x : a_edges;
+
+  bool thingCell = cell.w > 2.5 && cell.w < 3.5;
   mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
-  vec2 relativeStart = a_cell.xy - u_cameraCell;
+  vec2 relativeStart = cell.xy - u_cameraCell;
   vec2 startDevice = floor((u_viewport * 0.5 + rotation * relativeStart * u_cellSize) * u_dpr + 0.5);
   vec2 endXDevice = floor((u_viewport * 0.5 + rotation * (relativeStart + vec2(1.0, 0.0)) * u_cellSize) * u_dpr + 0.5);
   vec2 endYDevice = floor((u_viewport * 0.5 + rotation * (relativeStart + vec2(0.0, 1.0)) * u_cellSize) * u_dpr + 0.5);
-  int edges = thingCell ? 0 : int(a_edges + 0.5);
+  int edges = thingCell ? 0 : int(cellEdges + 0.5);
   vec2 localExtensionDevice = vec2(
     (edges & 4) != 0 ? u_dpr : 0.0,
     (edges & 8) != 0 ? u_dpr : 0.0
@@ -191,17 +213,17 @@ void main() {
   vec2 axisXDevice = endXDevice - startDevice;
   vec2 axisYDevice = endYDevice - startDevice;
   vec2 drawPixelDevice = startDevice +
-    a_corner.x * axisXDevice +
-    a_corner.y * axisYDevice +
-    rotation * (a_corner * localExtensionDevice);
+    corner.x * axisXDevice +
+    corner.y * axisYDevice +
+    rotation * (corner * localExtensionDevice);
   vec2 pixel = drawPixelDevice / u_dpr;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   vec2 cellDeviceSize = max(vec2(length(axisXDevice), length(axisYDevice)), vec2(1.0));
-  v_cellUv = a_corner * (cellDeviceSize + localExtensionDevice) / cellDeviceSize;
-  v_sprite = a_cell.z;
-  v_cellKind = a_cell.w;
-  v_edges = a_edges;
+  v_cellUv = corner * (cellDeviceSize + localExtensionDevice) / cellDeviceSize;
+  v_sprite = cell.z;
+  v_cellKind = cell.w;
+  v_edges = cellEdges;
 }`;
 
 const FRAGMENT_SHADER = `#version 300 es
@@ -330,37 +352,46 @@ flat out float v_cellKind;
 flat out float v_shape;
 flat out float v_edges;
 
+${BATCHED_CELL_VERTEX}
+
 void main() {
-  int shape = int(a_shapeEdges.x + 0.5);
-  bool thingCell = a_axisVState.w > 2.5;
-  bool frontier = a_axisVState.w > 1.5 && !thingCell;
-  vec2 local = a_corner * 2.0 - 1.0;
+  int texel = (gl_VertexID / 6) * 4;
+  vec2 corner = u_batchedCells ? cellCorner() : a_corner;
+  vec4 centerAxisU = u_batchedCells ? cellData(texel) : a_centerAxisU;
+  vec4 axisVState = u_batchedCells ? cellData(texel + 1) : a_axisVState;
+  vec2 shapeEdges = u_batchedCells ? cellData(texel + 2).xy : a_shapeEdges;
+  vec4 thingBounds = u_batchedCells ? vec4(cellData(texel + 2).zw, cellData(texel + 3).xy) : a_thingBounds;
+
+  int shape = int(shapeEdges.x + 0.5);
+  bool thingCell = axisVState.w > 2.5;
+  bool frontier = axisVState.w > 1.5 && !thingCell;
+  vec2 local = corner * 2.0 - 1.0;
   if (shape >= 3 || frontier) {
     // Polygon edges can coincide with an excluded edge of their carrier quad
     // (notably the horizontal edge of a down triangle). Grow only the carrier;
     // the fragment shader still clips to the exact polygon. This guarantees
     // every selected line has fragments without changing the cell geometry.
     vec2 carrierMargin = vec2(
-      2.0 / max(u_cellSize * length(a_centerAxisU.zw), 1.0),
-      2.0 / max(u_cellSize * length(a_axisVState.xy), 1.0)
+      2.0 / max(u_cellSize * length(centerAxisU.zw), 1.0),
+      2.0 / max(u_cellSize * length(axisVState.xy), 1.0)
     );
     local *= 1.0 + carrierMargin;
   }
-  vec2 world = a_centerAxisU.xy + local.x * a_centerAxisU.zw + local.y * a_axisVState.xy;
-  vec2 spriteCenter = a_centerAxisU.xy;
-  if (!thingCell && shape == 1) spriteCenter += a_axisVState.xy / 3.0;
-  if (!thingCell && shape == 2) spriteCenter -= a_axisVState.xy / 3.0;
+  vec2 world = centerAxisU.xy + local.x * centerAxisU.zw + local.y * axisVState.xy;
+  vec2 spriteCenter = centerAxisU.xy;
+  if (!thingCell && shape == 1) spriteCenter += axisVState.xy / 3.0;
+  if (!thingCell && shape == 2) spriteCenter -= axisVState.xy / 3.0;
   mat2 rotation = mat2(u_rotation.x, u_rotation.y, -u_rotation.y, u_rotation.x);
   vec2 pixel = u_viewport * 0.5 + rotation * (world - u_cameraWorld) * u_cellSize;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   v_local = local;
   v_spriteOffset = world - spriteCenter;
-  v_thingUv = (world - a_thingBounds.xy) / max(a_thingBounds.zw, vec2(0.000001));
-  v_sprite = a_axisVState.z;
-  v_cellKind = a_axisVState.w;
-  v_shape = a_shapeEdges.x;
-  v_edges = a_shapeEdges.y;
+  v_thingUv = (world - thingBounds.xy) / max(thingBounds.zw, vec2(0.000001));
+  v_sprite = axisVState.z;
+  v_cellKind = axisVState.w;
+  v_shape = shapeEdges.x;
+  v_edges = shapeEdges.y;
 }`;
 
 const GENERIC_FRAGMENT_SHADER = `#version 300 es
@@ -656,6 +687,10 @@ interface GlResources {
   vertexArray: WebGLVertexArrayObject;
   genericVertexArray: WebGLVertexArrayObject;
   pixelVertexArray: WebGLVertexArrayObject;
+  cellDataTexture: WebGLTexture;
+  cellDataMaxHeight: number;
+  batchedCellsUniform: WebGLUniformLocation;
+  genericBatchedCellsUniform: WebGLUniformLocation;
   instanceBuffer: WebGLBuffer;
   genericInstanceBuffer: WebGLBuffer;
   atlasTexture: WebGLTexture;
@@ -816,6 +851,9 @@ export class WebGLRenderer {
     panRedraws: 0,
   };
 
+  // The original instanced path remains available as a framebuffer reference.
+  private batchDetail = true;
+  private cellDataFits = true;
   private resources: GlResources;
   private theme: RenderTheme;
   private width = 1;
@@ -1630,6 +1668,9 @@ export class WebGLRenderer {
     const gl = this.gl;
     const resources = this.resources;
     const rotation = this.rotationComponents();
+    const batched = this.batchDetail && this.cellDataFits;
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, resources.cellDataTexture);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(...this.theme.backgroundRgb, 1);
@@ -1675,7 +1716,8 @@ export class WebGLRenderer {
       gl.bindTexture(gl.TEXTURE_2D, resources.aggregateTexture);
     } else if (genericTopology) {
       gl.useProgram(resources.genericProgram);
-      gl.bindVertexArray(resources.genericVertexArray);
+      gl.bindVertexArray(batched ? resources.pixelVertexArray : resources.genericVertexArray);
+      gl.uniform1i(resources.genericBatchedCellsUniform, Number(batched));
       gl.uniform2f(resources.genericViewportUniform, this.width, this.height);
       gl.uniform2f(resources.genericCameraWorldUniform, relativeCameraX, relativeCameraY);
       gl.uniform2f(resources.genericRotationUniform, rotation.cos, rotation.sin);
@@ -1688,7 +1730,8 @@ export class WebGLRenderer {
       gl.bindTexture(gl.TEXTURE_2D, resources.thingAtlasTexture);
     } else {
       gl.useProgram(resources.program);
-      gl.bindVertexArray(resources.vertexArray);
+      gl.bindVertexArray(batched ? resources.pixelVertexArray : resources.vertexArray);
+      gl.uniform1i(resources.batchedCellsUniform, Number(batched));
       gl.uniform2f(resources.viewportUniform, this.width, this.height);
       gl.uniform2f(resources.cameraCellUniform, relativeCameraX, relativeCameraY);
       gl.uniform2f(resources.rotationUniform, rotation.cos, rotation.sin);
@@ -1715,6 +1758,7 @@ export class WebGLRenderer {
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (this.instanceCount === 0) continue;
       if (pixelTexture || aggregateOverview) gl.drawArrays(gl.TRIANGLES, 0, 6);
+      else if (batched) gl.drawArrays(gl.TRIANGLES, 0, this.instanceCount * 6);
       else gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
       drawCalls += 1;
     }
@@ -2555,6 +2599,7 @@ export class WebGLRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.instanceUploads += 1;
     this.instanceCount = index / GENERIC_INSTANCE_FLOATS;
+    this.uploadCellData(instances.subarray(0, index), GENERIC_INSTANCE_FLOATS);
     this.frontierCellCount = frontierCells;
     this.frontierEdgeCount = frontierEdges;
     this.range = {
@@ -2722,6 +2767,7 @@ export class WebGLRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.instanceUploads += 1;
     this.instanceCount = instanceIndex / INSTANCE_FLOATS;
+    this.uploadCellData(instances.subarray(0, instanceIndex), INSTANCE_FLOATS);
     this.frontierCellCount = frontierCells;
     this.frontierEdgeCount = frontierEdges;
     this.range = {
@@ -2737,6 +2783,28 @@ export class WebGLRenderer {
       version: this.model.store.version,
     };
     this.trimTileCache(Math.max(MAX_CACHED_TILES, tileCount + 256));
+  }
+
+  // One non-instanced draw avoids per-instance scheduling for thousands of tiny
+  // quads. Fetch the same float32 attributes in the vertex shader; all geometry,
+  // fragment shading, draw order, and pixel coverage remain unchanged. Packing
+  // costs 32 bytes per Square cell or 64 per polygon, independent of zoom motion.
+  private uploadCellData(instances: Float32Array, stride: number): void {
+    const gl = this.gl;
+    const packedStride = Math.ceil(stride / 4) * 4;
+    const count = instances.length / stride;
+    const height = Math.max(1, Math.ceil(count * packedStride / 4 / CELL_DATA_TEXTURE_WIDTH));
+    this.cellDataFits = height <= this.resources.cellDataMaxHeight;
+    if (!this.cellDataFits) return;
+    const packed = new Float32Array(CELL_DATA_TEXTURE_WIDTH * height * 4);
+    for (let cell = 0; cell < count; cell += 1) {
+      for (let value = 0; value < stride; value += 1) {
+        packed[cell * packedStride + value] = instances[cell * stride + value];
+      }
+    }
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.resources.cellDataTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, CELL_DATA_TEXTURE_WIDTH, height, 0, gl.RGBA, gl.FLOAT, packed);
   }
 
   private rebuildPixelTexture(
@@ -3024,6 +3092,7 @@ export class WebGLRenderer {
     const genericVertexArray = gl.createVertexArray();
     const pixelVertexArray = gl.createVertexArray();
     const quadBuffer = gl.createBuffer();
+    const cellDataTexture = gl.createTexture();
     const instanceBuffer = gl.createBuffer();
     const genericInstanceBuffer = gl.createBuffer();
     const atlasTexture = gl.createTexture();
@@ -3038,6 +3107,7 @@ export class WebGLRenderer {
       !genericVertexArray ||
       !pixelVertexArray ||
       !quadBuffer ||
+      !cellDataTexture ||
       !instanceBuffer ||
       !genericInstanceBuffer ||
       !atlasTexture ||
@@ -3160,10 +3230,21 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, cellDataTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(4));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+
     gl.useProgram(program);
+    gl.uniform1i(requireUniform(gl, program, "u_cellData"), 4);
     gl.uniform1i(requireUniform(gl, program, "u_atlas"), 0);
     gl.uniform1i(requireUniform(gl, program, "u_thingAtlas"), 2);
     gl.useProgram(genericProgram);
+    gl.uniform1i(requireUniform(gl, genericProgram, "u_cellData"), 4);
     gl.uniform1i(requireUniform(gl, genericProgram, "u_atlas"), 0);
     gl.uniform1i(requireUniform(gl, genericProgram, "u_thingAtlas"), 2);
     gl.useProgram(aggregateProgram);
@@ -3182,6 +3263,10 @@ export class WebGLRenderer {
       vertexArray,
       genericVertexArray,
       pixelVertexArray,
+      cellDataTexture,
+      cellDataMaxHeight: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      batchedCellsUniform: requireUniform(gl, program, "u_batchedCells"),
+      genericBatchedCellsUniform: requireUniform(gl, genericProgram, "u_batchedCells"),
       instanceBuffer,
       genericInstanceBuffer,
       atlasTexture,

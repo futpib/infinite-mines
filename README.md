@@ -11,6 +11,8 @@ npm run dev
 
 Run the repeatable production-browser interaction benchmark with `npm run benchmark`. It reports frame pacing, input-handler cost, WebGL frames/uploads, long tasks, and browser task/style/layout time for hover, drag, zoom, reveal, persistence, and idle paths. It also compares those interactions on 1,024-cell and 98,304-cell revealed fields and sweeps continuous wheel zoom through the complete 25 px to 1 px playable range in both directions. Below that range, discrete sparse overview levels continue down to one display pixel per 64×64 nominal-cell region.
 
+Compare two independently served production builds through the crowded Thing fade transition with `node scripts/benchmark-zoom.mjs BASELINE_URL CANDIDATE_URL`. It uses the same 143-Thing field, 1440×900 viewport, production wheel handler, and balanced baseline/candidate/candidate/baseline order. The JSON lines report cold and warmed frame pacing, CPU submission cost, uploads, requests, exact zoom, and return to idle. Optional trailing topology names extend the same benchmark to Hexagonal, Triangular, and Rhombille. Run it without concurrent browser tests; software-GPU timings describe that environment, not a real device's FPS.
+
 Production build and tests:
 
 ```bash
@@ -57,7 +59,7 @@ The production build uses relative asset paths, so it works as a GitHub project 
 - Interactions and opened clues are packed into sparse 64×64 `Uint8Array` chunks, including negative coordinates.
 - At detailed zoom, sparse 8×8 CPU tiles are cached by version and only revealed or marked cells are compacted into the GPU instance buffer.
 - Number, flag, question, and explosion art is uploaded once as a compact sprite atlas.
-- Detailed cells render in one instanced WebGL draw. At pixel LOD, intersecting sparse chunks are packed into one tightly cropped integer state texture and drawn as one camera-transformed quad.
+- Detailed cells render in one non-instanced WebGL draw, fetching unchanged cell attributes from a compact float texture. This avoids scheduling thousands of tiny instances while preserving the same triangles, fragment shader, and exact pixels; the original instanced draw remains a capacity fallback and regression reference. At pixel LOD, intersecting sparse chunks are packed into one tightly cropped integer state texture and drawn as one camera-transformed quad.
 - Wheel and pinch frames use the same renderer as the settled view at that scale. Things, clue glyphs, hover hints, borders, and fog never switch to a temporary low-detail surface while zoom is moving.
 - Below one CSS pixel per cell, zoom snaps through every integer size from 2×2 through 64×64 in sparse aggregate levels. Each explored aggregate remains one stable display pixel; explosions, flags, Things, and questions stay visible by priority while ordinary opened clues are averaged. These levels are navigation-only because a subpixel cell cannot be targeted honestly; cell hover and play return at the exact 1×1 level.
 - Small cell actions retain the previous framebuffer and scissor rendering to a one-cell dependency halo. At 1×, sufficiently dense detail views scroll preserved color pixels for integral-pixel pans and shade only newly exposed strips; ordinary sparse, fractional, high-DPI, and pixel-LOD movement keeps the faster full-frame path.
